@@ -57,3 +57,8 @@ node_modules/
 *.pyc
 .venv/
 venv/
+
+# Test runtime artifacts
+/sunshine_state.json
+/test_sunshine.log*
+/write_file_test_*.txt
