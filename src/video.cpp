@@ -2555,7 +2555,8 @@ namespace video {
                           colorspace.colorspace == colorspace_e::rec601    ? "SDR (Rec. 601)" :
                           colorspace.colorspace == colorspace_e::rec709    ? "SDR (Rec. 709)" :
                           colorspace.colorspace == colorspace_e::bt2020sdr ? "SDR (Rec. 2020)" :
-                                                                             "unknown";
+                          colorspace.colorspace == colorspace_e::identity_gbr ? "SDR (identity GBR, 8-bit source/up-converted)" :
+                                                                            "unknown";
 
       BOOST_LOG(info) << "Color coding: " << color_coding;
       BOOST_LOG(info) << "Color depth: " << colorspace.bit_depth << "-bit";

@@ -3,6 +3,7 @@
  * @brief CUDA implementation for Linux.
  */
 // standard includes
+#include <algorithm>
 #include <chrono>
 #include <limits>
 #include <memory>
@@ -254,6 +255,44 @@ namespace cuda {
     dstV[0] = calcV(rgb, color_matrix) * 255.0f;
   }
 
+  inline __device__ std::uint16_t to_msb_aligned_10bit(float component) {
+    component = fminf(fmaxf(component, 0.0f), 1.0f);
+    return static_cast<std::uint16_t>(__float2uint_rn(component * 1023.0f) << 6);
+  }
+
+  __global__ void RGBA_to_YUV444_10bit(
+    cudaTextureObject_t srcImage,
+    std::uint8_t *dstYBytes,
+    std::uint8_t *dstUBytes,
+    std::uint8_t *dstVBytes,
+    std::uint32_t dstPitch,
+    float scale,
+    const viewport_t viewport,
+    const cuda_color_t *const color_matrix
+  ) {
+    int idX = threadIdx.x + blockDim.x * blockIdx.x;
+    int idY = threadIdx.y + blockDim.y * blockIdx.y;
+
+    if (idX >= viewport.width || idY >= viewport.height) {
+      return;
+    }
+
+    const float x = idX * scale;
+    const float y = idY * scale;
+
+    idX += viewport.offsetX;
+    idY += viewport.offsetY;
+
+    auto *dstY = reinterpret_cast<std::uint16_t *>(dstYBytes + idY * dstPitch) + idX;
+    auto *dstU = reinterpret_cast<std::uint16_t *>(dstUBytes + idY * dstPitch) + idX;
+    auto *dstV = reinterpret_cast<std::uint16_t *>(dstVBytes + idY * dstPitch) + idX;
+
+    const float3 rgb = bgra_to_rgb(tex2D<float4>(srcImage, x, y));
+    dstY[0] = to_msb_aligned_10bit(calcY(rgb, color_matrix));
+    dstU[0] = to_msb_aligned_10bit(calcU(rgb, color_matrix));
+    dstV[0] = to_msb_aligned_10bit(calcV(rgb, color_matrix));
+  }
+
   int tex_t::copy(std::uint8_t *src, int height, int pitch) {
     CU_CHECK(cudaMemcpy2DToArray(array, 0, 0, src, pitch, pitch, height, cudaMemcpyDeviceToDevice), "Couldn't copy to cuda array from deviceptr");
 
@@ -403,6 +442,31 @@ namespace cuda {
     return CU_CHECK_IGNORE(cudaGetLastError(), "RGBA_to_YUV444 failed");
   }
 
+  int sws_t::convert_yuv444_10bit(std::uint8_t *Y, std::uint8_t *U, std::uint8_t *V, std::uint32_t pitch, cudaTextureObject_t texture, stream_t::pointer stream) {
+    return convert_yuv444_10bit(Y, U, V, pitch, texture, stream, viewport);
+  }
+
+  int sws_t::convert_yuv444_10bit(std::uint8_t *Y, std::uint8_t *U, std::uint8_t *V, std::uint32_t pitch, cudaTextureObject_t texture, stream_t::pointer stream, const viewport_t &viewport) {
+    const int threadsX = viewport.width;
+    const int threadsY = viewport.height;
+
+    dim3 block(threadsPerBlock);
+    dim3 grid(div_align(threadsX, threadsPerBlock), threadsY);
+
+    RGBA_to_YUV444_10bit<<<grid, block, 0, stream>>>(
+      texture,
+      Y,
+      U,
+      V,
+      pitch,
+      scale,
+      viewport,
+      (cuda_color_t *) color_matrix.get()
+    );
+
+    return CU_CHECK_IGNORE(cudaGetLastError(), "RGBA_to_YUV444_10bit failed");
+  }
+
   void sws_t::apply_colorspace(const video::sunshine_colorspace_t &colorspace) {
     auto color_p = video::color_vectors_from_colorspace(colorspace, true);
     CU_CHECK_IGNORE(cudaMemcpy(color_matrix.get(), color_p, sizeof(video::color_t), cudaMemcpyHostToDevice), "Couldn't copy color matrix to cuda");
@@ -411,5 +475,62 @@ namespace cuda {
   int sws_t::load_ram(platf::img_t &img, cudaArray_t array) {
     return CU_CHECK_IGNORE(cudaMemcpy2DToArray(array, 0, 0, img.data, img.row_pitch, img.width * img.pixel_pitch, img.height, cudaMemcpyHostToDevice), "Couldn't copy to cuda array");
   }
+
+  #if defined(SUNSHINE_TESTS)
+  bool test_identity_gbr_10bit_conversion() {
+    constexpr int width = 4;
+    constexpr int height = 1;
+    constexpr std::uint32_t pitch = width * sizeof(std::uint16_t);
+    std::uint8_t source[] = {
+      0, 0, 0, 255,
+      255, 255, 255, 255,
+      255, 0, 0, 255,
+      0, 128, 255, 255,
+    };
+
+    auto texture = tex_t::make(height, width * 4);
+    auto converter = sws_t::make(width, height, width, height, width * 4);
+    auto stream = make_stream();
+    if (!texture || !converter || !stream) {
+      return false;
+    }
+
+    converter->apply_colorspace({video::colorspace_e::identity_gbr, true, 10});
+
+    platf::img_t image;
+    image.data = source;
+    image.width = width;
+    image.height = height;
+    image.pixel_pitch = 4;
+    image.row_pitch = width * image.pixel_pitch;
+
+    void *destination = nullptr;
+    if (cudaMalloc(&destination, pitch * height * 3) != cudaSuccess) {
+      return false;
+    }
+
+    const auto cleanup = std::unique_ptr<void, freeCudaPtr_t> {destination};
+    auto *base = static_cast<std::uint8_t *>(destination);
+    if (converter->load_ram(image, texture->array) ||
+        converter->convert_yuv444_10bit(base, base + pitch, base + pitch * 2, pitch, texture->texture.point, stream.get()) ||
+        cudaStreamSynchronize(stream.get()) != cudaSuccess) {
+      return false;
+    }
+
+    std::uint16_t actual[width * 3] {};
+    if (cudaMemcpy(actual, destination, sizeof(actual), cudaMemcpyDeviceToHost) != cudaSuccess) {
+      return false;
+    }
+
+    constexpr std::uint16_t maximum = 1023 << 6;
+    constexpr std::uint16_t midpoint = 514 << 6;
+    constexpr std::uint16_t expected[] = {
+      0, maximum, 0, midpoint,
+      0, maximum, maximum, 0,
+      0, maximum, 0, maximum,
+    };
+    return std::equal(std::begin(actual), std::end(actual), std::begin(expected));
+  }
+  #endif
 
 }  // namespace cuda

@@ -50,6 +50,10 @@ namespace video {
           colorspace.colorspace = colorspace_e::bt2020sdr;
           break;
 
+        case COLORSPACE_IDENTITY_GBR:
+          colorspace.colorspace = colorspace_e::identity_gbr;
+          break;
+
         default:
           BOOST_LOG(error) << "Unknown video colorspace in csc, falling back to Rec. 709";
           colorspace.colorspace = colorspace_e::rec709;
@@ -76,6 +80,12 @@ namespace video {
 
     if (colorspace.colorspace == colorspace_e::bt2020sdr && colorspace.bit_depth != 10) {
       BOOST_LOG(error) << "BT.2020 SDR colorspace expects 10-bit color depth, falling back to Rec. 709";
+      colorspace.colorspace = colorspace_e::rec709;
+    }
+
+    if (colorspace.colorspace == colorspace_e::identity_gbr &&
+        (!colorspace.full_range || colorspace.bit_depth != 10 || config.chromaSamplingType != 1)) {
+      BOOST_LOG(error) << "Identity GBR requires full-range 10-bit 4:4:4; falling back to Rec. 709";
       colorspace.colorspace = colorspace_e::rec709;
     }
 
@@ -121,6 +131,13 @@ namespace video {
         avcodec_colorspace.transfer_function = AVCOL_TRC_SMPTE2084;
         avcodec_colorspace.matrix = AVCOL_SPC_BT2020_NCL;
         avcodec_colorspace.software_format = SWS_CS_BT2020;
+        break;
+
+      case colorspace_e::identity_gbr:
+        avcodec_colorspace.primaries = AVCOL_PRI_BT709;
+        avcodec_colorspace.transfer_function = AVCOL_TRC_IEC61966_2_1;
+        avcodec_colorspace.matrix = AVCOL_SPC_RGB;
+        avcodec_colorspace.software_format = SWS_CS_ITU709;
         break;
     }
 
@@ -184,6 +201,32 @@ namespace video {
 
       color_t color_vectors;
 
+      if (colorspace.colorspace == colorspace_e::identity_gbr) {
+        const double component_mult = unorm_output ? 1.0 : (1 << colorspace.bit_depth) - 1;
+        const double component_add = unorm_output ? 0.0 : 0.5;
+
+        color_vectors.color_vec_y[0] = 0;
+        color_vectors.color_vec_y[1] = component_mult;
+        color_vectors.color_vec_y[2] = 0;
+        color_vectors.color_vec_y[3] = component_add;
+
+        color_vectors.color_vec_u[0] = 0;
+        color_vectors.color_vec_u[1] = 0;
+        color_vectors.color_vec_u[2] = component_mult;
+        color_vectors.color_vec_u[3] = component_add;
+
+        color_vectors.color_vec_v[0] = component_mult;
+        color_vectors.color_vec_v[1] = 0;
+        color_vectors.color_vec_v[2] = 0;
+        color_vectors.color_vec_v[3] = component_add;
+
+        color_vectors.range_y[0] = 1;
+        color_vectors.range_y[1] = 0;
+        color_vectors.range_uv[0] = 1;
+        color_vectors.range_uv[1] = 0;
+        return color_vectors;
+      }
+
       color_vectors.color_vec_y[0] = Kr * y_mult;
       color_vectors.color_vec_y[1] = Kg * y_mult;
       color_vectors.color_vec_y[2] = Kb * y_mult;
@@ -221,6 +264,10 @@ namespace video {
       generate_color_vectors({colorspace_e::bt2020, true, 8}, false),
       generate_color_vectors({colorspace_e::bt2020, false, 10}, false),
       generate_color_vectors({colorspace_e::bt2020, true, 10}, false),
+      generate_color_vectors({colorspace_e::identity_gbr, false, 8}, false),
+      generate_color_vectors({colorspace_e::identity_gbr, true, 8}, false),
+      generate_color_vectors({colorspace_e::identity_gbr, false, 10}, false),
+      generate_color_vectors({colorspace_e::identity_gbr, true, 10}, false),
 
       generate_color_vectors({colorspace_e::rec601, false, 8}, true),
       generate_color_vectors({colorspace_e::rec601, true, 8}, true),
@@ -234,6 +281,10 @@ namespace video {
       generate_color_vectors({colorspace_e::bt2020, true, 8}, true),
       generate_color_vectors({colorspace_e::bt2020, false, 10}, true),
       generate_color_vectors({colorspace_e::bt2020, true, 10}, true),
+      generate_color_vectors({colorspace_e::identity_gbr, false, 8}, true),
+      generate_color_vectors({colorspace_e::identity_gbr, true, 8}, true),
+      generate_color_vectors({colorspace_e::identity_gbr, false, 10}, true),
+      generate_color_vectors({colorspace_e::identity_gbr, true, 10}, true),
     };
 
     const color_t *result = nullptr;
@@ -250,6 +301,9 @@ namespace video {
       case colorspace_e::bt2020sdr:
         result = &colors[8];
         break;
+      case colorspace_e::identity_gbr:
+        result = &colors[12];
+        break;
     }
 
     if (colorspace.bit_depth == 10) {
@@ -259,7 +313,7 @@ namespace video {
       result += 1;
     }
     if (unorm_output) {
-      result += 12;
+      result += 16;
     }
 
     return result;

@@ -39,6 +39,10 @@ namespace cuda {
   std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_gl_encode_device(int width, int height, int offset_x, int offset_y);
 
   int init();
+
+  #if defined(SUNSHINE_TESTS)
+  bool test_identity_gbr_10bit_conversion();
+  #endif
 }  // namespace cuda
 
 typedef struct cudaArray *cudaArray_t;
@@ -114,6 +118,8 @@ namespace cuda {
     int convert_nv12(std::uint8_t *Y, std::uint8_t *UV, std::uint32_t pitchY, std::uint32_t pitchUV, cudaTextureObject_t texture, stream_t::pointer stream, const viewport_t &viewport);
     int convert_yuv444(std::uint8_t *Y, std::uint8_t *U, std::uint8_t *V, std::uint32_t pitch, cudaTextureObject_t texture, stream_t::pointer stream);
     int convert_yuv444(std::uint8_t *Y, std::uint8_t *U, std::uint8_t *V, std::uint32_t pitch, cudaTextureObject_t texture, stream_t::pointer stream, const viewport_t &viewport);
+    int convert_yuv444_10bit(std::uint8_t *Y, std::uint8_t *U, std::uint8_t *V, std::uint32_t pitch, cudaTextureObject_t texture, stream_t::pointer stream);
+    int convert_yuv444_10bit(std::uint8_t *Y, std::uint8_t *U, std::uint8_t *V, std::uint32_t pitch, cudaTextureObject_t texture, stream_t::pointer stream, const viewport_t &viewport);
 
     void apply_colorspace(const video::sunshine_colorspace_t &colorspace);
 

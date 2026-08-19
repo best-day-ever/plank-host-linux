@@ -12,9 +12,77 @@
 
 // local includes
 #include <src/config.h>
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+  #include <src/platform/linux/cuda.h>
+#endif
 #include <src/video.h>
+#include <src/video_colorspace.h>
 
 using namespace std::literals;
+
+TEST(VideoColorspaceTest, IdentityGbrUsesExactPlaneMapping) {
+  const video::sunshine_colorspace_t colorspace {
+    video::colorspace_e::identity_gbr,
+    true,
+    10,
+  };
+
+  const auto *unorm = video::color_vectors_from_colorspace(colorspace, true);
+  EXPECT_FLOAT_EQ(unorm->color_vec_y[0], 0.0f);
+  EXPECT_FLOAT_EQ(unorm->color_vec_y[1], 1.0f);
+  EXPECT_FLOAT_EQ(unorm->color_vec_y[2], 0.0f);
+  EXPECT_FLOAT_EQ(unorm->color_vec_u[0], 0.0f);
+  EXPECT_FLOAT_EQ(unorm->color_vec_u[1], 0.0f);
+  EXPECT_FLOAT_EQ(unorm->color_vec_u[2], 1.0f);
+  EXPECT_FLOAT_EQ(unorm->color_vec_v[0], 1.0f);
+  EXPECT_FLOAT_EQ(unorm->color_vec_v[1], 0.0f);
+  EXPECT_FLOAT_EQ(unorm->color_vec_v[2], 0.0f);
+
+  const auto *integer = video::color_vectors_from_colorspace(colorspace, false);
+  EXPECT_FLOAT_EQ(integer->color_vec_y[1], 1023.0f);
+  EXPECT_FLOAT_EQ(integer->color_vec_u[2], 1023.0f);
+  EXPECT_FLOAT_EQ(integer->color_vec_v[0], 1023.0f);
+}
+
+TEST(VideoColorspaceTest, IdentityGbrUsesMatrixZeroMetadata) {
+  const video::sunshine_colorspace_t colorspace {
+    video::colorspace_e::identity_gbr,
+    true,
+    10,
+  };
+
+  const auto avcodec = video::avcodec_colorspace_from_sunshine_colorspace(colorspace);
+  EXPECT_EQ(avcodec.primaries, AVCOL_PRI_BT709);
+  EXPECT_EQ(avcodec.transfer_function, AVCOL_TRC_IEC61966_2_1);
+  EXPECT_EQ(avcodec.matrix, AVCOL_SPC_RGB);
+  EXPECT_EQ(avcodec.range, AVCOL_RANGE_JPEG);
+  EXPECT_FALSE(video::colorspace_is_hdr(colorspace));
+}
+
+TEST(VideoColorspaceTest, IdentityGbrRequiresFullRange10Bit444) {
+  video::config_t config {};
+  config.encoderCscMode = COLORSPACE_IDENTITY_GBR << 1;
+  config.dynamicRange = 1;
+  config.chromaSamplingType = 1;
+  EXPECT_EQ(video::colorspace_from_client_config(config, false).colorspace, video::colorspace_e::rec709);
+
+  config.encoderCscMode |= 1;
+  config.dynamicRange = 0;
+  EXPECT_EQ(video::colorspace_from_client_config(config, false).colorspace, video::colorspace_e::rec709);
+
+  config.dynamicRange = 1;
+  config.chromaSamplingType = 0;
+  EXPECT_EQ(video::colorspace_from_client_config(config, false).colorspace, video::colorspace_e::rec709);
+
+  config.chromaSamplingType = 1;
+  EXPECT_EQ(video::colorspace_from_client_config(config, false).colorspace, video::colorspace_e::identity_gbr);
+}
+
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+TEST(VideoColorspaceTest, IdentityGbrCudaKernelProducesExact10BitPlanes) {
+  EXPECT_TRUE(cuda::test_identity_gbr_10bit_conversion());
+}
+#endif
 
 struct EncoderTest: PlatformTestSuite, testing::WithParamInterface<video::encoder_t *> {
   void SetUp() override {

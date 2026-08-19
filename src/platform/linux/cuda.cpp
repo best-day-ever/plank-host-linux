@@ -190,8 +190,8 @@ namespace cuda {
 
       auto hwframe_ctx = (AVHWFramesContext *) hw_frames_ctx->data;
 
-      if (hwframe_ctx->sw_format != AV_PIX_FMT_NV12 && hwframe_ctx->sw_format != AV_PIX_FMT_YUV444P) {
-        BOOST_LOG(error) << "cuda::cuda_t doesn't support any format other than AV_PIX_FMT_NV12 and AV_PIX_FMT_YUV444P"sv;
+      if (hwframe_ctx->sw_format != AV_PIX_FMT_NV12 && hwframe_ctx->sw_format != AV_PIX_FMT_YUV444P && hwframe_ctx->sw_format != AV_PIX_FMT_YUV444P16LE) {
+        BOOST_LOG(error) << "cuda::cuda_t supports only AV_PIX_FMT_NV12, AV_PIX_FMT_YUV444P, and AV_PIX_FMT_YUV444P16LE"sv;
         return -1;
       }
 
@@ -202,7 +202,8 @@ namespace cuda {
         }
       }
 
-      is_yuv444 = (hwframe_ctx->sw_format == AV_PIX_FMT_YUV444P);
+      is_yuv444 = (hwframe_ctx->sw_format == AV_PIX_FMT_YUV444P || hwframe_ctx->sw_format == AV_PIX_FMT_YUV444P16LE);
+      is_10bit = hwframe_ctx->sw_format == AV_PIX_FMT_YUV444P16LE;
 
       auto cuda_ctx = (AVCUDADeviceContext *) hwframe_ctx->device_ctx->hwctx;
 
@@ -254,7 +255,11 @@ namespace cuda {
       }
 
       if (is_yuv444) {
-        sws.convert_yuv444(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex->texture.linear, stream.get(), {frame->width, frame->height, 0, 0});
+        if (is_10bit) {
+          sws.convert_yuv444_10bit(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex->texture.linear, stream.get(), {frame->width, frame->height, 0, 0});
+        } else {
+          sws.convert_yuv444(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex->texture.linear, stream.get(), {frame->width, frame->height, 0, 0});
+        }
       } else {
         sws.convert_nv12(frame->data[0], frame->data[1], frame->linesize[0], frame->linesize[1], tex->texture.linear, stream.get(), {frame->width, frame->height, 0, 0});
       }
@@ -280,6 +285,7 @@ namespace cuda {
     bool linear_interpolation;  ///< Whether the CUDA converter uses linear interpolation.
 
     bool is_yuv444;  ///< Whether the CUDA converter outputs YUV 4:4:4.
+    bool is_10bit;  ///< Whether the CUDA converter outputs MSB-aligned 10-bit samples.
 
     sws_t sws;  ///< Software scaler used for CUDA frame conversion fallback paths.
   };
@@ -297,7 +303,9 @@ namespace cuda {
      */
     int convert(platf::img_t &img) override {
       if (is_yuv444) {
-        return sws.load_ram(img, tex.array) || sws.convert_yuv444(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex_obj(tex), stream.get());
+        return sws.load_ram(img, tex.array) ||
+               (is_10bit ? sws.convert_yuv444_10bit(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex_obj(tex), stream.get()) :
+                           sws.convert_yuv444(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex_obj(tex), stream.get()));
       }
       return sws.load_ram(img, tex.array) || sws.convert_nv12(frame->data[0], frame->data[1], frame->linesize[0], frame->linesize[1], tex_obj(tex), stream.get());
     }
@@ -340,7 +348,8 @@ namespace cuda {
      */
     int convert(platf::img_t &img) override {
       if (is_yuv444) {
-        return sws.convert_yuv444(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex_obj(((img_t *) &img)->tex), stream.get());
+        return is_10bit ? sws.convert_yuv444_10bit(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex_obj(((img_t *) &img)->tex), stream.get()) :
+                          sws.convert_yuv444(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex_obj(((img_t *) &img)->tex), stream.get());
       }
       return sws.convert_nv12(frame->data[0], frame->data[1], frame->linesize[0], frame->linesize[1], tex_obj(((img_t *) &img)->tex), stream.get());
     }

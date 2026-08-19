@@ -95,6 +95,12 @@ namespace NVENC_NAMESPACE {
         colorspace.tranfer_function = NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SMPTE2084;
         colorspace.matrix = NV_ENC_VUI_MATRIX_COEFFS_BT2020_NCL;
         break;
+
+      case video::colorspace_e::identity_gbr:
+        colorspace.primaries = NV_ENC_VUI_COLOR_PRIMARIES_BT709;
+        colorspace.tranfer_function = NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SRGB;
+        colorspace.matrix = NV_ENC_VUI_MATRIX_COEFFS_RGB;
+        break;
     }
 
     colorspace.full_range = sunshine_colorspace.full_range;
