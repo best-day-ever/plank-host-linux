@@ -840,6 +840,11 @@ namespace nvhttp {
     }
     if ((video::active_hevc_mode == 4 || video::active_hevc_mode == 5) && video::last_encoder_probe_supported_yuv444_for_codec[1]) {
       codec_mode_flags |= SCM_HEVC_REXT10_444;
+#if defined(SUNSHINE_BUILD_CUDA)
+      // Identity GBR depends on the Linux CUDA conversion path that maps the
+      // captured BGRA8 channels directly into a 10-bit HEVC 4:4:4 surface.
+      codec_mode_flags |= SCM_IDENTITY_GBR_444;
+#endif
     }
 
     if (video::active_av1_mode >= 2) {
