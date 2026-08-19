@@ -4,8 +4,8 @@
 	branch = master
 [submodule "third-party/build-deps"]
 	path = third-party/build-deps
-	url = https://github.com/LizardByte/build-deps.git
-	branch = master
+	url = https://github.com/instinctual/plank-build-deps.git
+	branch = stationconnect/main
 [submodule "third-party/doxyconfig"]
 	path = third-party/doxyconfig
 	url = https://github.com/LizardByte/doxyconfig.git
