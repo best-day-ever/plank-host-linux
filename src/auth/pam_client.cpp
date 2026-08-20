@@ -1,0 +1,244 @@
+/**
+ * @file src/auth/pam_client.cpp
+ * @brief Unprivileged Sunshine client for the local PAM broker.
+ */
+
+#include "pam_client.h"
+
+#include <algorithm>
+#include <cerrno>
+#include <cstring>
+#include <system_error>
+#include <utility>
+
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+namespace stationconnect::auth {
+  namespace {
+    /**
+     * @brief Return a terminal protocol-error step.
+     *
+     * @return Denied protocol result.
+     */
+    step_t protocol_error() {
+      return {step_t::state_e::denied, {}, phase_e::protocol, -1};
+    }
+
+    /**
+     * @brief Securely erase response strings.
+     *
+     * @param responses Strings to erase.
+     */
+    void erase(std::vector<std::string> &responses) {
+      for (auto &response : responses) {
+        if (!response.empty()) {
+          explicit_bzero(response.data(), response.size());
+        }
+      }
+    }
+
+    /**
+     * @brief Connect only to a root-owned, non-public Unix socket and verify its peer.
+     *
+     * @param path Broker socket path.
+     * @return Connected descriptor, or `-1`.
+     */
+    int connect_broker(const std::filesystem::path &path) {
+      struct stat metadata {};
+      if (lstat(path.c_str(), &metadata) < 0 || !S_ISSOCK(metadata.st_mode) ||
+          metadata.st_uid != 0 || (metadata.st_mode & (S_IWOTH | S_IROTH)) != 0 ||
+          path.string().size() >= sizeof(sockaddr_un::sun_path)) {
+        return -1;
+      }
+      const int descriptor = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+      if (descriptor < 0) {
+        return -1;
+      }
+      sockaddr_un address {};
+      address.sun_family = AF_UNIX;
+      std::memcpy(address.sun_path, path.c_str(), path.string().size() + 1);
+      if (connect(descriptor, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) < 0) {
+        ::close(descriptor);
+        return -1;
+      }
+      ucred credentials {};
+      socklen_t length = sizeof(credentials);
+      if (getsockopt(descriptor, SOL_SOCKET, SO_PEERCRED, &credentials, &length) < 0 ||
+          credentials.uid != 0) {
+        ::close(descriptor);
+        return -1;
+      }
+      return descriptor;
+    }
+  }  // namespace
+
+  pam_client_t::~pam_client_t() {
+    close();
+  }
+
+  pam_client_t::pam_client_t(pam_client_t &&other) noexcept:
+      descriptor_ {std::exchange(other.descriptor_, -1)},
+      transaction_id_ {std::exchange(other.transaction_id_, 0)},
+      expected_responses_ {std::exchange(other.expected_responses_, 0)},
+      authenticated_ {std::exchange(other.authenticated_, false)} {
+  }
+
+  pam_client_t &pam_client_t::operator=(pam_client_t &&other) noexcept {
+    if (this != &other) {
+      close();
+      descriptor_ = std::exchange(other.descriptor_, -1);
+      transaction_id_ = std::exchange(other.transaction_id_, 0);
+      expected_responses_ = std::exchange(other.expected_responses_, 0);
+      authenticated_ = std::exchange(other.authenticated_, false);
+    }
+    return *this;
+  }
+
+  step_t pam_client_t::begin(const std::filesystem::path &socket_path,
+                             std::uint64_t transaction_id, std::string_view username,
+                             std::string_view remote_host, std::string_view tty) {
+    close();
+    if (transaction_id == 0 || username.empty() || username.size() > 256 ||
+        remote_host.size() > 256 || tty.size() > 128) {
+      return protocol_error();
+    }
+    descriptor_ = connect_broker(socket_path);
+    if (descriptor_ < 0) {
+      return protocol_error();
+    }
+    transaction_id_ = transaction_id;
+    std::vector<std::uint8_t> payload;
+    if (!append_string(payload, username) || !append_string(payload, remote_host) ||
+        !append_string(payload, tty) ||
+        !write_message(descriptor_, {message_type_e::begin, transaction_id_, std::move(payload)})) {
+      close();
+      return protocol_error();
+    }
+    return read_step();
+  }
+
+  step_t pam_client_t::respond(std::vector<std::string> responses) {
+    if (descriptor_ < 0 || expected_responses_ == 0 ||
+        responses.size() != expected_responses_) {
+      erase(responses);
+      close();
+      return protocol_error();
+    }
+    std::vector<std::uint8_t> payload;
+    append_integer(payload, static_cast<std::uint32_t>(responses.size()));
+    bool valid = true;
+    for (const auto &response : responses) {
+      valid = valid && append_string(payload, response);
+    }
+    erase(responses);
+    expected_responses_ = 0;
+    const bool written = valid && write_sensitive_message(descriptor_, {
+      message_type_e::response,
+      transaction_id_,
+      payload,
+    });
+    if (!payload.empty()) {
+      explicit_bzero(payload.data(), payload.size());
+    }
+    if (!written) {
+      close();
+      return protocol_error();
+    }
+    return read_step();
+  }
+
+  void pam_client_t::close() {
+    if (descriptor_ >= 0) {
+      if (authenticated_) {
+        write_message(descriptor_, {message_type_e::cancel, transaction_id_, {}});
+      }
+      ::close(descriptor_);
+    }
+    descriptor_ = -1;
+    transaction_id_ = 0;
+    expected_responses_ = 0;
+    authenticated_ = false;
+  }
+
+  bool pam_client_t::connected() const {
+    return descriptor_ >= 0;
+  }
+
+#ifdef SUNSHINE_TESTS
+  pam_client_t pam_client_t::adopt_for_test(int descriptor, std::uint64_t transaction_id) {
+    pam_client_t client;
+    client.descriptor_ = descriptor;
+    client.transaction_id_ = transaction_id;
+    return client;
+  }
+
+  step_t pam_client_t::read_step_for_test() {
+    return read_step();
+  }
+#endif
+
+  step_t pam_client_t::read_step() {
+    message_t message;
+    if (!read_message(descriptor_, message) || message.transaction_id != transaction_id_) {
+      close();
+      return protocol_error();
+    }
+    if (message.type == message_type_e::challenge) {
+      std::size_t offset = 0;
+      std::uint32_t count;
+      if (!read_integer(message.payload, offset, count) || count == 0 ||
+          count > maximum_fields) {
+        close();
+        return protocol_error();
+      }
+      step_t step {step_t::state_e::challenge};
+      step.prompts.reserve(count);
+      for (std::uint32_t index = 0; index < count; ++index) {
+        std::int32_t style;
+        std::string text;
+        if (!read_integer(message.payload, offset, style) ||
+            !read_string(message.payload, offset, text)) {
+          close();
+          return protocol_error();
+        }
+        step.prompts.push_back({style, std::move(text)});
+      }
+      if (offset != message.payload.size()) {
+        close();
+        return protocol_error();
+      }
+      expected_responses_ = count;
+      return step;
+    }
+    if (message.type == message_type_e::result) {
+      std::size_t offset = 0;
+      std::uint16_t phase;
+      std::int32_t pam_status;
+      if (!read_integer(message.payload, offset, phase) ||
+          !read_integer(message.payload, offset, pam_status) ||
+          offset != message.payload.size() ||
+          phase < static_cast<std::uint16_t>(phase_e::protocol) ||
+          phase > static_cast<std::uint16_t>(phase_e::authenticated)) {
+        close();
+        return protocol_error();
+      }
+      const bool success = phase == static_cast<std::uint16_t>(phase_e::authenticated) &&
+                           pam_status == 0;
+      authenticated_ = success;
+      if (!success) {
+        close();
+      }
+      return {
+        success ? step_t::state_e::authenticated : step_t::state_e::denied,
+        {},
+        static_cast<phase_e>(phase),
+        pam_status,
+      };
+    }
+    close();
+    return protocol_error();
+  }
+}  // namespace stationconnect::auth

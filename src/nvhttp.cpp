@@ -8,19 +8,24 @@
 // standard includes
 #include <filesystem>
 #include <format>
+#include <sstream>
 #include <string>
 #include <utility>
 
 // lib includes
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/context_base.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/xml_parser.hpp>
 #include <Simple-Web-Server/server_http.hpp>
 
+#include <unistd.h>
+
 // local includes
 #include "config.h"
+#include "auth/web_auth.h"
 #include "display_device.h"
 #include "file_handler.h"
 #include "globals.h"
@@ -46,6 +51,9 @@ namespace nvhttp {
   namespace pt = boost::property_tree;
 
   crypto::cert_chain_t cert_chain;  ///< Certificate chain presented by Sunshine's GameStream HTTPS server.
+  constexpr std::string_view pam_broker_socket = "/run/stationconnect/auth.sock"sv;  ///< Privileged broker activation path.
+  std::unique_ptr<stationconnect::auth::web_auth_manager_t> web_auth;  ///< PAM conversations and ephemeral tokens.
+  bool stationconnect_authentication = false;  ///< Whether pairing has been replaced by PAM for this process.
 
   /**
    * @brief HTTPS server backend that adds Sunshine's client-certificate verification.
@@ -58,12 +66,16 @@ namespace nvhttp {
      * @param certification_file Path to the server certificate file.
      * @param private_key_file Path to the matching private key file.
      */
-    SunshineHTTPSServer(const std::string &certification_file, const std::string &private_key_file):
+    SunshineHTTPSServer(const std::string &certification_file, const std::string &private_key_file,
+                        bool tls13_only):
         ServerBase<SunshineHTTPS>::ServerBase(443),
         context(boost::asio::ssl::context::tls_server) {
       // Disabling TLS 1.0 and 1.1 (see RFC 8996)
       context.set_options(boost::asio::ssl::context::no_tlsv1);
       context.set_options(boost::asio::ssl::context::no_tlsv1_1);
+      if (tls13_only && SSL_CTX_set_min_proto_version(context.native_handle(), TLS1_3_VERSION) != 1) {
+        throw std::runtime_error("Unable to require TLS 1.3 for StationConnect authentication");
+      }
       context.use_certificate_chain_file(certification_file);
       context.use_private_key_file(private_key_file, boost::asio::ssl::context::pem);
     }
@@ -197,6 +209,210 @@ namespace nvhttp {
    * @brief Shared HTTP request object received by redirect and discovery handlers.
    */
   using req_http_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Request>;
+
+  /**
+   * @brief Return the normalized peer address used to bind an authentication session.
+   *
+   * @param request HTTPS request.
+   * @return Normalized peer address without a port.
+   */
+  std::string authentication_peer(const req_https_t &request) {
+    return net::addr_to_normalized_string(request->remote_endpoint().address());
+  }
+
+  /**
+   * @brief Write a non-cacheable JSON authentication response.
+   *
+   * @param response HTTPS response.
+   * @param status HTTP status.
+   * @param body JSON response body.
+   */
+  void write_auth_json(const resp_https_t &response, SimpleWeb::StatusCode status,
+                       const nlohmann::json &body) {
+    SimpleWeb::CaseInsensitiveMultimap headers {
+      {"Content-Type", "application/json"},
+      {"Cache-Control", "no-store"},
+      {"Pragma", "no-cache"},
+    };
+    response->write(status, body.dump(), headers);
+    response->close_connection_after_response = true;
+  }
+
+  /**
+   * @brief Convert one internal PAM step to the HTTPS schema.
+   *
+   * @param step Internal authentication state.
+   * @return JSON response without credential data.
+   */
+  nlohmann::json auth_step_json(const stationconnect::auth::web_auth_step_t &step) {
+    using state_e = stationconnect::auth::step_t::state_e;
+    nlohmann::json body;
+    if (step.state == state_e::challenge) {
+      body["state"] = "challenge";
+      body["conversation_id"] = step.conversation_id;
+      body["messages"] = nlohmann::json::array();
+      for (const auto &prompt : step.prompts) {
+        body["messages"].push_back({{"style", prompt.style}, {"text", prompt.text}});
+      }
+    } else if (step.state == state_e::authenticated) {
+      body["state"] = "authenticated";
+      body["session_token"] = step.session_token;
+      body["expires_in"] = 300;
+    } else {
+      body["state"] = "denied";
+      body["phase"] = static_cast<std::uint16_t>(step.phase);
+      body["pam_status"] = step.pam_status;
+    }
+    return body;
+  }
+
+  /**
+   * @brief Read a bounded JSON request body without logging it.
+   *
+   * @param request HTTPS request.
+   * @return Parsed JSON object, or null on malformed input.
+   */
+  nlohmann::json read_auth_json(const req_https_t &request) {
+    std::ostringstream stream;
+    stream << request->content.rdbuf();
+    std::string content = stream.str();
+    if (content.size() > 64U * 1024U) {
+      if (!content.empty()) {
+        explicit_bzero(content.data(), content.size());
+      }
+      return nullptr;
+    }
+    auto body = nlohmann::json::parse(content, nullptr, false);
+    if (!content.empty()) {
+      explicit_bzero(content.data(), content.size());
+    }
+    return body;
+  }
+
+  /**
+   * @brief Begin a network PAM conversation.
+   *
+   * @param response HTTPS response.
+   * @param request HTTPS request carrying only a username.
+   */
+  void auth_start(const resp_https_t &response, const req_https_t &request) {
+    if (!web_auth) {
+      write_auth_json(response, SimpleWeb::StatusCode::server_error_service_unavailable,
+                      {{"state", "unavailable"}});
+      return;
+    }
+    const auto body = read_auth_json(request);
+    if (!body.is_object() || !body.contains("username") || !body["username"].is_string()) {
+      write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request,
+                      {{"state", "invalid-request"}});
+      return;
+    }
+    const auto username = body["username"].get<std::string>();
+    const auto step = web_auth->begin(username, authentication_peer(request));
+    write_auth_json(response, SimpleWeb::StatusCode::success_ok, auth_step_json(step));
+  }
+
+  /**
+   * @brief Advance a network PAM conversation.
+   *
+   * @param response HTTPS response.
+   * @param request HTTPS request carrying prompt responses.
+   */
+  void auth_respond(const resp_https_t &response, const req_https_t &request) {
+    auto body = read_auth_json(request);
+    if (!web_auth || !body.is_object() || !body.contains("conversation_id") ||
+        !body["conversation_id"].is_string() || !body.contains("responses") ||
+        !body["responses"].is_array() || body["responses"].size() > 64) {
+      write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request,
+                      {{"state", "invalid-request"}});
+      return;
+    }
+    std::vector<std::string> responses;
+    for (auto &item : body["responses"]) {
+      if (!item.is_string()) {
+        for (auto &value : responses) {
+          explicit_bzero(value.data(), value.size());
+        }
+        write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request,
+                        {{"state", "invalid-request"}});
+        return;
+      }
+      responses.push_back(item.get<std::string>());
+      auto &stored = item.get_ref<std::string &>();
+      if (!stored.empty()) {
+        explicit_bzero(stored.data(), stored.size());
+      }
+    }
+    const auto conversation_id = body["conversation_id"].get<std::string>();
+    const auto step = web_auth->respond(conversation_id, authentication_peer(request),
+                                        std::move(responses));
+    write_auth_json(response, SimpleWeb::StatusCode::success_ok, auth_step_json(step));
+  }
+
+  /**
+   * @brief Extract a bearer token without authenticating it.
+   *
+   * @param request HTTPS request.
+   * @return Token view backed by the request headers, or an empty view.
+   */
+  std::string_view bearer_token(const req_https_t &request) {
+    const auto header = request->header.find("Authorization");
+    constexpr std::string_view prefix = "Bearer ";
+    if (header == request->header.end() || !header->second.starts_with(prefix)) {
+      return {};
+    }
+    return std::string_view {header->second}.substr(prefix.size());
+  }
+
+  /**
+   * @brief Extract and validate a peer-bound bearer token.
+   *
+   * @param request HTTPS request.
+   * @return True when its token authorizes the peer.
+   */
+  bool authenticated(const req_https_t &request) {
+    if (!stationconnect_authentication) {
+      return true;
+    }
+    const auto token = bearer_token(request);
+    return !token.empty() && web_auth &&
+           web_auth->authorize(token, authentication_peer(request));
+  }
+
+  /**
+   * @brief Retain the request's PAM session for a streaming launch.
+   *
+   * @param request Authorized HTTPS request.
+   * @return Type-erased PAM session lifetime, or null on failure.
+   */
+  std::shared_ptr<void> claim_authentication_session(const req_https_t &request) {
+    if (!stationconnect_authentication) {
+      return {};
+    }
+    return web_auth ? web_auth->claim(bearer_token(request), authentication_peer(request)) : nullptr;
+  }
+
+  /**
+   * @brief Return a GameStream-compatible authorization failure.
+   *
+   * @param response HTTPS response.
+   * @param request Rejected request.
+   * @return False for convenient handler guards.
+   */
+  bool require_authentication(const resp_https_t &response, const req_https_t &request) {
+    if (authenticated(request)) {
+      return true;
+    }
+    pt::ptree tree;
+    tree.put("root.<xmlattr>.status_code", 401);
+    tree.put("root.<xmlattr>.query", request->path);
+    tree.put("root.<xmlattr>.status_message", "Operating-system authentication required.");
+    std::ostringstream data;
+    pt::write_xml(data, tree);
+    response->write(data.str());
+    response->close_connection_after_response = true;
+    return false;
+  }
 
   /**
    * @brief Certificate operations supported by the pairing API.
@@ -644,7 +860,11 @@ namespace nvhttp {
     BOOST_LOG(debug) << "DESTINATION :: "sv << request->path;
 
     for (auto &[name, val] : request->header) {
-      BOOST_LOG(debug) << name << " -- " << val;
+      if (boost::iequals(name, "Authorization") || boost::iequals(name, "Cookie")) {
+        BOOST_LOG(debug) << name << " -- <redacted>"sv;
+      } else {
+        BOOST_LOG(debug) << name << " -- " << val;
+      }
     }
 
     BOOST_LOG(debug) << " [--] "sv;
@@ -875,11 +1095,14 @@ namespace nvhttp {
 
     int pair_status = 0;
     if constexpr (std::is_same_v<SunshineHTTPS, T>) {
-      auto args = request->parse_query_string();
-      auto clientID = args.find("uniqueid"s);
-
-      if (clientID != std::end(args)) {
-        pair_status = 1;
+      if (stationconnect_authentication) {
+        pair_status = authenticated(request) ? 1 : 0;
+      } else {
+        auto args = request->parse_query_string();
+        auto clientID = args.find("uniqueid"s);
+        if (clientID != std::end(args)) {
+          pair_status = 1;
+        }
       }
     }
 
@@ -895,6 +1118,7 @@ namespace nvhttp {
     tree.put("root.uniqueid", http::unique_id);
     tree.put("root.HttpsPort", net::map_port(PORT_HTTPS));
     tree.put("root.ExternalPort", net::map_port(PORT_HTTP));
+    tree.put("root.StationConnectAuth", stationconnect_authentication ? 1 : 0);
     tree.put("root.MaxLumaPixelsHEVC", video::active_hevc_mode > 1 ? "1869449984" : "0");
 
     // Only include the MAC address for requests sent from paired clients over HTTPS.
@@ -927,7 +1151,7 @@ namespace nvhttp {
       tree.put("root.ExternalIP", config::nvhttp.external_ip);
     }
 
-    auto current_appid = proc::proc.running();
+    auto current_appid = pair_status == 1 ? proc::proc.running() : 0;
     tree.put("root.PairStatus", pair_status);
     tree.put("root.currentgame", current_appid);
     tree.put("root.state", current_appid > 0 ? "SUNSHINE_SERVER_BUSY" : "SUNSHINE_SERVER_FREE");
@@ -1087,6 +1311,16 @@ namespace nvhttp {
       }
     }
 
+    if (stationconnect_authentication) {
+      launch_session->authentication_session = claim_authentication_session(request);
+      if (!launch_session->authentication_session) {
+        tree.put("root.<xmlattr>.status_code", 401);
+        tree.put("root.<xmlattr>.status_message", "A new operating-system login is required.");
+        tree.put("root.gamesession", 0);
+        return;
+      }
+    }
+
     tree.put("root.<xmlattr>.status_code", 200);
     tree.put(
       "root.sessionUrl0",
@@ -1188,6 +1422,16 @@ namespace nvhttp {
       return;
     }
 
+    if (stationconnect_authentication) {
+      launch_session->authentication_session = claim_authentication_session(request);
+      if (!launch_session->authentication_session) {
+        tree.put("root.<xmlattr>.status_code", 401);
+        tree.put("root.<xmlattr>.status_message", "A new operating-system login is required.");
+        tree.put("root.resume", 0);
+        return;
+      }
+    }
+
     tree.put("root.<xmlattr>.status_code", 200);
     tree.put(
       "root.sessionUrl0",
@@ -1232,6 +1476,10 @@ namespace nvhttp {
 
     // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
     display_device::revert_configuration();
+
+    if (stationconnect_authentication && web_auth) {
+      web_auth->cancel(bearer_token(request));
+    }
   }
 
   /**
@@ -1290,11 +1538,27 @@ namespace nvhttp {
     // launch will store it in host_audio
     bool host_audio {};
 
-    https_server_t https_server {config::nvhttp.cert, config::nvhttp.pkey};
+    stationconnect_authentication = access(pam_broker_socket.data(), R_OK | W_OK) == 0;
+    if (stationconnect_authentication) {
+      web_auth = std::make_unique<stationconnect::auth::web_auth_manager_t>(
+        stationconnect::auth::pam_conversation_factory(std::filesystem::path {pam_broker_socket}),
+        stationconnect::auth::secure_random_hex
+      );
+      BOOST_LOG(info) << "StationConnect PAM authentication active; persistent pairing is disabled"sv;
+    } else {
+      web_auth.reset();
+    }
+
+    https_server_t https_server {
+      config::nvhttp.cert,
+      config::nvhttp.pkey,
+      stationconnect_authentication,
+    };
     http_server_t http_server;
 
     // Verify certificates after establishing connection
-    https_server.verify = [add_cert](SSL *ssl) {
+    if (!stationconnect_authentication) {
+      https_server.verify = [add_cert](SSL *ssl) {
       crypto::x509_t x509 {
 #if OPENSSL_VERSION_MAJOR >= 3
         SSL_get1_peer_certificate(ssl)
@@ -1345,9 +1609,9 @@ namespace nvhttp {
       verified = 1;
 
       return verified;
-    };
+      };
 
-    https_server.on_verify_failed = [](resp_https_t resp, req_https_t req) {
+      https_server.on_verify_failed = [](resp_https_t resp, req_https_t req) {
       pt::ptree tree;
       auto g = util::fail_guard([&]() {
         std::ostringstream data;
@@ -1360,22 +1624,44 @@ namespace nvhttp {
       tree.put("root.<xmlattr>.status_code"s, 401);
       tree.put("root.<xmlattr>.query"s, req->path);
       tree.put("root.<xmlattr>.status_message"s, "The client is not authorized. Certificate verification failed."s);
-    };
+      };
+    }
 
     https_server.default_resource["GET"] = not_found<SunshineHTTPS>;
     https_server.resource["^/serverinfo$"]["GET"] = serverinfo<SunshineHTTPS>;
-    https_server.resource["^/pair$"]["GET"] = [&add_cert](auto resp, auto req) {
-      pair<SunshineHTTPS>(add_cert, resp, req);
+    if (stationconnect_authentication) {
+      https_server.resource["^/stationconnect/auth/start$"]["POST"] = auth_start;
+      https_server.resource["^/stationconnect/auth/respond$"]["POST"] = auth_respond;
+    } else {
+      https_server.resource["^/pair$"]["GET"] = [&add_cert](auto resp, auto req) {
+        pair<SunshineHTTPS>(add_cert, resp, req);
+      };
+    }
+    https_server.resource["^/applist$"]["GET"] = [](auto resp, auto req) {
+      if (require_authentication(resp, req)) {
+        applist(resp, req);
+      }
     };
-    https_server.resource["^/applist$"]["GET"] = applist;
-    https_server.resource["^/appasset$"]["GET"] = appasset;
+    https_server.resource["^/appasset$"]["GET"] = [](auto resp, auto req) {
+      if (require_authentication(resp, req)) {
+        appasset(resp, req);
+      }
+    };
     https_server.resource["^/launch$"]["GET"] = [&host_audio](auto resp, auto req) {
-      launch(host_audio, resp, req);
+      if (require_authentication(resp, req)) {
+        launch(host_audio, resp, req);
+      }
     };
     https_server.resource["^/resume$"]["GET"] = [&host_audio](auto resp, auto req) {
-      resume(host_audio, resp, req);
+      if (require_authentication(resp, req)) {
+        resume(host_audio, resp, req);
+      }
     };
-    https_server.resource["^/cancel$"]["GET"] = cancel;
+    https_server.resource["^/cancel$"]["GET"] = [](auto resp, auto req) {
+      if (require_authentication(resp, req)) {
+        cancel(resp, req);
+      }
+    };
 
     https_server.config.reuse_address = true;
     https_server.config.address = net::get_bind_address(address_family);
@@ -1383,9 +1669,11 @@ namespace nvhttp {
 
     http_server.default_resource["GET"] = not_found<SimpleWeb::HTTP>;
     http_server.resource["^/serverinfo$"]["GET"] = serverinfo<SimpleWeb::HTTP>;
-    http_server.resource["^/pair$"]["GET"] = [&add_cert](auto resp, auto req) {
-      pair<SimpleWeb::HTTP>(add_cert, resp, req);
-    };
+    if (!stationconnect_authentication) {
+      http_server.resource["^/pair$"]["GET"] = [&add_cert](auto resp, auto req) {
+        pair<SimpleWeb::HTTP>(add_cert, resp, req);
+      };
+    }
 
     http_server.config.reuse_address = true;
     http_server.config.address = net::get_bind_address(address_family);

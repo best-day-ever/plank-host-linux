@@ -36,6 +36,19 @@ endif()
 target_compile_options(sunshine PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>;$<$<COMPILE_LANGUAGE:CUDA>:${SUNSHINE_COMPILE_OPTIONS_CUDA};-std=c++17>)  # cmake-lint: disable=C0301
 target_link_options(sunshine PRIVATE ${SUNSHINE_LINK_OPTIONS})
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_library(STATIONCONNECT_PAM_LIBRARY NAMES pam REQUIRED)
+    add_executable(stationconnect-pam-broker
+            "${CMAKE_SOURCE_DIR}/src/auth/pam_broker.cpp"
+            "${CMAKE_SOURCE_DIR}/src/auth/pam_broker_protocol.h")
+    target_link_libraries(stationconnect-pam-broker PRIVATE ${STATIONCONNECT_PAM_LIBRARY})
+    target_compile_options(stationconnect-pam-broker PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+    target_link_options(stationconnect-pam-broker PRIVATE ${SUNSHINE_LINK_OPTIONS})
+    install(TARGETS stationconnect-pam-broker
+            RUNTIME DESTINATION bin
+            COMPONENT sunshine)
+endif()
+
 # Homebrew build fails the vite build if we set these environment variables
 if(${SUNSHINE_BUILD_HOMEBREW})
     set(NPM_SOURCE_ASSETS_DIR "")

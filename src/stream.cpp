@@ -541,6 +541,7 @@ namespace stream {
     std::uint32_t launch_session_id;  ///< RTSP launch-session ID associated with this stream.
     std::string client_cert;  ///< PEM certificate for the paired client owning the stream.
     std::string input_session_id;  ///< Stable client identity used to retain input devices across resume.
+    std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained until this stream is destroyed.
 
     safe::mail_raw_t::event_t<bool> shutdown_event;  ///< Event raised when the stream should shut down.
     safe::signal_t controlEnd;  ///< Signal raised when the control channel exits.
@@ -2312,6 +2313,7 @@ namespace stream {
       session->launch_session_id = launch_session.id;
       session->client_cert = launch_session.client_cert;
       session->input_session_id = launch_session.client_cert.empty() ? launch_session.unique_id : launch_session.client_cert;
+      session->authentication_session = launch_session.authentication_session;
 
       session->config = config;
 
