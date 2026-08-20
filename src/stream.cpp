@@ -1550,8 +1550,15 @@ namespace stream {
 
       payload = std::string_view {(char *) payload_new.data(), payload_new.size()};
 
-      // There are 2 bits for FEC block count for a maximum of 4 FEC blocks
-      constexpr auto MAX_FEC_BLOCKS = 4;
+      // Legacy multi-FEC uses two-bit block indices. StationConnect clients
+      // advertise high bits in multiFecFlags, extending the limit to 16.
+      constexpr auto LEGACY_MAX_FEC_BLOCKS = 4;
+      constexpr auto EXTENDED_MAX_FEC_BLOCKS = 16;
+      const bool extended_fec_blocks =
+        (session->config.mlFeatureFlags & ML_FF_EXTENDED_FEC_BLOCKS) != 0;
+      const auto max_fec_blocks = extended_fec_blocks ?
+                                    EXTENDED_MAX_FEC_BLOCKS :
+                                    LEGACY_MAX_FEC_BLOCKS;
 
       // The max number of data shards per block is found by solving this system of equations for D:
       // D = 255 - P
@@ -1568,13 +1575,16 @@ namespace stream {
 
       // If the number of FEC blocks needed exceeds the protocol limit, turn off FEC for this frame.
       // For normal FEC percentages, this should only happen for enormous frames (over 800 packets at 20%).
-      if (fec_blocks_needed > MAX_FEC_BLOCKS) {
-        BOOST_LOG(warning) << "Skipping FEC for abnormally large encoded frame (needed "sv << fec_blocks_needed << " FEC blocks)"sv;
+      if (fec_blocks_needed > max_fec_blocks) {
+        BOOST_LOG(warning) << "Skipping FEC for abnormally large encoded frame "sv
+                           << packet->frame_index() << " ("sv << payload.size() << " bytes, "sv
+                           << (packet->is_idr() ? "IDR, "sv : "P-frame, "sv)
+                           << "needed "sv << fec_blocks_needed << " FEC blocks)"sv;
         fecPercentage = 0;
-        fec_blocks_needed = MAX_FEC_BLOCKS;
+        fec_blocks_needed = max_fec_blocks;
       }
 
-      std::array<std::string_view, MAX_FEC_BLOCKS> fec_blocks;
+      std::array<std::string_view, EXTENDED_MAX_FEC_BLOCKS> fec_blocks;
       auto fec_blocks_begin = std::begin(fec_blocks);
       auto fec_blocks_end = std::begin(fec_blocks) + fec_blocks_needed;
 
@@ -1631,9 +1641,11 @@ namespace stream {
             inspect->packet.frameIndex = (uint32_t) packet->frame_index();
             inspect->packet.streamPacketIndex = ((uint32_t) lowseq + x) << 8;
 
-            // Match multiFecFlags with Moonlight
+            // Preserve the legacy low two bits and carry negotiated high bits
+            // in the otherwise-unused low nibble of multiFecFlags.
             inspect->packet.multiFecFlags = 0x10;
-            inspect->packet.multiFecBlocks = (blockIndex << 4) | ((fec_blocks_needed - 1) << 6);
+            inspect->packet.multiFecBlocks = 0;
+            setMultiFecBlockNumbers(&inspect->packet, blockIndex, fec_blocks_needed - 1);
 
             inspect->packet.flags = FLAG_CONTAINS_PIC_DATA;
             if (x == 0) {
@@ -1688,7 +1700,9 @@ namespace stream {
             inspect->rtp.sequenceNumber = util::endian::big<uint16_t>(lowseq + x);
             inspect->rtp.timestamp = util::endian::big<uint32_t>(timestamp);
 
-            inspect->packet.multiFecBlocks = (blockIndex << 4) | ((fec_blocks_needed - 1) << 6);
+            inspect->packet.multiFecFlags = 0x10;
+            inspect->packet.multiFecBlocks = 0;
+            setMultiFecBlockNumbers(&inspect->packet, blockIndex, fec_blocks_needed - 1);
             inspect->packet.frameIndex = (uint32_t) packet->frame_index();
 
             // Encrypt this shard if video encryption is enabled
