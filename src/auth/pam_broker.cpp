@@ -13,12 +13,9 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
-#include <mutex>
-#include <condition_variable>
 #include <set>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -28,6 +25,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace auth = stationconnect::auth;
@@ -39,38 +37,8 @@ namespace {
 
   volatile std::sig_atomic_t stopping = 0;  ///< Set by termination signals.
   volatile std::sig_atomic_t listening_descriptor = -1;  ///< Listener closed by the signal handler.
-  std::mutex clients_mutex;  ///< Protects connected client descriptors.
-  std::condition_variable clients_changed;  ///< Signals completion of PAM cleanup.
-  std::set<int> clients;  ///< Descriptors whose PAM worker is still active.
-
-  /**
-   * @brief Remove a client from the shutdown registry before its descriptor closes.
-   */
-  class registered_client_t {
-  public:
-    /**
-     * @brief Track one registered descriptor.
-     *
-     * @param descriptor Registered client descriptor.
-     */
-    explicit registered_client_t(int descriptor):
-        descriptor_ {descriptor} {
-    }
-
-    /**
-     * @brief Report that the client's PAM cleanup has completed.
-     */
-    ~registered_client_t() {
-      {
-        std::lock_guard lock {clients_mutex};
-        clients.erase(descriptor_);
-      }
-      clients_changed.notify_all();
-    }
-
-  private:
-    int descriptor_;  ///< Descriptor to remove from the registry.
-  };
+  volatile std::sig_atomic_t child_exited = 0;  ///< Set when a PAM worker exits.
+  std::set<pid_t> children;  ///< Active per-session PAM worker processes.
 
   /**
    * @brief Own and close a POSIX file descriptor.
@@ -341,7 +309,6 @@ namespace {
    * @param peer_uid Authenticated local peer UID.
    */
   void serve_client(int descriptor, uid_t peer_uid) {
-    registered_client_t registered {descriptor};
     descriptor_t connection {descriptor};
     auth::message_t begin;
     if (!auth::read_message(connection.get(), begin) ||
@@ -527,6 +494,28 @@ namespace {
   }
 
   /**
+   * @brief Record that one or more PAM worker processes exited.
+   */
+  void child_ended(int signal_number) {
+    (void) signal_number;
+    child_exited = 1;
+  }
+
+  /**
+   * @brief Reap completed PAM workers and update the active-session registry.
+   */
+  void reap_children() {
+    child_exited = 0;
+    while (true) {
+      const pid_t child = waitpid(-1, nullptr, WNOHANG);
+      if (child <= 0) {
+        break;
+      }
+      children.erase(child);
+    }
+  }
+
+  /**
    * @brief Print command-line syntax.
    *
    * @param program Program path.
@@ -569,9 +558,17 @@ int main(int argc, char **argv) {
   listening_descriptor = listener;
   std::signal(SIGINT, stop);
   std::signal(SIGTERM, stop);
+  struct sigaction child_action {};
+  child_action.sa_handler = child_ended;
+  sigemptyset(&child_action.sa_mask);
+  child_action.sa_flags = 0;
+  sigaction(SIGCHLD, &child_action, nullptr);
   std::clog << "StationConnect PAM broker listening on " << socket_path << '\n';
 
   while (!stopping) {
+    if (child_exited) {
+      reap_children();
+    }
     sockaddr_un peer_address {};
     socklen_t peer_length = sizeof(peer_address);
     const int client = accept4(listener, reinterpret_cast<sockaddr *>(&peer_address),
@@ -593,15 +590,34 @@ int main(int argc, char **argv) {
       close(client);
       continue;
     }
-    {
-      std::lock_guard lock {clients_mutex};
-      if (clients.size() >= 32) {
-        close(client);
-        continue;
-      }
-      clients.insert(client);
+    if (children.size() >= 32) {
+      close(client);
+      continue;
     }
-    std::thread {serve_client, client, credentials.uid}.detach();
+
+    sigset_t child_signal;
+    sigset_t previous_signals;
+    sigemptyset(&child_signal);
+    sigaddset(&child_signal, SIGCHLD);
+    sigprocmask(SIG_BLOCK, &child_signal, &previous_signals);
+    const pid_t child = fork();
+    if (child == 0) {
+      close(listener);
+      std::signal(SIGINT, SIG_DFL);
+      std::signal(SIGTERM, SIG_DFL);
+      std::signal(SIGCHLD, SIG_DFL);
+      sigprocmask(SIG_SETMASK, &previous_signals, nullptr);
+      serve_client(client, credentials.uid);
+      std::_Exit(0);
+    }
+
+    close(client);
+    if (child > 0) {
+      children.insert(child);
+    } else {
+      std::cerr << "Unable to fork PAM broker worker: " << std::strerror(errno) << '\n';
+    }
+    sigprocmask(SIG_SETMASK, &previous_signals, nullptr);
   }
 
   const int descriptor = listening_descriptor;
@@ -609,12 +625,15 @@ int main(int argc, char **argv) {
   if (descriptor >= 0) {
     close(descriptor);
   }
-  {
-    std::unique_lock lock {clients_mutex};
-    for (const int client : clients) {
-      shutdown(client, SHUT_RDWR);
+  reap_children();
+  for (const pid_t child : children) {
+    kill(child, SIGTERM);
+  }
+  while (!children.empty()) {
+    const pid_t child = *children.begin();
+    while (waitpid(child, nullptr, 0) < 0 && errno == EINTR) {
     }
-    clients_changed.wait(lock, []() { return clients.empty(); });
+    children.erase(child);
   }
   unlink(socket_path.c_str());
   return 0;
