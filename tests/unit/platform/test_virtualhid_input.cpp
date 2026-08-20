@@ -206,6 +206,9 @@ TEST_F(VirtualHidDeviceTest, CreatesEveryDeviceWithFakeRuntime) {
   EXPECT_TRUE(context()->mouse->is_open());
   EXPECT_TRUE(client()->touch->is_open());
   EXPECT_TRUE(client()->pen->is_open());
+  EXPECT_EQ(client()->pen->profile().name, "StationConnect Wacom Tablet");
+  EXPECT_EQ(client()->pen->profile().vendor_id, 0x1209);
+  EXPECT_EQ(client()->pen->profile().product_id, 0x0006);
 
   const auto runtime = platf::virtualhid::create_runtime(lvh::BackendKind::fake);
   ASSERT_NE(runtime, nullptr);

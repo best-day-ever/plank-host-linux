@@ -467,6 +467,11 @@ namespace platf::virtualhid {
     if (capabilities.supports_pen_tablet) {
       lvh::CreatePenTabletOptions options;
       options.profile = lvh::profiles::pen_tablet();
+      // Flame's tablet preferences and edge gestures use the Xorg Wacom
+      // driver interface. Keep libvirtualhid's own USB identity, but expose
+      // the generic pen as Wacom-compatible so the stock 70-wacom InputClass
+      // can select that driver without any host Xorg configuration changes.
+      options.profile.name = "StationConnect Wacom Tablet";
       options.stable_id = "sunshine-pen-tablet";
       auto created = global->runtime->create_pen_tablet(options);
       if (created) {
