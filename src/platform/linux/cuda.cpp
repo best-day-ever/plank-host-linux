@@ -4,8 +4,11 @@
  */
 // standard includes
 #include <bitset>
+#include <condition_variable>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <filesystem>
+#include <mutex>
 #include <thread>
 
 // lib includes
@@ -355,6 +358,314 @@ namespace cuda {
       }
       return sws.convert_nv12(frame->data[0], frame->data[1], frame->linesize[0], frame->linesize[1], tex_obj(((img_t *) &img)->tex), stream.get());
     }
+  };
+
+  /**
+   * @brief NvFBC CUDA readback device for latency-bounded x264 encoding.
+   *
+   * Native x264rgb receives pinned BGR0 directly. The 10-bit x264 path first
+   * creates compact 8-bit identity GBR planes on CUDA, reads those planes back,
+   * and expands them to full-range 10-bit samples on CPU. This avoids transferring
+   * the 49.8 MB 16-bit carrier produced by direct CUDA 10-bit conversion at 4K.
+   */
+  class cuda_software_t final: public platf::avcodec_encode_device_t {
+  public:
+    /**
+     * @brief Release CUDA resources and stop depth-expansion workers.
+     */
+    ~cuda_software_t() override {
+      for (auto &worker : workers) {
+        worker.request_stop();
+      }
+      work_ready.notify_all();
+      workers.clear();
+
+      if (device_compact && cdf) {
+        CU_CHECK_IGNORE(cdf->cuMemFree(device_compact), "Couldn't free compact identity planes");
+      }
+      if (host_readback && host_free) {
+        CU_CHECK_IGNORE(host_free(host_readback), "Couldn't free pinned software-encoder readback");
+      }
+      if (cuda_driver) {
+        dlclose(cuda_driver);
+      }
+    }
+
+    /**
+     * @brief Initialize capture dimensions and CUDA stream state.
+     *
+     * @param in_width Captured frame width.
+     * @param in_height Captured frame height.
+     * @param requested_format Software format selected during encoder negotiation.
+     * @return 0 on success; -1 on invalid state.
+     */
+    int init(int in_width, int in_height, platf::pix_fmt_e requested_format) {
+      if (!cdf || (requested_format != platf::pix_fmt_e::yuv444p && requested_format != platf::pix_fmt_e::yuv444p16)) {
+        return -1;
+      }
+
+      data = reinterpret_cast<void *>(0x1);
+      width = in_width;
+      height = in_height;
+      capture_format = requested_format;
+      stream = make_stream();
+      cuda_driver = dlopen("libcuda.so.1", RTLD_LAZY | RTLD_LOCAL);
+      if (cuda_driver) {
+        host_alloc = reinterpret_cast<host_alloc_fn_t>(dlsym(cuda_driver, "cuMemHostAlloc"));
+        host_free = reinterpret_cast<host_free_fn_t>(dlsym(cuda_driver, "cuMemFreeHost"));
+      }
+      if (!stream || !host_alloc || !host_free) {
+        BOOST_LOG(error) << "CUDA driver does not expose pinned-host allocation functions"sv;
+        return -1;
+      }
+      return 0;
+    }
+
+    /**
+     * @brief Attach the CPU frame that will be submitted to x264.
+     *
+     * @param new_frame FFmpeg software frame.
+     * @param hw_frames_ctx Unused hardware-frame context; must be null.
+     * @return 0 on success; -1 when the negotiated format is unsupported.
+     */
+    int set_frame(AVFrame *new_frame, AVBufferRef *hw_frames_ctx) override {
+      host_frame.reset(new_frame);
+      frame = new_frame;
+      if (hw_frames_ctx || !frame) {
+        return -1;
+      }
+
+      const bool native_bgr0 = frame->format == AV_PIX_FMT_BGR0;
+      const bool identity_10bit = frame->format == AV_PIX_FMT_YUV444P10LE;
+      if ((!native_bgr0 && !identity_10bit) ||
+          (native_bgr0 && capture_format != platf::pix_fmt_e::yuv444p) ||
+          (identity_10bit && capture_format != platf::pix_fmt_e::yuv444p16)) {
+        BOOST_LOG(error) << "CUDA software encode supports only native BGR0 and identity YUV444P10"sv;
+        return -1;
+      }
+
+      output_width = frame->width;
+      output_height = frame->height;
+      const auto plane_size = static_cast<std::size_t>(output_width) * output_height;
+      native_direct = native_bgr0 && output_width == width && output_height == height;
+      host_readback_size = native_bgr0 ?
+                             static_cast<std::size_t>(width) * height * 4U :
+                             plane_size * 3U;
+      CU_CHECK(host_alloc(&host_readback, host_readback_size, 1U), "Couldn't allocate pinned software-encoder readback");
+
+      if (native_bgr0) {
+        if (native_direct) {
+          frame->data[0] = static_cast<std::uint8_t *>(host_readback);
+          frame->linesize[0] = output_width * 4;
+        } else {
+          if (av_frame_get_buffer(frame, 64) < 0) {
+            return -1;
+          }
+          bgr_scaler.reset(sws_getContext(
+            width,
+            height,
+            AV_PIX_FMT_BGR0,
+            output_width,
+            output_height,
+            AV_PIX_FMT_BGR0,
+            SWS_FAST_BILINEAR,
+            nullptr,
+            nullptr,
+            nullptr
+          ));
+          if (!bgr_scaler) {
+            return -1;
+          }
+        }
+        mode = mode_e::native_bgr0;
+        return 0;
+      }
+
+      if (av_frame_get_buffer(frame, 64) < 0) {
+        BOOST_LOG(error) << "Couldn't allocate x264 10-bit software frame"sv;
+        return -1;
+      }
+      CU_CHECK(cdf->cuMemAlloc(&device_compact, host_readback_size), "Couldn't allocate compact CUDA identity planes");
+
+      auto converter = sws_t::make(width, height, output_width, output_height, width * 4);
+      if (!converter) {
+        return -1;
+      }
+      sws = std::move(*converter);
+      mode = mode_e::identity_10bit;
+      start_workers();
+      return 0;
+    }
+
+    /**
+     * @brief Apply identity GBR coefficients to the CUDA converter.
+     */
+    void apply_colorspace() override {
+      if (mode == mode_e::identity_10bit) {
+        sws.apply_colorspace(colorspace);
+      }
+    }
+
+    /**
+     * @brief Convert and read back one NvFBC CUDA image.
+     *
+     * @param img Captured NvFBC CUDA image.
+     * @return 0 on success; -1 on CUDA or conversion failure.
+     */
+    int convert(platf::img_t &img) override {
+      auto &texture = static_cast<cuda::img_t &>(img).tex;
+      if (mode == mode_e::native_bgr0) {
+        CUDA_MEMCPY2D copy {};
+        copy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
+        copy.srcArray = reinterpret_cast<CUarray>(texture.array);
+        copy.dstMemoryType = CU_MEMORYTYPE_HOST;
+        copy.dstHost = host_readback;
+        copy.dstPitch = width * 4;
+        copy.WidthInBytes = static_cast<std::size_t>(width) * 4U;
+        copy.Height = height;
+        CU_CHECK(cdf->cuMemcpy2DAsync(&copy, stream.get()), "Couldn't read back native BGR0 frame");
+      } else if (mode == mode_e::identity_10bit) {
+        auto *base = reinterpret_cast<std::uint8_t *>(static_cast<std::uintptr_t>(device_compact));
+        const auto plane_size = static_cast<std::size_t>(output_width) * output_height;
+        if (sws.convert_yuv444(base, base + plane_size, base + plane_size * 2U, output_width, texture.texture.point, stream.get())) {
+          return -1;
+        }
+        CU_CHECK(cdf->cuMemcpyDtoHAsync(host_readback, device_compact, host_readback_size, stream.get()), "Couldn't read back compact identity planes");
+      } else {
+        return -1;
+      }
+
+      CU_CHECK(cdf->cuStreamSynchronize(stream.get()), "Couldn't synchronize software-encoder readback");
+      if (mode == mode_e::native_bgr0 && !native_direct) {
+        const std::uint8_t *source[] = {static_cast<const std::uint8_t *>(host_readback)};
+        const int source_linesize[] = {width * 4};
+        if (sws_scale(bgr_scaler.get(), source, source_linesize, 0, height, frame->data, frame->linesize) != output_height) {
+          return -1;
+        }
+      } else if (mode == mode_e::identity_10bit) {
+        expand_10bit();
+      }
+      return 0;
+    }
+
+  private:
+    /**
+     * @brief CUDA pinned-host allocation function loaded from the display driver.
+     */
+    using host_alloc_fn_t = CUresult(CUDAAPI *)(void **, std::size_t, unsigned int);
+
+    /**
+     * @brief CUDA pinned-host release function loaded from the display driver.
+     */
+    using host_free_fn_t = CUresult(CUDAAPI *)(void *);
+
+    /**
+     * @brief Active CUDA-to-software conversion mode.
+     */
+    enum class mode_e {
+      unset,  ///< Frame format has not been attached.
+      native_bgr0,  ///< Pinned native BGRA/BGR0 readback for libx264rgb.
+      identity_10bit  ///< Compact identity GBR readback followed by CPU depth expansion.
+    };
+
+    /**
+     * @brief Start persistent workers used for 8-to-10-bit plane expansion.
+     */
+    void start_workers() {
+      const auto available = std::max(1U, std::thread::hardware_concurrency());
+      const auto worker_count = std::min(7U, available > 1U ? available - 1U : 0U);
+      workers.reserve(worker_count);
+      for (unsigned int index = 0; index < worker_count; ++index) {
+        workers.emplace_back([this, index, worker_count](std::stop_token stop) {
+          std::uint64_t observed_generation = 0;
+          while (!stop.stop_requested()) {
+            {
+              std::unique_lock lock {work_mutex};
+              work_ready.wait(lock, stop, [&]() {
+                return generation != observed_generation;
+              });
+              if (stop.stop_requested()) {
+                return;
+              }
+              observed_generation = generation;
+            }
+
+            expand_rows(index, worker_count + 1U);
+            {
+              std::lock_guard lock {work_mutex};
+              if (--workers_pending == 0) {
+                work_done.notify_one();
+              }
+            }
+          }
+        });
+      }
+    }
+
+    /**
+     * @brief Expand a strided share of compact 8-bit rows to full-range 10-bit.
+     *
+     * @param share_index Worker share index.
+     * @param share_count Total worker and caller shares.
+     */
+    void expand_rows(unsigned int share_index, unsigned int share_count) {
+      const auto *source = static_cast<const std::uint8_t *>(host_readback);
+      for (std::size_t row = share_index; row < static_cast<std::size_t>(output_height) * 3U; row += share_count) {
+        const auto plane = row / output_height;
+        const auto plane_row = row % output_height;
+        const auto *source_row = source + row * output_width;
+        auto *destination_row = reinterpret_cast<std::uint16_t *>(frame->data[plane] + plane_row * frame->linesize[plane]);
+        for (int x = 0; x < output_width; ++x) {
+          destination_row[x] = video::expand_8bit_to_10bit(source_row[x]);
+        }
+      }
+    }
+
+    /**
+     * @brief Expand all compact identity planes and wait for worker completion.
+     *
+     */
+    void expand_10bit() {
+      const auto worker_count = static_cast<unsigned int>(workers.size());
+      {
+        std::lock_guard lock {work_mutex};
+        workers_pending = worker_count;
+        ++generation;
+      }
+      work_ready.notify_all();
+      expand_rows(worker_count, worker_count + 1U);
+
+      if (worker_count != 0) {
+        std::unique_lock lock {work_mutex};
+        work_done.wait(lock, [&]() {
+          return workers_pending == 0;
+        });
+      }
+    }
+
+    frame_t host_frame;  ///< Owned FFmpeg software frame.
+    video::sws_t bgr_scaler;  ///< CPU BGR0 scaler used only when stream and capture sizes differ.
+    sws_t sws;  ///< CUDA identity-GBR converter.
+    stream_t stream;  ///< CUDA conversion and readback stream.
+    std::vector<std::jthread> workers;  ///< Persistent CPU depth-expansion workers.
+    std::mutex work_mutex;  ///< Protects expansion generation and completion state.
+    std::condition_variable_any work_ready;  ///< Signals a new compact frame to workers.
+    std::condition_variable work_done;  ///< Signals completion of all worker shares.
+    std::uint64_t generation = 0;  ///< Current compact-frame expansion generation.
+    unsigned int workers_pending = 0;  ///< Workers still expanding the current frame.
+    CUdeviceptr device_compact = 0;  ///< Compact three-plane 8-bit CUDA surface.
+    void *cuda_driver = nullptr;  ///< Dynamic CUDA driver handle for pinned-host APIs.
+    host_alloc_fn_t host_alloc = nullptr;  ///< Pinned-host allocation entry point.
+    host_free_fn_t host_free = nullptr;  ///< Pinned-host release entry point.
+    void *host_readback = nullptr;  ///< Pinned native or compact host readback.
+    std::size_t host_readback_size = 0;  ///< Pinned readback allocation size in bytes.
+    int width = 0;  ///< NvFBC capture width.
+    int height = 0;  ///< NvFBC capture height.
+    int output_width = 0;  ///< Encoded frame width.
+    int output_height = 0;  ///< Encoded frame height.
+    bool native_direct = false;  ///< Whether pinned BGR0 can be passed to x264rgb without scaling.
+    platf::pix_fmt_e capture_format = platf::pix_fmt_e::unknown;  ///< Negotiated software capture format.
+    mode_e mode = mode_e::unset;  ///< Active readback and conversion mode.
   };
 
   /**
@@ -807,6 +1118,18 @@ namespace cuda {
     }
 
     return cuda;
+  }
+
+  std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_software_encode_device(int width, int height, platf::pix_fmt_e pix_fmt) {
+    if (init()) {
+      return nullptr;
+    }
+
+    auto device = std::make_unique<cuda_software_t>();
+    if (device->init(width, height, pix_fmt)) {
+      return nullptr;
+    }
+    return device;
   }
 
   std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_encode_device(int width, int height, platf::pix_fmt_e pix_fmt) {
@@ -1379,6 +1702,16 @@ namespace cuda {
        */
       std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device(platf::pix_fmt_e pix_fmt) override {
         return ::cuda::make_avcodec_encode_device(width, height, true);
+      }
+
+      /**
+       * @brief Create the NvFBC CUDA readback device used by software x264.
+       *
+       * @param pix_fmt Software pixel format requested by x264.
+       * @return Constructed CUDA-to-CPU conversion device.
+       */
+      std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_software_encode_device(platf::pix_fmt_e pix_fmt) override {
+        return ::cuda::make_avcodec_software_encode_device(width, height, pix_fmt);
       }
 
       std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_encode_device(platf::pix_fmt_e pix_fmt) override {

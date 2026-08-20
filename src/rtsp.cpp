@@ -1212,10 +1212,12 @@ namespace rtsp_stream {
 
     const bool identity_gbr_requested = (config.monitor.encoderCscMode >> 1) == COLORSPACE_IDENTITY_GBR;
     const bool identity_gbr_flagged = (config.mlFeatureFlags & ML_FF_IDENTITY_GBR_444) != 0;
-    const bool identity_gbr_valid = config.monitor.videoFormat == 1 &&
-                                    config.monitor.dynamicRange == 1 &&
-                                    config.monitor.chromaSamplingType == 1 &&
-                                    (config.monitor.encoderCscMode & 0x1) != 0;
+    const bool identity_gbr_valid =
+      config.monitor.chromaSamplingType == 1 &&
+      (config.monitor.encoderCscMode & 0x1) != 0 &&
+      ((config.monitor.videoFormat == 0 &&
+        (config.monitor.dynamicRange == 0 || config.monitor.dynamicRange == 1)) ||
+       (config.monitor.videoFormat == 1 && config.monitor.dynamicRange == 1));
     if (identity_gbr_requested != identity_gbr_flagged ||
         (identity_gbr_requested && !identity_gbr_valid)) {
       BOOST_LOG(warning) << "Rejecting inconsistent identity GBR stream request"sv;

@@ -59,7 +59,14 @@ TEST(VideoColorspaceTest, IdentityGbrUsesMatrixZeroMetadata) {
   EXPECT_FALSE(video::colorspace_is_hdr(colorspace));
 }
 
-TEST(VideoColorspaceTest, IdentityGbrRequiresFullRange10Bit444) {
+TEST(VideoColorspaceTest, EightBitExpansionUsesFullTenBitRange) {
+  EXPECT_EQ(video::expand_8bit_to_10bit(0), 0);
+  EXPECT_EQ(video::expand_8bit_to_10bit(43), 173);
+  EXPECT_EQ(video::expand_8bit_to_10bit(128), 514);
+  EXPECT_EQ(video::expand_8bit_to_10bit(255), 1023);
+}
+
+TEST(VideoColorspaceTest, IdentityGbrRequiresFullRange444) {
   video::config_t config {};
   config.encoderCscMode = COLORSPACE_IDENTITY_GBR << 1;
   config.dynamicRange = 1;
@@ -68,7 +75,7 @@ TEST(VideoColorspaceTest, IdentityGbrRequiresFullRange10Bit444) {
 
   config.encoderCscMode |= 1;
   config.dynamicRange = 0;
-  EXPECT_EQ(video::colorspace_from_client_config(config, false).colorspace, video::colorspace_e::rec709);
+  EXPECT_EQ(video::colorspace_from_client_config(config, false).colorspace, video::colorspace_e::identity_gbr);
 
   config.dynamicRange = 1;
   config.chromaSamplingType = 0;
@@ -76,6 +83,32 @@ TEST(VideoColorspaceTest, IdentityGbrRequiresFullRange10Bit444) {
 
   config.chromaSamplingType = 1;
   EXPECT_EQ(video::colorspace_from_client_config(config, false).colorspace, video::colorspace_e::identity_gbr);
+}
+
+TEST(VideoEncoderTest, NativeX264RgbRequiresEightBitIdentity444) {
+  video::config_t config {};
+  config.videoFormat = 0;
+  config.dynamicRange = 0;
+  config.chromaSamplingType = 1;
+  const video::sunshine_colorspace_t identity_8bit {
+    video::colorspace_e::identity_gbr,
+    true,
+    8,
+  };
+
+  EXPECT_TRUE(video::use_native_x264rgb("libx264"sv, config, identity_8bit));
+
+  config.dynamicRange = 1;
+  EXPECT_FALSE(video::use_native_x264rgb("libx264"sv, config, identity_8bit));
+  config.dynamicRange = 0;
+  config.chromaSamplingType = 0;
+  EXPECT_FALSE(video::use_native_x264rgb("libx264"sv, config, identity_8bit));
+  config.chromaSamplingType = 1;
+
+  auto rec709 = identity_8bit;
+  rec709.colorspace = video::colorspace_e::rec709;
+  EXPECT_FALSE(video::use_native_x264rgb("libx264"sv, config, rec709));
+  EXPECT_FALSE(video::use_native_x264rgb("h264_nvenc"sv, config, identity_8bit));
 }
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
@@ -107,6 +140,9 @@ INSTANTIATE_TEST_SUITE_P(
 #if !defined(__APPLE__)
     &video::nvenc,
 #endif
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    &video::software_cuda,
+#endif
 #ifdef _WIN32
     &video::amdvce,
     &video::quicksync,
@@ -120,12 +156,19 @@ INSTANTIATE_TEST_SUITE_P(
     &video::software
   ),
   [](const auto &info) {
-    return std::string(info.param->name);
+    auto name = std::string(info.param->name);
+    std::ranges::replace(name, '-', '_');
+    return name;
   }
 );
 
 TEST_P(EncoderTest, ValidateEncoder) {
-  // todo:: test something besides fixture setup
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+  if (GetParam() == &video::software_cuda) {
+    EXPECT_TRUE(video::software_cuda.h264[video::encoder_t::YUV444]);
+    EXPECT_TRUE(video::software_cuda.h264[video::encoder_t::DYNAMIC_RANGE_YUV444]);
+  }
+#endif
 }
 
 /**

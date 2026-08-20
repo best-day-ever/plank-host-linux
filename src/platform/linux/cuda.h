@@ -29,6 +29,15 @@ namespace cuda {
   }
 
   std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device(int width, int height, bool vram);
+  /**
+   * @brief Create an NvFBC CUDA-to-CPU encode device for x264.
+   *
+   * @param width Captured frame width.
+   * @param height Captured frame height.
+   * @param pix_fmt Software pixel format requested by the encoder.
+   * @return CUDA readback encode device, or null on initialization failure.
+   */
+  std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_software_encode_device(int width, int height, platf::pix_fmt_e pix_fmt);
   std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_encode_device(int width, int height, platf::pix_fmt_e pix_fmt);
 
   /**

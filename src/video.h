@@ -65,6 +65,16 @@ namespace video {
   int select_h264_profile(std::string_view encoder_name, const config_t &config, int amd_coder);
 
   /**
+   * @brief Decide whether an FFmpeg software H.264 session should use native RGB input.
+   *
+   * @param configured_encoder FFmpeg encoder name configured for the software backend.
+   * @param config Encoding configuration requested by the client.
+   * @param colorspace Effective stream colorspace.
+   * @return True when `libx264rgb` and `AV_PIX_FMT_BGR0` should replace `libx264` and planar input.
+   */
+  bool use_native_x264rgb(std::string_view configured_encoder, const config_t &config, const sunshine_colorspace_t &colorspace);
+
+  /**
    * @brief Map an FFmpeg hardware device type to Sunshine's memory type.
    *
    * @param type FFmpeg hardware device type reported by the encoder backend.
@@ -151,6 +161,7 @@ namespace video {
      * @param avcodec_pix_fmt_yuv444_8bit AVCodec 8-bit YUV444 pixel format.
      * @param avcodec_pix_fmt_yuv444_10bit AVCodec 10-bit YUV444 pixel format.
      * @param init_avcodec_hardware_input_buffer_function Hardware input buffer initialization callback.
+     * @param capture_dev_type Optional capture-memory override for a software encoder.
      */
     encoder_platform_formats_avcodec(
       const AVHWDeviceType &avcodec_base_dev_type,
@@ -160,7 +171,8 @@ namespace video {
       const AVPixelFormat &avcodec_pix_fmt_10bit,
       const AVPixelFormat &avcodec_pix_fmt_yuv444_8bit,
       const AVPixelFormat &avcodec_pix_fmt_yuv444_10bit,
-      const init_buffer_function_t &init_avcodec_hardware_input_buffer_function
+      const init_buffer_function_t &init_avcodec_hardware_input_buffer_function,
+      const platf::mem_type_e capture_dev_type = platf::mem_type_e::unknown
     ):
         avcodec_base_dev_type {avcodec_base_dev_type},
         avcodec_derived_dev_type {avcodec_derived_dev_type},
@@ -170,7 +182,9 @@ namespace video {
         avcodec_pix_fmt_yuv444_8bit {avcodec_pix_fmt_yuv444_8bit},
         avcodec_pix_fmt_yuv444_10bit {avcodec_pix_fmt_yuv444_10bit},
         init_avcodec_hardware_input_buffer {init_avcodec_hardware_input_buffer_function} {
-      dev_type = map_base_dev_type(avcodec_base_dev_type);
+      dev_type = capture_dev_type == platf::mem_type_e::unknown ?
+                   map_base_dev_type(avcodec_base_dev_type) :
+                   capture_dev_type;
       pix_fmt_8bit = map_pix_fmt(avcodec_pix_fmt_8bit);
       pix_fmt_10bit = map_pix_fmt(avcodec_pix_fmt_10bit);
       pix_fmt_yuv444_8bit = map_pix_fmt(avcodec_pix_fmt_yuv444_8bit);
@@ -385,6 +399,9 @@ namespace video {
 
   // encoders
   extern encoder_t software;
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+  extern encoder_t software_cuda;
+#endif
 
 #if !defined(__APPLE__)
   extern encoder_t nvenc;  // available for windows and linux
@@ -614,6 +631,7 @@ namespace video {
   extern int active_av1_mode;
   extern bool last_encoder_probe_supported_ref_frames_invalidation;
   extern std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec;  // 0 - H.264, 1 - HEVC, 2 - AV1
+  extern bool last_encoder_probe_supported_h264_10bit_444;  ///< Whether the selected encoder accepts H.264 10-bit 4:4:4 input.
 
   void capture(
     safe::mail_t mail,

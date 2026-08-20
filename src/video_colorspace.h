@@ -11,6 +11,16 @@ extern "C" {
 namespace video {
 
   /**
+   * @brief Expand an 8-bit full-range sample to the corresponding 10-bit value.
+   *
+   * @param value Full-range 8-bit sample.
+   * @return Rounded full-range 10-bit sample.
+   */
+  constexpr unsigned short expand_8bit_to_10bit(unsigned char value) {
+    return static_cast<unsigned short>((static_cast<unsigned int>(value) * 1023U + 127U) / 255U);
+  }
+
+  /**
    * @brief Enumerates supported colorspace options.
    */
   enum class colorspace_e {

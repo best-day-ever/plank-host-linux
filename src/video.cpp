@@ -159,6 +159,16 @@ namespace video {
     return AV_PROFILE_H264_HIGH;
   }
 
+  bool use_native_x264rgb(std::string_view configured_encoder, const config_t &config, const sunshine_colorspace_t &colorspace) {
+    return configured_encoder == "libx264"sv &&
+           config.videoFormat == 0 &&
+           config.dynamicRange == 0 &&
+           config.chromaSamplingType == 1 &&
+           colorspace.colorspace == colorspace_e::identity_gbr &&
+           colorspace.full_range &&
+           colorspace.bit_depth == 8;
+  }
+
   /**
    * @brief Create an FFmpeg hardware device buffer for D3D11VA input.
    *
@@ -206,6 +216,12 @@ namespace video {
      * @return Conversion status.
      */
     int convert(platf::img_t &img) override {
+      if (direct_bgr0) {
+        frame->data[0] = img.data;
+        frame->linesize[0] = img.row_pitch;
+        return 0;
+      }
+
       // If we need to add aspect ratio padding, we need to scale into an intermediate output buffer
       bool requires_padding = (sw_frame->width != sws_output_frame->width || sw_frame->height != sws_output_frame->height);
 
@@ -279,6 +295,9 @@ namespace video {
      * @brief Apply the configured colorspace metadata to the active frame.
      */
     void apply_colorspace() override {
+      if (direct_bgr0) {
+        return;
+      }
       auto avcodec_colorspace = avcodec_colorspace_from_sunshine_colorspace(colorspace);
       sws_setColorspaceDetails(sws.get(), sws_getCoefficients(SWS_CS_DEFAULT), 0, sws_getCoefficients(avcodec_colorspace.software_format), avcodec_colorspace.range - 1, 0, 1 << 16, 1 << 16);
     }
@@ -318,6 +337,12 @@ namespace video {
 
       // Fill aspect ratio padding in the destination frame
       prefill();
+
+      direct_bgr0 = !hardware && format == AV_PIX_FMT_BGR0 &&
+                    in_width == frame->width && in_height == frame->height;
+      if (direct_bgr0) {
+        return 0;
+      }
 
       auto out_width = frame->width;
       auto out_height = frame->height;
@@ -385,6 +410,7 @@ namespace video {
     // Offset of input image to output frame in pixels
     int offsetW;  ///< Offset w.
     int offsetH;  ///< Offset h.
+    bool direct_bgr0 = false;  ///< Whether captured BGR0 can be submitted without conversion or copying.
   };
 
   /**
@@ -419,11 +445,13 @@ namespace video {
      * @param avcodec_ctx Open FFmpeg codec context for the selected encoder.
      * @param encode_device Platform encode device that supplies frames to FFmpeg.
      * @param inject Whether SPS/VPS replacement data should be injected.
+     * @param warmup Whether to discard one startup encode before publishing packets.
      */
-    avcodec_encode_session_t(avcodec_ctx_t &&avcodec_ctx, std::unique_ptr<platf::avcodec_encode_device_t> encode_device, int inject):
+    avcodec_encode_session_t(avcodec_ctx_t &&avcodec_ctx, std::unique_ptr<platf::avcodec_encode_device_t> encode_device, int inject, bool warmup):
         avcodec_ctx {std::move(avcodec_ctx)},
         device {std::move(encode_device)},
-        inject {inject} {
+        inject {inject},
+        warmup_pending {warmup} {
     }
 
     /**
@@ -460,6 +488,7 @@ namespace video {
       vps = std::move(other.vps);
 
       inject = other.inject;
+      warmup_pending = other.warmup_pending;
 
       return *this;
     }
@@ -520,6 +549,7 @@ namespace video {
 
     // inject sps/vps data into idr pictures
     int inject;  ///< Number of upcoming IDR frames that should receive rewritten parameter sets.
+    bool warmup_pending;  ///< Whether the first encode should be discarded to absorb x264 startup allocation.
   };
 
   /**
@@ -1225,6 +1255,41 @@ namespace video {
     H264_ONLY | PARALLEL_ENCODING | ALWAYS_REPROBE | YUV444_SUPPORT
   };
 
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+  /**
+   * @brief NvFBC/CUDA capture with x264 software encoding.
+   */
+  encoder_t software_cuda {
+    "software-cuda"sv,
+    std::make_unique<encoder_platform_formats_avcodec>(
+      AV_HWDEVICE_TYPE_NONE,
+      AV_HWDEVICE_TYPE_NONE,
+      AV_PIX_FMT_NONE,
+      AV_PIX_FMT_NONE,
+      AV_PIX_FMT_NONE,
+      AV_PIX_FMT_YUV444P,
+      AV_PIX_FMT_YUV444P10,
+      nullptr,
+      platf::mem_type_e::cuda
+    ),
+    {},
+    {},
+    {
+      {
+        {"preset"s, &config::video.sw.sw_preset},
+        {"tune"s, &config::video.sw.sw_tune},
+      },
+      {},
+      {},
+      {},
+      {},
+      {},
+      "libx264"s,
+    },
+    H264_ONLY | PARALLEL_ENCODING | ALWAYS_REPROBE | YUV444_SUPPORT
+  };
+#endif
+
 #if defined(__linux__) || defined(linux) || defined(__linux) || defined(__FreeBSD__)
   /**
    * @brief VA-API.
@@ -1457,6 +1522,9 @@ namespace video {
 #ifdef __APPLE__
     &videotoolbox,
 #endif
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    &software_cuda,
+#endif
     &software
   };
 
@@ -1465,6 +1533,7 @@ namespace video {
   int active_av1_mode;  ///< AV1 mode selected by the most recent encoder probe.
   bool last_encoder_probe_supported_ref_frames_invalidation = false;  ///< Whether the last probe found reference-frame invalidation support.
   std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {};  ///< YUV444 support discovered for each probed codec.
+  bool last_encoder_probe_supported_h264_10bit_444 = false;  ///< H.264 10-bit 4:4:4 support discovered for the selected encoder.
 
   /**
    * @brief Recreate a display capture object after a capture failure.
@@ -1818,9 +1887,27 @@ namespace video {
    */
   int encode_avcodec(int64_t frame_nr, avcodec_encode_session_t &session, safe::mail_raw_t::queue_t<packet_t> &packets, void *channel_data, std::optional<std::chrono::steady_clock::time_point> frame_timestamp) {
     auto &frame = session.device->frame;
-    frame->pts = frame_nr;
-
     auto &ctx = session.avcodec_ctx;
+
+    if (session.warmup_pending) {
+      frame->pts = -1;
+      frame->pict_type = AV_PICTURE_TYPE_I;
+      frame->flags |= AV_FRAME_FLAG_KEY;
+      auto warmup_status = avcodec_send_frame(ctx.get(), frame);
+      if (warmup_status < 0) {
+        return warmup_status;
+      }
+      packet_raw_avcodec warmup_packet;
+      while ((warmup_status = avcodec_receive_packet(ctx.get(), warmup_packet.av_packet)) >= 0) {
+        av_packet_unref(warmup_packet.av_packet);
+      }
+      if (warmup_status != AVERROR(EAGAIN) && warmup_status != AVERROR_EOF) {
+        return warmup_status;
+      }
+      session.warmup_pending = false;
+    }
+
+    frame->pts = frame_nr;
 
     auto &sps = session.sps;
     auto &vps = session.vps;
@@ -1990,15 +2077,19 @@ namespace video {
       }
     }
 
-    auto codec = avcodec_find_encoder_by_name(video_format.name.c_str());
+    auto colorspace = encode_device->colorspace;
+    const bool native_x264rgb =
+      use_native_x264rgb(video_format.name, config, colorspace);
+    const std::string codec_name = native_x264rgb ? "libx264rgb"s : video_format.name;
+    auto codec = avcodec_find_encoder_by_name(codec_name.c_str());
     if (!codec) {
-      BOOST_LOG(error) << "Couldn't open ["sv << video_format.name << ']';
+      BOOST_LOG(error) << "Couldn't open ["sv << codec_name << ']';
 
       return nullptr;
     }
 
-    auto colorspace = encode_device->colorspace;
-    auto sw_fmt = (colorspace.bit_depth == 8 && config.chromaSamplingType == 0)  ? platform_formats->avcodec_pix_fmt_8bit :
+    auto sw_fmt = native_x264rgb ? AV_PIX_FMT_BGR0 :
+                  (colorspace.bit_depth == 8 && config.chromaSamplingType == 0)  ? platform_formats->avcodec_pix_fmt_8bit :
                   (colorspace.bit_depth == 8 && config.chromaSamplingType == 1)  ? platform_formats->avcodec_pix_fmt_yuv444_8bit :
                   (colorspace.bit_depth == 10 && config.chromaSamplingType == 0) ? platform_formats->avcodec_pix_fmt_10bit :
                   (colorspace.bit_depth == 10 && config.chromaSamplingType == 1) ? platform_formats->avcodec_pix_fmt_yuv444_10bit :
@@ -2020,9 +2111,7 @@ namespace video {
 
       switch (config.videoFormat) {
         case 0:
-          // 10-bit h264 encoding is not supported by our streaming protocol
-          assert(!config.dynamicRange);
-          ctx->profile = select_h264_profile(video_format.name, config, config::video.amd.amd_coder);
+          ctx->profile = select_h264_profile(codec_name, config, config::video.amd.amd_coder);
           break;
 
         case 1:
@@ -2253,7 +2342,7 @@ namespace video {
         } else {
           BOOST_LOG(error)
             << "Could not open codec ["sv
-            << video_format.name << "]: "sv
+            << codec_name << "]: "sv
             << av_make_error_string(err_str, AV_ERROR_MAX_STRING_SIZE, status);
 
           return nullptr;
@@ -2333,7 +2422,8 @@ namespace video {
       std::move(encode_device_final),
 
       // 0 ==> don't inject, 1 ==> inject for h264, 2 ==> inject for hevc
-      config.videoFormat <= 1 ? (1 - static_cast<int>(video_format[encoder_t::VUI_PARAMETERS])) * (1 + config.videoFormat) : 0
+      config.videoFormat <= 1 ? (1 - static_cast<int>(video_format[encoder_t::VUI_PARAMETERS])) * (1 + config.videoFormat) : 0,
+      encoder.name == "software-cuda"sv
     );
 
     return session;
@@ -2588,6 +2678,9 @@ namespace video {
 
     {
       auto encoder_name = encoder.codec_from_config(config).name;
+      if (use_native_x264rgb(encoder_name, config, colorspace)) {
+        encoder_name = "libx264rgb";
+      }
 
       BOOST_LOG(info) << "Creating encoder " << logging::bracket(encoder_name);
 
@@ -2595,6 +2688,7 @@ namespace video {
                           colorspace.colorspace == colorspace_e::rec601    ? "SDR (Rec. 601)" :
                           colorspace.colorspace == colorspace_e::rec709    ? "SDR (Rec. 709)" :
                           colorspace.colorspace == colorspace_e::bt2020sdr ? "SDR (Rec. 2020)" :
+                          colorspace.colorspace == colorspace_e::identity_gbr && colorspace.bit_depth == 8 ? "SDR (identity GBR, 8-bit source)" :
                           colorspace.colorspace == colorspace_e::identity_gbr ? "SDR (identity GBR, 8-bit source/up-converted)" :
                                                                             "unknown";
 
@@ -2604,7 +2698,14 @@ namespace video {
     }
 
     if (dynamic_cast<const encoder_platform_formats_avcodec *>(encoder.platform_formats.get())) {
-      result = disp.make_avcodec_encode_device(pix_fmt);
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+      if (encoder.name == "software-cuda"sv) {
+        result = disp.make_avcodec_software_encode_device(pix_fmt);
+      } else
+#endif
+      {
+        result = disp.make_avcodec_encode_device(pix_fmt);
+      }
     } else if (dynamic_cast<const encoder_platform_formats_nvenc *>(encoder.platform_formats.get())) {
       result = disp.make_nvenc_encode_device(pix_fmt);
     }
@@ -3074,6 +3175,14 @@ namespace video {
     // First, test encoder viability
     config_t config_max_ref_frames {1920, 1080, 60, 6000, 1000, 1, 1, 1, 0, 0, 0};
     config_t config_autoselect {1920, 1080, 60, 6000, 1000, 1, 0, 1, 0, 0, 0};
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    if (encoder.name == "software-cuda"sv) {
+      config_max_ref_frames.encoderCscMode = (COLORSPACE_IDENTITY_GBR << 1) | 1;
+      config_max_ref_frames.chromaSamplingType = 1;
+      config_autoselect.encoderCscMode = config_max_ref_frames.encoderCscMode;
+      config_autoselect.chromaSamplingType = 1;
+    }
+#endif
 
     // If the encoder isn't supported at all (not even H.264), bail early
     reset_display(disp, encoder.platform_formats->dev_type, output_name, config_autoselect);
@@ -3167,7 +3276,10 @@ namespace video {
     // Test HDR and YUV444 support
     {
       auto test_yuv444 = [&](auto &flag_map, auto video_format) {
-        const config_t config = {1920, 1080, 60, 6000, 1000, 1, 0, 1, video_format, 0, 1};
+        config_t config = {1920, 1080, 60, 6000, 1000, 1, 0, 1, video_format, 0, 1};
+        if (video_format == 0) {
+          config.encoderCscMode = (COLORSPACE_IDENTITY_GBR << 1) | 1;
+        }
 
         reset_display(disp, encoder.platform_formats->dev_type, output_name, config);
         if (!disp) {
@@ -3207,7 +3319,10 @@ namespace video {
       };
 
       auto test_yuv444_hdr = [&](auto &flag_map, auto video_format) {
-        const config_t config = {1920, 1080, 60, 6000, 1000, 1, 0, 3, video_format, 1, 1};
+        config_t config = {1920, 1080, 60, 6000, 1000, 1, 0, 3, video_format, 1, 1};
+        if (video_format == 0) {
+          config.encoderCscMode = (COLORSPACE_IDENTITY_GBR << 1) | 1;
+        }
 
         reset_display(disp, encoder.platform_formats->dev_type, output_name, config);
         if (!disp) {
@@ -3227,9 +3342,10 @@ namespace video {
       };
 
       test_yuv444(encoder.h264, 0);
-      // HDR is not supported with H.264. Don't bother even trying it.
+      // H.264 dynamic range denotes the StationConnect 10-bit 4:4:4 mode.
+      // It remains SDR identity GBR rather than HDR.
       encoder.h264[encoder_t::DYNAMIC_RANGE] = false;
-      encoder.h264[encoder_t::DYNAMIC_RANGE_YUV444] = false;
+      test_yuv444_hdr(encoder.h264, 0);
 
       test_yuv444(encoder.hevc, 1);
       test_yuv420_hdr(encoder.hevc, 1);
@@ -3424,6 +3540,8 @@ namespace video {
     last_encoder_probe_supported_ref_frames_invalidation = (encoder.flags & REF_FRAMES_INVALIDATION);
     last_encoder_probe_supported_yuv444_for_codec[0] = encoder.h264[encoder_t::PASSED] &&
                                                        encoder.h264[encoder_t::YUV444];
+    last_encoder_probe_supported_h264_10bit_444 =
+      encoder.h264[encoder_t::PASSED] && encoder.h264[encoder_t::DYNAMIC_RANGE_YUV444];
     last_encoder_probe_supported_yuv444_for_codec[1] = encoder.hevc[encoder_t::PASSED] &&
                                                        encoder.hevc[encoder_t::YUV444];
     last_encoder_probe_supported_yuv444_for_codec[2] = encoder.av1[encoder_t::PASSED] &&
@@ -3725,6 +3843,7 @@ namespace video {
         return platf::pix_fmt_e::p010;
       case AV_PIX_FMT_YUV444P:
         return platf::pix_fmt_e::yuv444p;
+      case AV_PIX_FMT_YUV444P10:
       case AV_PIX_FMT_YUV444P16:
         return platf::pix_fmt_e::yuv444p16;
       default:

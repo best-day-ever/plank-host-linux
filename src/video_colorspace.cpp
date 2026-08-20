@@ -84,8 +84,8 @@ namespace video {
     }
 
     if (colorspace.colorspace == colorspace_e::identity_gbr &&
-        (!colorspace.full_range || colorspace.bit_depth != 10 || config.chromaSamplingType != 1)) {
-      BOOST_LOG(error) << "Identity GBR requires full-range 10-bit 4:4:4; falling back to Rec. 709";
+        (!colorspace.full_range || config.chromaSamplingType != 1)) {
+      BOOST_LOG(error) << "Identity GBR requires full-range 4:4:4; falling back to Rec. 709";
       colorspace.colorspace = colorspace_e::rec709;
     }
 

@@ -718,6 +718,16 @@ namespace platf {
     }
 
     /**
+     * @brief Create a CUDA-capture to software-AVCodec encode device.
+     *
+     * @param pix_fmt Sunshine pixel format to read back for the CPU encoder.
+     * @return Constructed software readback device, or null when unsupported.
+     */
+    virtual std::unique_ptr<avcodec_encode_device_t> make_avcodec_software_encode_device(pix_fmt_e pix_fmt) {
+      return nullptr;
+    }
+
+    /**
      * @brief Create NVENC encode device.
      *
      * @param pix_fmt Sunshine pixel format to convert or allocate for.
