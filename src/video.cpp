@@ -6,11 +6,18 @@
 #include <array>
 #include <atomic>
 #include <bitset>
+#include <cerrno>
 #include <cmath>
+#include <cstring>
 #include <list>
 #include <numeric>
 #include <thread>
 #include <utility>
+
+#ifdef __linux__
+  #include <sched.h>
+  #include <unistd.h>
+#endif
 
 // lib includes
 #include <boost/pointer_cast.hpp>
@@ -49,6 +56,39 @@ namespace video {
 
   namespace {
     constexpr double frame_budget_us = 1000000.0 / 60.0;
+
+#ifdef __linux__
+    /**
+     * @brief Allow x264 workers to use every CPU available to Sunshine.
+     *
+     * NvFBC initialization can narrow the calling thread's inherited affinity.
+     * Expand it after capture setup and immediately before x264 creates workers.
+     */
+    void expand_software_encoder_cpu_affinity() {
+      const long processor_count = sysconf(_SC_NPROCESSORS_CONF);
+      if (processor_count <= 0 || processor_count > CPU_SETSIZE) {
+        BOOST_LOG(warning) << "Unable to determine CPUs for software encoder affinity"sv;
+        return;
+      }
+
+      cpu_set_t affinity;
+      CPU_ZERO(&affinity);
+      for (long cpu = 0; cpu < processor_count; ++cpu) {
+        CPU_SET(cpu, &affinity);
+      }
+
+      if (sched_setaffinity(0, sizeof(affinity), &affinity) != 0) {
+        BOOST_LOG(warning) << "Unable to expand software encoder CPU affinity: "sv << std::strerror(errno);
+        return;
+      }
+
+      cpu_set_t effective_affinity;
+      CPU_ZERO(&effective_affinity);
+      if (sched_getaffinity(0, sizeof(effective_affinity), &effective_affinity) == 0) {
+        BOOST_LOG(info) << "Software encoder thread CPU affinity allows "sv << CPU_COUNT(&effective_affinity) << " logical CPUs"sv;
+      }
+    }
+#endif
 
     /**
      * @brief Select a nearest-rank percentile from sorted timing samples.
@@ -2175,6 +2215,12 @@ namespace video {
 
       return nullptr;
     }
+
+#ifdef __linux__
+    if (encoder.name == "software-cuda") {
+      expand_software_encoder_cpu_affinity();
+    }
+#endif
 
     auto sw_fmt = native_x264rgb ? AV_PIX_FMT_BGR0 :
                   (colorspace.bit_depth == 8 && config.chromaSamplingType == 0)  ? platform_formats->avcodec_pix_fmt_8bit :
