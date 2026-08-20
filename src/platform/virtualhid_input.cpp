@@ -453,7 +453,7 @@ namespace platf::virtualhid {
     }
 
     const auto &capabilities = global->runtime->capabilities();
-    if (capabilities.supports_touchscreen) {
+    if (config::input.native_pen_touch && capabilities.supports_touchscreen) {
       lvh::CreateTouchscreenOptions options;
       options.profile = lvh::profiles::touchscreen();
       options.stable_id = "sunshine-touchscreen";
@@ -464,7 +464,7 @@ namespace platf::virtualhid {
         log_failure("create libvirtualhid touchscreen"sv, created.status);
       }
     }
-    if (capabilities.supports_pen_tablet) {
+    if (config::input.native_pen_touch && capabilities.supports_pen_tablet) {
       lvh::CreatePenTabletOptions options;
       options.profile = lvh::profiles::pen_tablet();
       // Flame's tablet preferences and edge gestures use the Xorg Wacom

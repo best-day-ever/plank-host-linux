@@ -215,6 +215,14 @@ TEST_F(VirtualHidDeviceTest, CreatesEveryDeviceWithFakeRuntime) {
   EXPECT_EQ(runtime->backend_kind(), lvh::BackendKind::fake);
 }
 
+TEST_F(VirtualHidDeviceTest, OmitsPenAndTouchDevicesWhenNativeInputIsDisabled) {
+  config::input.native_pen_touch = false;
+  platf::virtualhid::client_context_t disabled_client {*context()};
+
+  EXPECT_EQ(disabled_client.touch, nullptr);
+  EXPECT_EQ(disabled_client.pen, nullptr);
+}
+
 TEST_F(VirtualHidDeviceTest, ReportsStaticAndRuntimeGamepadChoices) {
   constexpr std::array expected_names {"auto"sv, "generic"sv, "x360"sv, "xone"sv, "xseries"sv, "ds4"sv, "ds5"sv, "switch"sv};
 
