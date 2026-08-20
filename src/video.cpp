@@ -6,7 +6,9 @@
 #include <array>
 #include <atomic>
 #include <bitset>
+#include <cmath>
 #include <list>
+#include <numeric>
 #include <thread>
 #include <utility>
 
@@ -44,6 +46,76 @@ extern "C" {
 using namespace std::literals;
 
 namespace video {
+
+  namespace {
+    constexpr double frame_budget_us = 1000000.0 / 60.0;
+
+    /**
+     * @brief Select a nearest-rank percentile from sorted timing samples.
+     *
+     * @param sorted Timing samples in ascending order.
+     * @param percentile Fractional percentile in the range zero to one.
+     * @return The selected sample, or zero when no samples are available.
+     */
+    double timing_percentile(const std::vector<double> &sorted, double percentile) {
+      if (sorted.empty()) {
+        return 0.0;
+      }
+      const auto rank = static_cast<std::size_t>(std::ceil(percentile * sorted.size()));
+      return sorted[std::clamp<std::size_t>(rank, 1, sorted.size()) - 1];
+    }
+
+    /**
+     * @brief Log aggregate StationConnect timing statistics for one boundary.
+     *
+     * @param name Stable boundary name for qualification log parsing.
+     * @param samples Durations in microseconds.
+     */
+    void log_timing_samples(std::string_view name, const std::vector<double> &samples) {
+      if (samples.size() < 60) {
+        return;
+      }
+
+      auto sorted = samples;
+      std::ranges::sort(sorted);
+      const auto total = std::accumulate(sorted.begin(), sorted.end(), 0.0);
+      const auto misses = std::ranges::count_if(sorted, [](double duration_us) {
+        return duration_us > frame_budget_us;
+      });
+      BOOST_LOG(info)
+        << "StationConnect timing " << name
+        << ": samples=" << sorted.size()
+        << " mean_ms=" << total / sorted.size() / 1000.0
+        << " p50_ms=" << timing_percentile(sorted, 0.50) / 1000.0
+        << " p95_ms=" << timing_percentile(sorted, 0.95) / 1000.0
+        << " p99_ms=" << timing_percentile(sorted, 0.99) / 1000.0
+        << " max_ms=" << sorted.back() / 1000.0
+        << " over_16_67ms=" << misses;
+    }
+
+    /**
+     * @brief Collect display-to-packet timing samples for a software stream.
+     */
+    struct integrated_timing_samples_t {
+      /**
+       * @brief Emit the completed stream's aggregate timing distributions.
+       */
+      ~integrated_timing_samples_t() {
+        log_timing_samples("display_to_convert_start", display_to_convert_start_us);
+        log_timing_samples("cuda_to_cpu_conversion", conversion_us);
+        log_timing_samples("encode_and_packetize", encode_and_packetize_us);
+        log_timing_samples("display_to_packet_ready", display_to_packet_ready_us);
+        log_timing_samples("packet_ready_cadence", packet_ready_cadence_us);
+      }
+
+      std::vector<double> display_to_convert_start_us;
+      std::vector<double> conversion_us;
+      std::vector<double> encode_and_packetize_us;
+      std::vector<double> display_to_packet_ready_us;
+      std::vector<double> packet_ready_cadence_us;
+      std::optional<std::chrono::steady_clock::time_point> last_packet_ready;
+    };
+  }  // namespace
 
   namespace {
     /**
@@ -451,7 +523,8 @@ namespace video {
         avcodec_ctx {std::move(avcodec_ctx)},
         device {std::move(encode_device)},
         inject {inject},
-        warmup_pending {warmup} {
+        warmup_pending {warmup},
+        measure_timing {warmup} {
     }
 
     /**
@@ -462,6 +535,8 @@ namespace video {
     avcodec_encode_session_t(avcodec_encode_session_t &&other) noexcept = default;
 
     ~avcodec_encode_session_t() {
+      log_timing_samples("x264_encode_completion", encode_completion_us);
+
       // Flush any remaining frames in the encoder if the encoder started up (frame num > 0)
       if (avcodec_ctx->frame_num > 0 && avcodec_send_frame(avcodec_ctx.get(), nullptr) == 0) {
         packet_raw_avcodec pkt;
@@ -489,6 +564,8 @@ namespace video {
 
       inject = other.inject;
       warmup_pending = other.warmup_pending;
+      measure_timing = other.measure_timing;
+      encode_completion_us = std::move(other.encode_completion_us);
 
       return *this;
     }
@@ -550,6 +627,8 @@ namespace video {
     // inject sps/vps data into idr pictures
     int inject;  ///< Number of upcoming IDR frames that should receive rewritten parameter sets.
     bool warmup_pending;  ///< Whether the first encode should be discarded to absorb x264 startup allocation.
+    bool measure_timing;  ///< Whether this StationConnect x264 session should emit timing statistics.
+    std::vector<double> encode_completion_us;  ///< Frame submission to first encoded packet availability.
   };
 
   /**
@@ -1911,6 +1990,8 @@ namespace video {
 
     auto &sps = session.sps;
     auto &vps = session.vps;
+    const auto encode_start = std::chrono::steady_clock::now();
+    bool completion_recorded = false;
 
     // send the frame to the encoder
     auto ret = avcodec_send_frame(ctx.get(), frame);
@@ -1930,6 +2011,13 @@ namespace video {
         return 0;
       } else if (ret < 0) {
         return ret;
+      }
+
+      if (session.measure_timing && !completion_recorded) {
+        session.encode_completion_us.push_back(
+          std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - encode_start).count()
+        );
+        completion_recorded = true;
       }
 
       if (av_packet->flags & AV_PKT_FLAG_KEY) {
@@ -2495,6 +2583,8 @@ namespace video {
     if (!session) {
       return;
     }
+    integrated_timing_samples_t timing;
+    const bool measure_integrated_timing = encoder.name == "software-cuda"sv;
 
     // As a workaround for NVENC hangs and to generally speed up encoder reinit,
     // we will complete the encoder teardown in a separate thread if supported.
@@ -2558,9 +2648,20 @@ namespace video {
       if (!requested_idr_frame || images->peek()) {
         if (auto img = images->pop(max_frametime)) {
           frame_timestamp = img->frame_timestamp;
+          const auto conversion_start = std::chrono::steady_clock::now();
+          if (measure_integrated_timing && frame_timestamp) {
+            timing.display_to_convert_start_us.push_back(
+              std::chrono::duration<double, std::micro>(conversion_start - *frame_timestamp).count()
+            );
+          }
           if (session->convert(*img)) {
             BOOST_LOG(error) << "Could not convert image"sv;
             return;
+          }
+          if (measure_integrated_timing && frame_timestamp) {
+            timing.conversion_us.push_back(
+              std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - conversion_start).count()
+            );
           }
         } else if (!images->running()) {
           break;
@@ -2581,9 +2682,25 @@ namespace video {
         break;
       }
 
+      const auto encode_start = std::chrono::steady_clock::now();
       if (encode(frame_nr++, *session, packets, channel_data, frame_timestamp)) {
         BOOST_LOG(error) << "Could not encode video packet"sv;
         return;
+      }
+      const auto packet_ready = std::chrono::steady_clock::now();
+      if (measure_integrated_timing && frame_timestamp) {
+        timing.encode_and_packetize_us.push_back(
+          std::chrono::duration<double, std::micro>(packet_ready - encode_start).count()
+        );
+        timing.display_to_packet_ready_us.push_back(
+          std::chrono::duration<double, std::micro>(packet_ready - *frame_timestamp).count()
+        );
+        if (timing.last_packet_ready) {
+          timing.packet_ready_cadence_us.push_back(
+            std::chrono::duration<double, std::micro>(packet_ready - *timing.last_packet_ready).count()
+          );
+        }
+        timing.last_packet_ready = packet_ready;
       }
 
       session->request_normal_frame();

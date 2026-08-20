@@ -4,11 +4,13 @@
  */
 // standard includes
 #include <bitset>
+#include <cmath>
 #include <condition_variable>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <filesystem>
 #include <mutex>
+#include <numeric>
 #include <thread>
 
 // lib includes
@@ -64,6 +66,43 @@ using namespace std::literals;
 namespace cuda {
   constexpr auto cudaDevAttrMaxThreadsPerBlock = (CUdevice_attribute) 1;  ///< CUDA dev attr max threads per block.
   constexpr auto cudaDevAttrMaxThreadsPerMultiProcessor = (CUdevice_attribute) 39;  ///< CUDA dev attr max threads per multi processor.
+
+  namespace {
+    /**
+     * @brief Select a nearest-rank percentile from sorted timing samples.
+     *
+     * @param sorted Timing samples in ascending order.
+     * @param percentile Fractional percentile in the range zero to one.
+     * @return The selected timing sample.
+     */
+    double timing_percentile(const std::vector<double> &sorted, double percentile) {
+      const auto rank = static_cast<std::size_t>(std::ceil(percentile * sorted.size()));
+      return sorted[std::clamp<std::size_t>(rank, 1, sorted.size()) - 1];
+    }
+
+    /**
+     * @brief Log aggregate CUDA conversion timing for qualification runs.
+     *
+     * @param name Stable boundary name for log parsing.
+     * @param samples Durations in microseconds.
+     */
+    void log_cuda_timing(std::string_view name, const std::vector<double> &samples) {
+      if (samples.size() < 60) {
+        return;
+      }
+      auto sorted = samples;
+      std::ranges::sort(sorted);
+      const auto total = std::accumulate(sorted.begin(), sorted.end(), 0.0);
+      BOOST_LOG(info)
+        << "StationConnect timing " << name
+        << ": samples=" << sorted.size()
+        << " mean_ms=" << total / sorted.size() / 1000.0
+        << " p50_ms=" << timing_percentile(sorted, 0.50) / 1000.0
+        << " p95_ms=" << timing_percentile(sorted, 0.95) / 1000.0
+        << " p99_ms=" << timing_percentile(sorted, 0.99) / 1000.0
+        << " max_ms=" << sorted.back() / 1000.0;
+    }
+  }  // namespace
 
   /**
    * @brief Convert a CUDA result code into Sunshine's capture status.
@@ -374,6 +413,11 @@ namespace cuda {
      * @brief Release CUDA resources and stop depth-expansion workers.
      */
     ~cuda_software_t() override {
+      log_cuda_timing("cuda_dispatch", dispatch_us);
+      log_cuda_timing("gpu_readback_sync", readback_sync_us);
+      log_cuda_timing("cpu_depth_expansion", depth_expansion_us);
+      log_cuda_timing("cuda_software_convert_total", total_conversion_us);
+
       for (auto &worker : workers) {
         worker.request_stop();
       }
@@ -513,6 +557,7 @@ namespace cuda {
      * @return 0 on success; -1 on CUDA or conversion failure.
      */
     int convert(platf::img_t &img) override {
+      const auto conversion_start = std::chrono::steady_clock::now();
       auto &texture = static_cast<cuda::img_t &>(img).tex;
       if (mode == mode_e::native_bgr0) {
         CUDA_MEMCPY2D copy {};
@@ -535,7 +580,15 @@ namespace cuda {
         return -1;
       }
 
+      const auto synchronization_start = std::chrono::steady_clock::now();
       CU_CHECK(cdf->cuStreamSynchronize(stream.get()), "Couldn't synchronize software-encoder readback");
+      const auto synchronization_end = std::chrono::steady_clock::now();
+      dispatch_us.push_back(
+        std::chrono::duration<double, std::micro>(synchronization_start - conversion_start).count()
+      );
+      readback_sync_us.push_back(
+        std::chrono::duration<double, std::micro>(synchronization_end - synchronization_start).count()
+      );
       if (mode == mode_e::native_bgr0 && !native_direct) {
         const std::uint8_t *source[] = {static_cast<const std::uint8_t *>(host_readback)};
         const int source_linesize[] = {width * 4};
@@ -543,8 +596,15 @@ namespace cuda {
           return -1;
         }
       } else if (mode == mode_e::identity_10bit) {
+        const auto expansion_start = std::chrono::steady_clock::now();
         expand_10bit();
+        depth_expansion_us.push_back(
+          std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - expansion_start).count()
+        );
       }
+      total_conversion_us.push_back(
+        std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - conversion_start).count()
+      );
       return 0;
     }
 
@@ -651,6 +711,10 @@ namespace cuda {
     std::mutex work_mutex;  ///< Protects expansion generation and completion state.
     std::condition_variable_any work_ready;  ///< Signals a new compact frame to workers.
     std::condition_variable work_done;  ///< Signals completion of all worker shares.
+    std::vector<double> dispatch_us;  ///< CUDA conversion/copy dispatch time before synchronization.
+    std::vector<double> readback_sync_us;  ///< Wait for CUDA conversion and GPU-to-CPU readback completion.
+    std::vector<double> depth_expansion_us;  ///< Exact compact 8-bit to 10-bit CPU expansion time.
+    std::vector<double> total_conversion_us;  ///< Full CUDA software conversion and readback service time.
     std::uint64_t generation = 0;  ///< Current compact-frame expansion generation.
     unsigned int workers_pending = 0;  ///< Workers still expanding the current frame.
     CUdeviceptr device_compact = 0;  ///< Compact three-plane 8-bit CUDA surface.
