@@ -21,7 +21,9 @@ extern "C" {
 // local includes
 #include "cuda.h"
 #include "graphics.h"
+#include "src/config.h"
 #include "src/logging.h"
+#include "src/nvenc/nvenc_cuda_factory.h"
 #include "src/utility.h"
 #include "src/video.h"
 #include "wayland.h"
@@ -356,6 +358,134 @@ namespace cuda {
   };
 
   /**
+   * CUDA conversion surface registered directly with NVENC.
+   */
+  class cuda_nvenc_t final: public platf::nvenc_encode_device_t {
+  public:
+    ~cuda_nvenc_t() override {
+      encoder.reset();
+      nvenc = nullptr;
+      if (surface && cdf) {
+        CU_CHECK_IGNORE(cdf->cuMemFree(surface), "Couldn't free direct NVENC surface");
+      }
+    }
+
+    int init(int in_width, int in_height, platf::pix_fmt_e format) {
+      if (!cdf) {
+        BOOST_LOG(warning) << "cuda not initialized"sv;
+        return -1;
+      }
+
+      input_width = in_width;
+      input_height = in_height;
+      buffer_format = format;
+
+      CU_CHECK(cdf->cuCtxGetCurrent(&context), "Couldn't get current CUDA context");
+      if (!context) {
+        CU_CHECK(cdf->cuDeviceGet(&cuda_device, 0), "Couldn't get CUDA device");
+        CU_CHECK(cdf->cuDevicePrimaryCtxRetain(&context, cuda_device), "Couldn't retain CUDA primary context");
+        primary_context.device = cuda_device;
+        primary_context.retained = true;
+        CU_CHECK(cdf->cuCtxPushCurrent(context), "Couldn't select CUDA primary context");
+        primary_context.pushed = true;
+      }
+
+      return 0;
+    }
+
+    bool init_encoder(const ::video::config_t &client_config, const ::video::sunshine_colorspace_t &colorspace) override {
+      output_width = client_config.width;
+      output_height = client_config.height;
+      const bool ten_bit = buffer_format == platf::pix_fmt_e::p010 || buffer_format == platf::pix_fmt_e::yuv444p16;
+      const bool yuv444 = buffer_format == platf::pix_fmt_e::yuv444p || buffer_format == platf::pix_fmt_e::yuv444p16;
+      if (buffer_format != platf::pix_fmt_e::nv12 && buffer_format != platf::pix_fmt_e::p010 && !yuv444) {
+        BOOST_LOG(error) << "Direct CUDA NVENC does not support pixel format " << platf::from_pix_fmt(buffer_format);
+        return false;
+      }
+
+      const std::size_t row_bytes = static_cast<std::size_t>(output_width) * (ten_bit ? 2U : 1U);
+      const std::size_t rows = static_cast<std::size_t>(output_height) * (yuv444 ? 3U : 3U) / (yuv444 ? 1U : 2U);
+      std::size_t allocated_pitch = 0;
+      if (check(cdf->cuMemAllocPitch(&surface, &allocated_pitch, row_bytes, rows, 16U), "Couldn't allocate direct NVENC surface: "sv)) {
+        return false;
+      }
+      pitch = static_cast<std::uint32_t>(allocated_pitch);
+
+      stream = make_stream();
+      if (!stream) {
+        return false;
+      }
+      auto converter = sws_t::make(input_width, input_height, output_width, output_height, input_width * 4);
+      if (!converter) {
+        return false;
+      }
+      sws = std::move(*converter);
+      sws.apply_colorspace(colorspace);
+
+      encoder = ::nvenc::make_nvenc_cuda_encoder({
+        context,
+        static_cast<std::uintptr_t>(surface),
+        pitch,
+      });
+      if (!encoder || !encoder->create_encoder(config::video.nv, client_config, colorspace, buffer_format)) {
+        encoder.reset();
+        return false;
+      }
+      nvenc = encoder.get();
+      return true;
+    }
+
+    int convert(platf::img_t &img) override {
+      auto &texture = static_cast<cuda::img_t &>(img).tex;
+      auto *base = reinterpret_cast<std::uint8_t *>(static_cast<std::uintptr_t>(surface));
+      int status = 0;
+      if (buffer_format == platf::pix_fmt_e::nv12) {
+        status = sws.convert_nv12(base, base + pitch * output_height, pitch, pitch, texture.texture.point, stream.get());
+      } else if (buffer_format == platf::pix_fmt_e::p010) {
+        status = sws.convert_p010(base, base + pitch * output_height, pitch, pitch, texture.texture.point, stream.get());
+      } else if (buffer_format == platf::pix_fmt_e::yuv444p16) {
+        status = sws.convert_yuv444_10bit(base, base + pitch * output_height, base + pitch * output_height * 2, pitch, texture.texture.point, stream.get());
+      } else {
+        status = sws.convert_yuv444(base, base + pitch * output_height, base + pitch * output_height * 2, pitch, texture.texture.point, stream.get());
+      }
+      if (status) {
+        return status;
+      }
+      CU_CHECK(cdf->cuStreamSynchronize(stream.get()), "Couldn't synchronize direct NVENC conversion");
+      return 0;
+    }
+
+  private:
+    struct primary_context_t {
+      ~primary_context_t() {
+        if (retained && cdf) {
+          if (pushed) {
+            CUcontext popped = nullptr;
+            CU_CHECK_IGNORE(cdf->cuCtxPopCurrent(&popped), "Couldn't pop CUDA primary context");
+          }
+          CU_CHECK_IGNORE(cdf->cuDevicePrimaryCtxRelease(device), "Couldn't release CUDA primary context");
+        }
+      }
+      CUdevice device = 0;
+      bool retained = false;
+      bool pushed = false;
+    } primary_context;
+
+    std::unique_ptr<::nvenc::nvenc_encoder> encoder;
+    sws_t sws;
+    stream_t stream;
+    CUcontext context = nullptr;
+    CUdeviceptr surface = 0;
+    CUdevice cuda_device = 0;
+    std::uint32_t pitch = 0;
+    int input_width = 0;
+    int input_height = 0;
+    int output_width = 0;
+    int output_height = 0;
+    platf::pix_fmt_e buffer_format = platf::pix_fmt_e::unknown;
+  };
+
+  /**
    * @brief Opens the DRM device associated with the CUDA device index.
    * @param index CUDA device index to open.
    * @return File descriptor or -1 on failure.
@@ -677,6 +807,18 @@ namespace cuda {
     }
 
     return cuda;
+  }
+
+  std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_encode_device(int width, int height, platf::pix_fmt_e pix_fmt) {
+    if (init()) {
+      return nullptr;
+    }
+
+    auto device = std::make_unique<cuda_nvenc_t>();
+    if (device->init(width, height, pix_fmt)) {
+      return nullptr;
+    }
+    return device;
   }
 
   /**
@@ -1237,6 +1379,10 @@ namespace cuda {
        */
       std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device(platf::pix_fmt_e pix_fmt) override {
         return ::cuda::make_avcodec_encode_device(width, height, true);
+      }
+
+      std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_encode_device(platf::pix_fmt_e pix_fmt) override {
+        return ::cuda::make_nvenc_encode_device(width, height, pix_fmt);
       }
 
       /**

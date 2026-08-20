@@ -553,7 +553,19 @@ namespace video {
      * @brief Mark the frame as a request for an IDR frame.
      */
     void request_idr_frame() override {
+#ifndef _WIN32
+      constexpr auto min_idr_interval = std::chrono::milliseconds {1000};
+      const auto now = std::chrono::steady_clock::now();
+      if (last_idr_request_time.time_since_epoch().count() != 0 &&
+          now - last_idr_request_time < min_idr_interval) {
+        BOOST_LOG(debug) << "NvEnc: rate-limiting repeated IDR request"sv;
+        return;
+      }
+#endif
       force_idr = true;
+#ifndef _WIN32
+      last_idr_request_time = now;
+#endif
     }
 
     /**
@@ -575,7 +587,7 @@ namespace video {
       }
 
       if (!device->nvenc->invalidate_ref_frames(first_frame, last_frame)) {
-        force_idr = true;
+        request_idr_frame();
       }
     }
 
@@ -598,6 +610,9 @@ namespace video {
   private:
     std::unique_ptr<platf::nvenc_encode_device_t> device;
     bool force_idr = false;
+#ifndef _WIN32
+    std::chrono::steady_clock::time_point last_idr_request_time;
+#endif
   };
 
   /**
@@ -829,6 +844,28 @@ namespace video {
       "h264_nvenc"s,
     },
     PARALLEL_ENCODING | YUV444_SUPPORT
+  };
+#endif
+
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+  /**
+   * Opt-in direct CUDA NVENC backend. Keep the FFmpeg-backed `nvenc` encoder
+   * first in automatic selection until live RFI and fallback qualification
+   * are complete.
+   */
+  encoder_t nvenc_direct {
+    "nvenc-direct"sv,
+    std::make_unique<encoder_platform_formats_nvenc>(
+      platf::mem_type_e::cuda,
+      platf::pix_fmt_e::nv12,
+      platf::pix_fmt_e::p010,
+      platf::pix_fmt_e::yuv444p,
+      platf::pix_fmt_e::yuv444p16
+    ),
+    {{}, {}, {}, {}, {}, {}, "av1_nvenc"s},
+    {{}, {}, {}, {}, {}, {}, "hevc_nvenc"s},
+    {{}, {}, {}, {}, {}, {}, "h264_nvenc"s},
+    PARALLEL_ENCODING | REF_FRAMES_INVALIDATION | YUV444_SUPPORT | ASYNC_TEARDOWN
   };
 #endif
 
@@ -1402,6 +1439,9 @@ namespace video {
   static const std::vector<encoder_t *> encoders {
 #ifndef __APPLE__
     &nvenc,
+#endif
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    &nvenc_direct,
 #endif
 #ifdef _WIN32
     &quicksync,

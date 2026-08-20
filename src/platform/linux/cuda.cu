@@ -260,6 +260,47 @@ namespace cuda {
     return static_cast<std::uint16_t>(__float2uint_rn(component * 1023.0f) << 6);
   }
 
+  __global__ void RGBA_to_P010(
+    cudaTextureObject_t srcImage,
+    std::uint8_t *dstYBytes,
+    std::uint8_t *dstUVBytes,
+    std::uint32_t dstPitchY,
+    std::uint32_t dstPitchUV,
+    float scale,
+    const viewport_t viewport,
+    const cuda_color_t *const color_matrix
+  ) {
+    int idX = (threadIdx.x + blockDim.x * blockIdx.x) * 2;
+    int idY = (threadIdx.y + blockDim.y * blockIdx.y) * 2;
+
+    if (idX >= viewport.width || idY >= viewport.height) {
+      return;
+    }
+
+    const float x = idX * scale;
+    const float y = idY * scale;
+    idX += viewport.offsetX;
+    idY += viewport.offsetY;
+
+    auto *dstY0 = reinterpret_cast<std::uint16_t *>(dstYBytes + idY * dstPitchY) + idX;
+    auto *dstY1 = reinterpret_cast<std::uint16_t *>(dstYBytes + (idY + 1) * dstPitchY) + idX;
+    auto *dstUV = reinterpret_cast<std::uint16_t *>(dstUVBytes + (idY / 2) * dstPitchUV) + idX;
+
+    const float3 rgb_lt = bgra_to_rgb(tex2D<float4>(srcImage, x, y));
+    const float3 rgb_rt = bgra_to_rgb(tex2D<float4>(srcImage, x + scale, y));
+    const float3 rgb_lb = bgra_to_rgb(tex2D<float4>(srcImage, x, y + scale));
+    const float3 rgb_rb = bgra_to_rgb(tex2D<float4>(srcImage, x + scale, y + scale));
+    const float2 uv = (calcUV(rgb_lt, color_matrix) + calcUV(rgb_rt, color_matrix) +
+                       calcUV(rgb_lb, color_matrix) + calcUV(rgb_rb, color_matrix)) * 0.25f;
+
+    dstY0[0] = to_msb_aligned_10bit(calcY(rgb_lt, color_matrix));
+    dstY0[1] = to_msb_aligned_10bit(calcY(rgb_rt, color_matrix));
+    dstY1[0] = to_msb_aligned_10bit(calcY(rgb_lb, color_matrix));
+    dstY1[1] = to_msb_aligned_10bit(calcY(rgb_rb, color_matrix));
+    dstUV[0] = to_msb_aligned_10bit(uv.x);
+    dstUV[1] = to_msb_aligned_10bit(uv.y);
+  }
+
   __global__ void RGBA_to_YUV444_10bit(
     cudaTextureObject_t srcImage,
     std::uint8_t *dstYBytes,
@@ -415,6 +456,22 @@ namespace cuda {
     RGBA_to_NV12<<<grid, block, 0, stream>>>(texture, Y, UV, pitchY, pitchUV, scale, viewport, (cuda_color_t *) color_matrix.get());
 
     return CU_CHECK_IGNORE(cudaGetLastError(), "RGBA_to_NV12 failed");
+  }
+
+  int sws_t::convert_p010(std::uint8_t *Y, std::uint8_t *UV, std::uint32_t pitchY, std::uint32_t pitchUV, cudaTextureObject_t texture, stream_t::pointer stream) {
+    return convert_p010(Y, UV, pitchY, pitchUV, texture, stream, viewport);
+  }
+
+  int sws_t::convert_p010(std::uint8_t *Y, std::uint8_t *UV, std::uint32_t pitchY, std::uint32_t pitchUV, cudaTextureObject_t texture, stream_t::pointer stream, const viewport_t &viewport) {
+    const int threadsX = viewport.width / 2;
+    const int threadsY = viewport.height / 2;
+
+    dim3 block(threadsPerBlock);
+    dim3 grid(div_align(threadsX, threadsPerBlock), threadsY);
+
+    RGBA_to_P010<<<grid, block, 0, stream>>>(texture, Y, UV, pitchY, pitchUV, scale, viewport, (cuda_color_t *) color_matrix.get());
+
+    return CU_CHECK_IGNORE(cudaGetLastError(), "RGBA_to_P010 failed");
   }
 
   int sws_t::convert_yuv444(std::uint8_t *Y, std::uint8_t *U, std::uint8_t *V, std::uint32_t pitch, cudaTextureObject_t texture, stream_t::pointer stream) {

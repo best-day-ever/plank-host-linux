@@ -73,6 +73,7 @@ endif()
 
 set(NVENC_PUBLIC_SOURCES
         "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_config.h"
+        "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_cuda_factory.h"
         "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_d3d11_interface.h"
         "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_dynamic_factory.cpp"
         "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_dynamic_factory.h"
@@ -116,6 +117,25 @@ if(WIN32)
             $<TARGET_OBJECTS:nvenc_sdk_1200>
             $<TARGET_OBJECTS:nvenc_sdk_1300>
     )
+elseif(CUDA_FOUND)
+    # Linux currently consumes the prepared API 13 headers used by the
+    # qualified NVIDIA 580 driver. Build the platform-neutral standalone
+    # NVENC core here so the CUDA input adapter can use reference-picture
+    # invalidation without routing through FFmpeg's private NVENC state.
+    add_library(nvenc_sdk_1300 OBJECT
+            "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_base.cpp"
+            "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_cuda.cpp"
+            "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_cuda_factory.cpp"
+            "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_utils.cpp"
+    )
+    target_include_directories(nvenc_sdk_1300 BEFORE PRIVATE "${NV_CODEC_HEADERS_13_INCLUDE_DIR}")
+    target_compile_definitions(nvenc_sdk_1300 PRIVATE
+            NVENC_NAMESPACE=nvenc_1300
+            NVENC_SDK_VERSION=1300
+    )
+    target_link_libraries(nvenc_sdk_1300 PRIVATE ${Boost_LIBRARIES})
+    target_compile_options(nvenc_sdk_1300 PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+    list(APPEND NVENC_SOURCES $<TARGET_OBJECTS:nvenc_sdk_1300>)
 endif()
 
 list(APPEND PLATFORM_TARGET_FILES ${NVENC_SOURCES})
