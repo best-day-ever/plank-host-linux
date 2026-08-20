@@ -28,6 +28,7 @@ extern "C" {
 #include "network.h"
 #include "platform/common.h"
 #include "process.h"
+#include "raw_hid_tablet.h"
 #include "stream.h"
 #include "sync.h"
 #include "system_tray.h"
@@ -49,6 +50,7 @@ constexpr int IDX_RUMBLE_TRIGGER_DATA = 12;  ///< Control-stream message index f
 constexpr int IDX_SET_MOTION_EVENT = 13;  ///< Control-stream message index for set motion event.
 constexpr int IDX_SET_RGB_LED = 14;  ///< Control-stream message index for set rgb led.
 constexpr int IDX_SET_ADAPTIVE_TRIGGERS = 15;  ///< Control-stream message index for set adaptive triggers.
+constexpr int IDX_RAW_HID_CONTROL = 16;  ///< Control-stream message index for StationConnect raw HID requests.
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -67,6 +69,7 @@ static const short packetTypes[] = {
   0x5501,  // Set motion event (Sunshine protocol extension)
   0x5502,  // Set RGB LED (Sunshine protocol extension)
   0x5503,  // Set Adaptive triggers (Sunshine protocol extension)
+  0x5504,  // Raw HID control (StationConnect protocol extension)
 };
 
 namespace asio = boost::asio;
@@ -532,6 +535,7 @@ namespace stream {
 
       platf::feedback_queue_t feedback_queue;
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
+      raw_hid::feedback_queue_t raw_hid_feedback_queue;
     } control;  ///< Runtime state for the encrypted GameStream control channel.
 
     std::uint32_t launch_session_id;  ///< RTSP launch-session ID associated with this stream.
@@ -1103,6 +1107,32 @@ namespace stream {
   }
 
   /**
+   * @brief Send one raw HID control frame over the encrypted reliable control stream.
+   *
+   * @param session Active stream session.
+   * @param frame Complete StationConnect raw HID wire frame.
+   * @return Zero when sent, otherwise a transport error.
+   */
+  int send_raw_hid_control(session_t *session, const std::vector<std::uint8_t> &frame) {
+    if (!session->control.peer || frame.size() < sizeof(SC_RAW_HID_WIRE_HEADER) ||
+        frame.size() > sizeof(SC_RAW_HID_WIRE_HEADER) + SC_RAW_HID_MAX_PAYLOAD_SIZE) {
+      return -1;
+    }
+
+    std::vector<std::uint8_t> plaintext(sizeof(control_header_v2) + frame.size());
+    auto *header = reinterpret_cast<control_header_v2 *>(plaintext.data());
+    header->type = util::endian::little(static_cast<std::uint16_t>(packetTypes[IDX_RAW_HID_CONTROL]));
+    header->payloadLength = util::endian::little(static_cast<std::uint16_t>(frame.size()));
+    std::ranges::copy(frame, plaintext.begin() + sizeof(control_header_v2));
+
+    constexpr auto maximum_plaintext = sizeof(control_header_v2) + sizeof(SC_RAW_HID_WIRE_HEADER) + SC_RAW_HID_MAX_PAYLOAD_SIZE;
+    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(maximum_plaintext) + crypto::cipher::tag_size>
+      encrypted_payload;
+    const auto payload = encode_control(session, std::string_view {reinterpret_cast<const char *>(plaintext.data()), plaintext.size()}, encrypted_payload);
+    return session->broadcast_ref->control_server.send(payload, session->control.peer);
+  }
+
+  /**
    * @brief Run the broadcast control-channel worker thread.
    *
    * @param server RTSP server instance handling the request.
@@ -1312,6 +1342,12 @@ namespace stream {
               auto hdr_info = hdr_queue->pop();
 
               send_hdr_mode(session, std::move(hdr_info));
+            }
+
+            auto &raw_hid_feedback_queue = session->control.raw_hid_feedback_queue;
+            while (session->control.peer && raw_hid_feedback_queue->peek()) {
+              const auto frame = raw_hid_feedback_queue->pop();
+              send_raw_hid_control(session, *frame);
             }
           }
 
@@ -2282,6 +2318,7 @@ namespace stream {
       session->control.connect_data = launch_session.control_connect_data;
       session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
       session->control.hdr_queue = mail->event<video::hdr_info_t>(mail::hdr);
+      session->control.raw_hid_feedback_queue = mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback);
       session->control.legacy_input_enc_iv = launch_session.iv;
       session->control.cipher = crypto::cipher::gcm_t {
         launch_session.gcm_key,

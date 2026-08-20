@@ -29,6 +29,7 @@ extern "C" {
 #include "config.h"
 #include "globals.h"
 #include "input.h"
+#include "raw_hid_tablet.h"
 #include "logging.h"
 #include "platform/common.h"
 #include "thread_pool.h"
@@ -235,16 +236,19 @@ namespace input {
      *
      * @param touch_port_event Event carrying the active touch port.
      * @param feedback_queue Queue used for controller feedback.
+     * @param raw_hid_feedback_queue Queue used for raw tablet control requests.
      */
     input_t(
       safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event,
-      platf::feedback_queue_t feedback_queue
+      platf::feedback_queue_t feedback_queue,
+      raw_hid::feedback_queue_t raw_hid_feedback_queue
     ):
         shortcutFlags {},
         gamepads(MAX_GAMEPADS),
         client_context {platf::allocate_client_input_context(platf_input)},
         touch_port_event {std::move(touch_port_event)},
         feedback_queue {std::move(feedback_queue)},
+        raw_hid_tablet {std::make_unique<raw_hid::tablet_t>(std::move(raw_hid_feedback_queue))},
         mouse_left_button_timeout {},
         touch_port {{0, 0, 0, 0}, 0, 0, 1.0f, 1.0f, 0, 0},
         accumulated_vscroll_delta {},
@@ -262,6 +266,7 @@ namespace input {
 
     safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event;  ///< Touch port event.
     platf::feedback_queue_t feedback_queue;  ///< Queue used to deliver controller feedback to the platform backend.
+    std::unique_ptr<raw_hid::tablet_t> raw_hid_tablet;  ///< Exact client tablet owned by this stream session.
 
     std::list<std::vector<uint8_t>> input_queue;  ///< Pending raw input packets waiting for processing.
     std::mutex input_queue_lock;  ///< Input queue lock.
@@ -371,6 +376,7 @@ namespace input {
   void rebind_input(const std::shared_ptr<input_t> &input, const safe::mail_t &mail) {
     input->touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
     input->feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
+    input->raw_hid_tablet->rebind(mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback));
 
     for (int client_index = 0; client_index < input->gamepads.size(); ++client_index) {
       auto &gamepad = input->gamepads[client_index];
@@ -670,6 +676,9 @@ namespace input {
         break;
       case SS_CONTROLLER_BATTERY_MAGIC:
         print((PSS_CONTROLLER_BATTERY_PACKET) payload);
+        break;
+      case SS_RAW_HID_MAGIC:
+        BOOST_LOG(verbose) << "Raw HID tablet frame"sv;
         break;
     }
   }
@@ -1931,6 +1940,18 @@ namespace input {
       case SS_CONTROLLER_BATTERY_MAGIC:
         passthrough(input, (PSS_CONTROLLER_BATTERY_PACKET) payload);
         break;
+      case SS_RAW_HID_MAGIC: {
+        const auto packet_size = static_cast<std::size_t>(util::endian::big(payload->size)) + sizeof(payload->size);
+        if (packet_size >= sizeof(SS_RAW_HID_PACKET) - 1 && packet_size <= entry.size()) {
+          const auto *packet = reinterpret_cast<const SS_RAW_HID_PACKET *>(payload);
+          const auto frame_size = packet_size - (sizeof(SS_RAW_HID_PACKET) - 1);
+          std::vector<std::uint8_t> frame(packet->data, packet->data + frame_size);
+          if (!input->raw_hid_tablet->handle(frame)) {
+            BOOST_LOG(warning) << "Rejected malformed raw HID tablet frame"sv;
+          }
+        }
+        break;
+      }
     }
   }
 
@@ -2004,6 +2025,7 @@ namespace input {
     reset_mouse_buttons();
     reset_keyboard_keys();
     reset_gamepads(input);
+    input->raw_hid_tablet->reset();
   }
 
   /**
@@ -2106,7 +2128,8 @@ namespace input {
       } else {
         input = std::make_shared<input_t>(
           mail->event<input::touch_port_t>(mail::touch_port),
-          mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback)
+          mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback),
+          mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback)
         );
         state.inputs.try_emplace(std::move(session_id), input);
       }

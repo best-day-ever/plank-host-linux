@@ -14,12 +14,13 @@
 
 // local includes
 #include "src/platform/virtualhid_input.h"
+#include "src/raw_hid_tablet.h"
 
 using namespace std::literals;
 
 namespace platf {
   platform_caps::caps_t get_capabilities() {
-    platform_caps::caps_t caps = 0;
+    platform_caps::caps_t caps = raw_hid::available() ? platform_caps::raw_hid_tablet : 0;
     const auto runtime = virtualhid::create_runtime();
     if (!runtime) {
       return caps;
@@ -31,7 +32,6 @@ namespace platf {
     if (virtualhid::configured_gamepad_supports_touchpad()) {
       caps |= platform_caps::controller_touch;
     }
-
     return caps;
   }
 

@@ -383,6 +383,10 @@ namespace platf {
      * @brief Capability bit indicating controller touchpad support.
      */
     constexpr caps_t controller_touch = 0x02;  // Controller touch events
+    /**
+     * @brief Capability bit indicating encrypted raw HID tablet redirection.
+     */
+    constexpr caps_t raw_hid_tablet = 0x04;  // Session-scoped raw HID tablet transport
   };  // namespace platform_caps
 
   /**

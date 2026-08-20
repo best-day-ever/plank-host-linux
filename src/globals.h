@@ -58,6 +58,7 @@ namespace mail {
   MAIL(idr);  ///< IDR.
   MAIL(invalidate_ref_frames);  ///< Invalidate ref frames.
   MAIL(gamepad_feedback);  ///< Gamepad feedback.
+  MAIL(raw_hid_feedback);  ///< Raw HID tablet control requests.
   MAIL(hdr);  ///< HDR.
 #undef MAIL
 

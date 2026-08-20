@@ -1,0 +1,67 @@
+/**
+ * @file src/raw_hid_tablet.h
+ * @brief Session-scoped raw HID tablet redirection.
+ */
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+#include "thread_safe.h"
+
+namespace raw_hid {
+  using feedback_queue_t = safe::mail_raw_t::queue_t<std::vector<std::uint8_t>>;
+
+  /**
+   * @brief Check whether this process can create Linux UHID devices.
+   *
+   * @return True when raw tablet redirection can be offered to a client.
+   */
+  bool available();
+
+  /**
+   * @brief Owns virtual HID interfaces created for one streaming session.
+   */
+  class tablet_t {
+  public:
+    /**
+     * @brief Create an empty tablet redirector.
+     *
+     * @param feedback_queue Queue carrying host control requests to the client.
+     */
+    explicit tablet_t(feedback_queue_t feedback_queue);
+
+    /**
+     * @brief Destroy all virtual interfaces owned by this session.
+     */
+    ~tablet_t();
+
+    tablet_t(const tablet_t &) = delete;
+    tablet_t &operator=(const tablet_t &) = delete;
+
+    /**
+     * @brief Process one complete StationConnect raw HID wire frame.
+     *
+     * @param frame Header and payload received from the authenticated client.
+     * @return True when the frame was valid and accepted.
+     */
+    bool handle(const std::vector<std::uint8_t> &frame);
+
+    /**
+     * @brief Bind outbound control messages to a resumed session mailbox.
+     *
+     * @param feedback_queue Queue carrying host control requests to the client.
+     */
+    void rebind(feedback_queue_t feedback_queue);
+
+    /**
+     * @brief Destroy every virtual interface and discard pending state.
+     */
+    void reset();
+
+  private:
+    class impl_t;
+    std::unique_ptr<impl_t> impl_;  ///< Platform implementation and session state.
+  };
+}  // namespace raw_hid

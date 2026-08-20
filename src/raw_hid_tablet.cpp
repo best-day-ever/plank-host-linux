@@ -1,0 +1,490 @@
+/**
+ * @file src/raw_hid_tablet.cpp
+ * @brief Session-scoped raw HID tablet redirection implementation.
+ */
+
+#include "raw_hid_tablet.h"
+
+#include <algorithm>
+#include <array>
+#include <cerrno>
+#include <cstring>
+#include <mutex>
+#include <optional>
+#include <span>
+#include <string>
+#include <thread>
+#include <utility>
+
+#ifdef __linux__
+  #include <fcntl.h>
+  #include <linux/uhid.h>
+  #include <poll.h>
+  #include <unistd.h>
+#endif
+
+extern "C" {
+#include <moonlight-common-c/src/StationConnect.h>
+}
+
+#include "logging.h"
+#include "utility.h"
+
+using namespace std::literals;
+
+namespace raw_hid {
+  namespace {
+    constexpr std::int32_t success = 0;
+
+    /**
+     * @brief Read an unaligned little-endian protocol value.
+     *
+     * @tparam T Integral value type.
+     * @param source Bytes containing the value.
+     * @return Host-endian value.
+     */
+    template<typename T>
+    T read_little(const T &source) {
+      T value;
+      std::memcpy(&value, &source, sizeof(value));
+      return util::endian::little(value);
+    }
+
+    /**
+     * @brief Write a little-endian protocol value without alignment assumptions.
+     *
+     * @tparam T Integral value type.
+     * @param destination Field receiving the value.
+     * @param value Host-endian value.
+     */
+    template<typename T>
+    void write_little(T &destination, T value) {
+      value = util::endian::little(value);
+      std::memcpy(&destination, &value, sizeof(value));
+    }
+  }  // namespace
+
+  class tablet_t::impl_t {
+  public:
+    /**
+     * @brief Initialize raw tablet session state.
+     *
+     * @param feedback_queue Queue carrying host control requests to the client.
+     */
+    explicit impl_t(feedback_queue_t feedback_queue):
+        feedback_queue_ {std::move(feedback_queue)} {
+    }
+
+    /**
+     * @brief Destroy all interfaces when the implementation is released.
+     */
+    ~impl_t() {
+      reset();
+    }
+
+    /**
+     * @brief Process a validated transport frame.
+     *
+     * @param frame Header and payload bytes.
+     * @return True when the frame was accepted.
+     */
+    bool handle(const std::vector<std::uint8_t> &frame) {
+      if (frame.size() < sizeof(SC_RAW_HID_WIRE_HEADER)) {
+        return false;
+      }
+
+      SC_RAW_HID_WIRE_HEADER header;
+      std::memcpy(&header, frame.data(), sizeof(header));
+      const auto payload_length = read_little(header.payloadLength);
+      if (read_little(header.magic) != SC_RAW_HID_WIRE_MAGIC ||
+          read_little(header.version) != SC_RAW_HID_WIRE_VERSION ||
+          payload_length > SC_RAW_HID_MAX_PAYLOAD_SIZE ||
+          frame.size() != sizeof(header) + payload_length) {
+        return false;
+      }
+
+      const auto type = static_cast<SC_RAW_HID_MESSAGE_TYPE>(read_little(header.type));
+      const auto interface_id = read_little(header.interfaceId);
+      const auto generation = read_little(header.generation);
+      const auto transaction_id = read_little(header.transactionId);
+      const std::span<const std::uint8_t> payload {frame.data() + sizeof(header), payload_length};
+
+      if (type == SC_RAW_HID_DEVICE) {
+        return begin_attach(generation, payload);
+      }
+
+      std::unique_lock lock {mutex_};
+      if (!device_ || generation != generation_) {
+        return false;
+      }
+      if (type == SC_RAW_HID_DESCRIPTOR) {
+        return accept_descriptor(interface_id, payload);
+      }
+      if (type == SC_RAW_HID_DETACH) {
+        lock.unlock();
+        reset();
+        return true;
+      }
+      if (interface_id >= uhid_fds_.size()) {
+        return false;
+      }
+
+#ifdef __linux__
+      if (type == SC_RAW_HID_INPUT && !payload.empty() && payload.size() <= UHID_DATA_MAX) {
+        uhid_event event {};
+        event.type = UHID_INPUT2;
+        event.u.input2.size = static_cast<std::uint16_t>(payload.size());
+        std::ranges::copy(payload, event.u.input2.data);
+        return write_event(uhid_fds_[interface_id], event);
+      }
+      if (type == SC_RAW_HID_GET_REPORT_REPLY && payload.size() >= sizeof(std::int32_t)) {
+        std::int32_t error;
+        std::memcpy(&error, payload.data(), sizeof(error));
+        error = util::endian::little(error);
+        if (payload.size() - sizeof(error) > UHID_DATA_MAX) {
+          return false;
+        }
+        uhid_event event {};
+        event.type = UHID_GET_REPORT_REPLY;
+        event.u.get_report_reply.id = transaction_id;
+        event.u.get_report_reply.err = static_cast<std::uint16_t>(std::max(error, 0));
+        event.u.get_report_reply.size = static_cast<std::uint16_t>(payload.size() - sizeof(error));
+        std::copy(payload.begin() + sizeof(error), payload.end(), event.u.get_report_reply.data);
+        return write_event(uhid_fds_[interface_id], event);
+      }
+      if (type == SC_RAW_HID_SET_REPORT_REPLY && payload.size() == sizeof(std::int32_t)) {
+        std::int32_t error;
+        std::memcpy(&error, payload.data(), sizeof(error));
+        error = util::endian::little(error);
+        uhid_event event {};
+        event.type = UHID_SET_REPORT_REPLY;
+        event.u.set_report_reply.id = transaction_id;
+        event.u.set_report_reply.err = static_cast<std::uint16_t>(std::max(error, 0));
+        return write_event(uhid_fds_[interface_id], event);
+      }
+#endif
+      return false;
+    }
+
+    /**
+     * @brief Replace the outbound control queue after session resume.
+     *
+     * @param feedback_queue New session queue.
+     */
+    void rebind(feedback_queue_t feedback_queue) {
+      std::lock_guard lock {mutex_};
+      feedback_queue_ = std::move(feedback_queue);
+    }
+
+    /**
+     * @brief Stop the poll worker and destroy all UHID interfaces.
+     */
+    void reset() {
+#ifdef __linux__
+      poll_thread_.request_stop();
+      if (poll_thread_.joinable() && poll_thread_.get_id() != std::this_thread::get_id()) {
+        poll_thread_.join();
+      }
+#endif
+      std::lock_guard lock {mutex_};
+#ifdef __linux__
+      destroy_interfaces();
+#endif
+      descriptors_.clear();
+      started_.clear();
+      device_.reset();
+      generation_ = 0;
+    }
+
+  private:
+    /**
+     * @brief Start collecting metadata for a new device generation.
+     *
+     * @param generation Client-selected generation number.
+     * @param payload Serialized device metadata.
+     * @return True when metadata was accepted.
+     */
+    bool begin_attach(std::uint16_t generation, std::span<const std::uint8_t> payload) {
+      if (payload.size() != sizeof(SC_RAW_HID_DEVICE_MESSAGE)) {
+        return false;
+      }
+      reset();
+
+      SC_RAW_HID_DEVICE_MESSAGE device;
+      std::memcpy(&device, payload.data(), sizeof(device));
+      const auto interface_count = read_little(device.interfaceCount);
+      if (generation == 0 || interface_count == 0 || interface_count > SC_RAW_HID_MAX_INTERFACES) {
+        send_attach_result(generation, EINVAL);
+        return false;
+      }
+      device.name[sizeof(device.name) - 1] = '\0';
+      device.physical[sizeof(device.physical) - 1] = '\0';
+      device.unique[sizeof(device.unique) - 1] = '\0';
+
+      std::lock_guard lock {mutex_};
+      generation_ = generation;
+      device_ = device;
+      descriptors_.resize(interface_count);
+      started_.assign(interface_count, false);
+      return true;
+    }
+
+    /**
+     * @brief Store one report descriptor and create the group when complete.
+     *
+     * @param interface_id Interface receiving the descriptor.
+     * @param descriptor Original HID report descriptor.
+     * @return True when the descriptor was accepted.
+     */
+    bool accept_descriptor(std::uint16_t interface_id, std::span<const std::uint8_t> descriptor) {
+      if (interface_id >= descriptors_.size() || descriptor.empty() ||
+          descriptor.size() > SC_RAW_HID_MAX_DESCRIPTOR_SIZE || !descriptors_[interface_id].empty()) {
+        return false;
+      }
+      descriptors_[interface_id].assign(descriptor.begin(), descriptor.end());
+      if (std::ranges::any_of(descriptors_, [](const auto &item) {
+            return item.empty();
+          })) {
+        return true;
+      }
+      return create_group();
+    }
+
+    /**
+     * @brief Create one UHID endpoint per client HID interface.
+     *
+     * @return True when all create requests were written.
+     */
+    bool create_group() {
+#ifdef __linux__
+      const auto &device = *device_;
+      for (const auto &descriptor : descriptors_) {
+        const int fd = open("/dev/uhid", O_RDWR | O_CLOEXEC | O_NONBLOCK);
+        if (fd < 0) {
+          const int error_code = errno;
+          BOOST_LOG(error) << "Raw HID tablet cannot open /dev/uhid: "sv << std::strerror(error_code);
+          destroy_interfaces();
+          send_attach_result(generation_, error_code);
+          return false;
+        }
+        uhid_fds_.push_back(fd);
+
+        uhid_event create {};
+        create.type = UHID_CREATE2;
+        std::memcpy(create.u.create2.name, device.name, sizeof(device.name));
+        const std::string physical = "stationconnect/raw-tablet/" + std::to_string(generation_);
+        std::memcpy(create.u.create2.phys, physical.data(), std::min(physical.size(), sizeof(create.u.create2.phys) - 1));
+        std::memcpy(create.u.create2.uniq, device.unique, sizeof(device.unique));
+        create.u.create2.rd_size = static_cast<std::uint16_t>(descriptor.size());
+        create.u.create2.bus = read_little(device.bus);
+        create.u.create2.vendor = read_little(device.vendor);
+        create.u.create2.product = read_little(device.product);
+        create.u.create2.version = read_little(device.version);
+        create.u.create2.country = read_little(device.country);
+        std::ranges::copy(descriptor, create.u.create2.rd_data);
+        if (!write_event(fd, create)) {
+          destroy_interfaces();
+          send_attach_result(generation_, EIO);
+          return false;
+        }
+      }
+      poll_thread_ = std::jthread {[this](std::stop_token stop_token) {
+        poll_uhid(stop_token);
+      }};
+      return true;
+#else
+      send_attach_result(generation_, ENOTSUP);
+      return false;
+#endif
+    }
+
+#ifdef __linux__
+    /**
+     * @brief Write a complete event to a UHID endpoint.
+     *
+     * @param fd UHID endpoint.
+     * @param event Event to write.
+     * @return True when the kernel accepted the event.
+     */
+    static bool write_event(int fd, const uhid_event &event) {
+      const auto written = write(fd, &event, sizeof(event));
+      if (written != static_cast<ssize_t>(sizeof(event))) {
+        BOOST_LOG(error) << "Raw HID tablet UHID write failed: "sv << std::strerror(errno);
+        return false;
+      }
+      return true;
+    }
+
+    /**
+     * @brief Destroy and close every partially or fully created UHID endpoint.
+     */
+    void destroy_interfaces() {
+      uhid_event destroy {};
+      destroy.type = UHID_DESTROY;
+      for (const int fd : uhid_fds_) {
+        write_event(fd, destroy);
+        close(fd);
+      }
+      uhid_fds_.clear();
+    }
+
+    /**
+     * @brief Relay kernel control requests to the remote physical device.
+     *
+     * @param stop_token Session shutdown signal.
+     */
+    void poll_uhid(std::stop_token stop_token) {
+      std::vector<pollfd> poll_fds;
+      {
+        std::lock_guard lock {mutex_};
+        poll_fds.reserve(uhid_fds_.size());
+        for (const int fd : uhid_fds_) {
+          poll_fds.push_back({fd, POLLIN, 0});
+        }
+      }
+
+      while (!stop_token.stop_requested()) {
+        const int result = poll(poll_fds.data(), poll_fds.size(), 100);
+        if (result < 0 && errno != EINTR) {
+          break;
+        }
+        for (std::size_t index = 0; index < poll_fds.size(); ++index) {
+          if ((poll_fds[index].revents & POLLIN) == 0) {
+            continue;
+          }
+          uhid_event event {};
+          const auto bytes = read(poll_fds[index].fd, &event, sizeof(event));
+          if (bytes < static_cast<ssize_t>(sizeof(event.type))) {
+            continue;
+          }
+          handle_uhid_event(static_cast<std::uint16_t>(index), event);
+        }
+      }
+    }
+
+    /**
+     * @brief Serialize one kernel UHID lifecycle or report request.
+     *
+     * @param interface_id Client HID interface index.
+     * @param event Kernel event.
+     */
+    void handle_uhid_event(std::uint16_t interface_id, const uhid_event &event) {
+      if (event.type == UHID_START) {
+        bool all_started = false;
+        {
+          std::lock_guard lock {mutex_};
+          started_[interface_id] = true;
+          all_started = std::ranges::all_of(started_, [](const bool value) {
+            return value;
+          });
+        }
+        if (all_started) {
+          send_attach_result(generation_, success);
+        }
+      } else if (event.type == UHID_OPEN) {
+        send_frame(SC_RAW_HID_OPEN, interface_id, 0, {});
+      } else if (event.type == UHID_CLOSE) {
+        send_frame(SC_RAW_HID_CLOSE, interface_id, 0, {});
+      } else if (event.type == UHID_GET_REPORT) {
+        const std::array<std::uint8_t, 2> request {event.u.get_report.rnum, event.u.get_report.rtype};
+        send_frame(SC_RAW_HID_GET_REPORT, interface_id, event.u.get_report.id, request);
+      } else if (event.type == UHID_SET_REPORT) {
+        std::vector<std::uint8_t> request {event.u.set_report.rtype};
+        request.insert(request.end(), event.u.set_report.data, event.u.set_report.data + event.u.set_report.size);
+        send_frame(SC_RAW_HID_SET_REPORT, interface_id, event.u.set_report.id, request);
+      } else if (event.type == UHID_OUTPUT) {
+        std::vector<std::uint8_t> output {event.u.output.rtype};
+        output.insert(output.end(), event.u.output.data, event.u.output.data + event.u.output.size);
+        send_frame(SC_RAW_HID_OUTPUT, interface_id, 0, output);
+      }
+    }
+#endif
+
+    /**
+     * @brief Send the result of creating an entire interface group.
+     *
+     * @param generation Device generation being acknowledged.
+     * @param error Zero for success or a positive errno value.
+     */
+    void send_attach_result(std::uint16_t generation, std::int32_t error) {
+      const auto little_error = util::endian::little(error);
+      const std::span<const std::uint8_t> payload {reinterpret_cast<const std::uint8_t *>(&little_error), sizeof(little_error)};
+      send_frame(SC_RAW_HID_ATTACH_RESULT, 0, 0, payload, generation);
+    }
+
+    /**
+     * @brief Queue one raw HID frame for encrypted host-to-client delivery.
+     *
+     * @param type Raw HID message type.
+     * @param interface_id Client HID interface index.
+     * @param transaction_id Correlation identifier.
+     * @param payload Message payload.
+     * @param generation Optional generation override for attach failures.
+     */
+    void send_frame(SC_RAW_HID_MESSAGE_TYPE type, std::uint16_t interface_id, std::uint32_t transaction_id,
+                    std::span<const std::uint8_t> payload, std::uint16_t generation = 0) {
+      std::vector<std::uint8_t> frame(sizeof(SC_RAW_HID_WIRE_HEADER) + payload.size());
+      SC_RAW_HID_WIRE_HEADER header {};
+      write_little(header.magic, static_cast<std::uint32_t>(SC_RAW_HID_WIRE_MAGIC));
+      write_little(header.version, static_cast<std::uint16_t>(SC_RAW_HID_WIRE_VERSION));
+      write_little(header.type, static_cast<std::uint16_t>(type));
+      write_little(header.interfaceId, interface_id);
+      write_little(header.generation, generation == 0 ? generation_ : generation);
+      write_little(header.transactionId, transaction_id);
+      write_little(header.payloadLength, static_cast<std::uint32_t>(payload.size()));
+      std::memcpy(frame.data(), &header, sizeof(header));
+      std::ranges::copy(payload, frame.begin() + sizeof(header));
+
+      feedback_queue_t queue;
+      {
+        std::lock_guard lock {mutex_};
+        queue = feedback_queue_;
+      }
+      if (queue) {
+        queue->raise(std::move(frame));
+      }
+    }
+
+    std::recursive_mutex mutex_;  ///< Protects device state and the outbound queue binding.
+    feedback_queue_t feedback_queue_;  ///< Current session control queue.
+    std::optional<SC_RAW_HID_DEVICE_MESSAGE> device_;  ///< Client USB identity for the pending group.
+    std::uint16_t generation_ = 0;  ///< Active client generation.
+    std::vector<std::vector<std::uint8_t>> descriptors_;  ///< Original report descriptors by interface.
+    std::vector<bool> started_;  ///< Kernel start state by interface.
+    std::vector<int> uhid_fds_;  ///< UHID endpoints by interface.
+#ifdef __linux__
+    std::jthread poll_thread_;  ///< Worker relaying kernel control requests.
+#endif
+  };
+
+  bool available() {
+#ifdef __linux__
+    const int fd = open("/dev/uhid", O_RDWR | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) {
+      return false;
+    }
+    close(fd);
+    return true;
+#else
+    return false;
+#endif
+  }
+
+  tablet_t::tablet_t(feedback_queue_t feedback_queue):
+      impl_ {std::make_unique<impl_t>(std::move(feedback_queue))} {
+  }
+
+  tablet_t::~tablet_t() = default;
+
+  bool tablet_t::handle(const std::vector<std::uint8_t> &frame) {
+    return impl_->handle(frame);
+  }
+
+  void tablet_t::rebind(feedback_queue_t feedback_queue) {
+    impl_->rebind(std::move(feedback_queue));
+  }
+
+  void tablet_t::reset() {
+    impl_->reset();
+  }
+}  // namespace raw_hid
