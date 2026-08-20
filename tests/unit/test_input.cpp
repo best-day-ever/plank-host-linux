@@ -61,6 +61,16 @@ namespace {
   };
 }  // namespace
 
+TEST(InputConfigDefaults, AdvertisesNativePenWithoutRemappingRightAlt) {
+  EXPECT_TRUE(config::input.keyboard);
+  EXPECT_FALSE(config::input.key_rightalt_to_key_win);
+  EXPECT_TRUE(config::input.mouse);
+  EXPECT_TRUE(config::input.controller);
+  EXPECT_TRUE(config::input.always_send_scancodes);
+  EXPECT_TRUE(config::input.high_resolution_scrolling);
+  EXPECT_TRUE(config::input.native_pen_touch);
+}
+
 TEST_F(InputGamepadSessionTest, ReusesGamepadsAcrossPauseAndDestroysThemOnTermination) {
   const std::string session_id = "paired-client-certificate";
   auto first_mail = std::make_shared<safe::mail_raw_t>();

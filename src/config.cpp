@@ -855,6 +855,7 @@ namespace config {
     true,  // virtualhid_randomize_mac
 
     true,  // keyboard enabled
+    false,  // map Right Alt to the Windows key
     true,  // mouse enabled
     true,  // controller enabled
     true,  // always send scancodes
