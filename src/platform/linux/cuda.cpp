@@ -1206,6 +1206,22 @@ namespace cuda {
         }
         auto img = (img_t *) img_out.get();
 
+        // NvFBC reports CLOCK_MONOTONIC microseconds for the time the display
+        // server started rendering a new frame. Preserve it so the streaming
+        // protocol can report capture-to-packet processing latency. Repeated
+        // frames retain the old driver timestamp and must remain untimestamped.
+        if (info.bIsNewFrame && info.ulTimestampUs != 0) {
+          const auto timestamp_us = std::chrono::microseconds {
+            static_cast<std::chrono::microseconds::rep>(info.ulTimestampUs)
+          };
+          const auto timestamp_duration =
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(timestamp_us);
+          const auto frame_timestamp = std::chrono::steady_clock::time_point {timestamp_duration};
+          if (frame_timestamp <= std::chrono::steady_clock::now()) {
+            img_out->frame_timestamp = frame_timestamp;
+          }
+        }
+
         if (img->tex.copy((std::uint8_t *) device_ptr, img->height, img->row_pitch)) {
           return platf::capture_e::error;
         }
