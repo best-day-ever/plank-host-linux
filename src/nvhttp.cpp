@@ -6,6 +6,7 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 // standard includes
+#include <algorithm>
 #include <filesystem>
 #include <format>
 #include <sstream>
@@ -1201,6 +1202,10 @@ namespace nvhttp {
     apps.put("<xmlattr>.status_code", 200);
 
     for (auto &proc : proc::proc.get_apps()) {
+      if (stationconnect_authentication && proc.name != "Desktop") {
+        continue;
+      }
+
       pt::ptree app;
 
       app.put("IsHdrSupported"s, video::active_hevc_mode >= 3 ? 1 : 0);
@@ -1254,6 +1259,20 @@ namespace nvhttp {
     }
 
     auto appid = util::from_view(get_arg(args, "appid"));
+
+    if (stationconnect_authentication) {
+      const auto &apps = proc::proc.get_apps();
+      const auto requested_app_id = std::to_string(appid);
+      const bool is_desktop = std::any_of(apps.begin(), apps.end(), [&requested_app_id](const auto &app) {
+        return app.name == "Desktop" && app.id == requested_app_id;
+      });
+      if (!is_desktop) {
+        tree.put("root.resume", 0);
+        tree.put("root.<xmlattr>.status_code", 403);
+        tree.put("root.<xmlattr>.status_message", "StationConnect permits only the Desktop session");
+        return;
+      }
+    }
 
     auto current_appid = proc::proc.running();
     if (current_appid > 0) {
@@ -1369,6 +1388,20 @@ namespace nvhttp {
       tree.put("root.<xmlattr>.status_message", "No running app to resume");
 
       return;
+    }
+
+    if (stationconnect_authentication) {
+      const auto &apps = proc::proc.get_apps();
+      const auto current_app_id = std::to_string(current_appid);
+      const bool is_desktop = std::any_of(apps.begin(), apps.end(), [&current_app_id](const auto &app) {
+        return app.name == "Desktop" && app.id == current_app_id;
+      });
+      if (!is_desktop) {
+        tree.put("root.resume", 0);
+        tree.put("root.<xmlattr>.status_code", 403);
+        tree.put("root.<xmlattr>.status_message", "StationConnect permits only the Desktop session");
+        return;
+      }
     }
 
     auto args = request->parse_query_string();
