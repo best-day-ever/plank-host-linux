@@ -14,6 +14,7 @@
 
 // standard includes
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -717,7 +718,16 @@ namespace platf {
     auto const max_iovs_per_msg = send_info.payload_buffers.size() + (send_info.headers ? 1 : 0);
 
 #ifdef UDP_SEGMENT
-    {
+    static const bool qualification_disable_udp_gso = []() {
+      const char *value = std::getenv("SUNSHINE_QUALIFICATION_DISABLE_UDP_GSO");
+      const bool disabled = value != nullptr && std::strcmp(value, "1") == 0;
+      if (disabled) {
+        BOOST_LOG(warning) << "UDP GSO disabled by qualification environment; using sendmmsg()"sv;
+      }
+      return disabled;
+    }();
+
+    if (!qualification_disable_udp_gso) {
       // UDP GSO on Linux currently only supports sending 64K or 64 segments at a time
       size_t seg_index = 0;
       const size_t seg_max = 65536 / 1500;
