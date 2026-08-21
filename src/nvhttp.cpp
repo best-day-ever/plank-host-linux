@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -55,6 +56,16 @@ namespace nvhttp {
   constexpr std::string_view pam_broker_socket = "/run/stationconnect/auth.sock"sv;  ///< Privileged broker activation path.
   std::unique_ptr<stationconnect::auth::web_auth_manager_t> web_auth;  ///< PAM conversations and ephemeral tokens.
   bool stationconnect_authentication = false;  ///< Whether pairing has been replaced by PAM for this process.
+  constexpr std::uint32_t stationconnect_topology_version = 1;
+  constexpr std::uint32_t stationconnect_feature_output_topology = 0x1;
+  constexpr std::uint32_t stationconnect_feature_selected_output = 0x2;
+  constexpr std::uint32_t stationconnect_feature_unified_absolute_input = 0x4;
+  constexpr std::uint32_t stationconnect_feature_scaled_span = 0x8;
+  constexpr std::uint32_t stationconnect_topology_features =
+    stationconnect_feature_output_topology |
+    stationconnect_feature_selected_output |
+    stationconnect_feature_unified_absolute_input |
+    stationconnect_feature_scaled_span;
 
   /**
    * @brief HTTPS server backend that adds Sunshine's client-certificate verification.
@@ -415,6 +426,106 @@ namespace nvhttp {
     return false;
   }
 
+  nlohmann::json output_topology_json() {
+    const auto outputs = video::output_topology();
+    nlohmann::json body {
+      {"schema_version", stationconnect_topology_version},
+      {"feature_flags", stationconnect_topology_features},
+      {"outputs", nlohmann::json::array()},
+    };
+
+    int min_x = 0;
+    int min_y = 0;
+    int max_x = 0;
+    int max_y = 0;
+    bool first = true;
+    std::string fingerprint;
+    for (const auto &output : outputs) {
+      body["outputs"].push_back({
+        {"id", output.id},
+        {"name", output.name},
+        {"x", output.x},
+        {"y", output.y},
+        {"width", output.width},
+        {"height", output.height},
+        {"rotation", output.rotation},
+        {"refresh_millihz", output.refresh_millihz},
+        {"primary", output.primary},
+      });
+      if (first) {
+        min_x = output.x;
+        min_y = output.y;
+        max_x = output.x + output.width;
+        max_y = output.y + output.height;
+        first = false;
+      } else {
+        min_x = std::min(min_x, output.x);
+        min_y = std::min(min_y, output.y);
+        max_x = std::max(max_x, output.x + output.width);
+        max_y = std::max(max_y, output.y + output.height);
+      }
+      fingerprint += std::format("{}:{}:{}:{}:{}:{}:{};", output.id, output.x, output.y,
+                                 output.width, output.height, output.rotation, output.refresh_millihz);
+    }
+    body["desktop"] = {
+      {"x", min_x}, {"y", min_y}, {"width", max_x - min_x}, {"height", max_y - min_y},
+    };
+    body["generation"] = std::format("x11:{}", std::hash<std::string> {}(fingerprint));
+    return body;
+  }
+
+  void output_topology(const resp_https_t &response, const req_https_t &) {
+    write_auth_json(response, SimpleWeb::StatusCode::success_ok, output_topology_json());
+  }
+
+  bool resolve_selected_output(rtsp_stream::launch_session_t &session, pt::ptree &tree) {
+    if (session.display_mode == "scaled-span") {
+      if (session.stationconnect_protocol_version != stationconnect_topology_version ||
+          (session.stationconnect_feature_flags & stationconnect_feature_scaled_span) == 0 ||
+          !session.output_id.empty()) {
+        tree.put("root.<xmlattr>.status_code", 400);
+        tree.put("root.<xmlattr>.status_message", "Invalid StationConnect scaled-span negotiation");
+        return false;
+      }
+      const auto outputs = video::output_topology();
+      if (outputs.empty()) {
+        tree.put("root.<xmlattr>.status_code", 409);
+        tree.put("root.<xmlattr>.status_message", "Host desktop topology is unavailable");
+        return false;
+      }
+      session.output_name.clear();
+      session.span_desktop = true;
+      BOOST_LOG(info) << "StationConnect selected scaled virtual-desktop span"sv;
+      return true;
+    }
+    if (!session.display_mode.empty() && session.display_mode != "single-output") {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Unknown StationConnect display mode");
+      return false;
+    }
+    if (session.output_id.empty()) {
+      session.output_name = display_device::map_output_name(config::video.output_name);
+      return true;
+    }
+    if (session.stationconnect_protocol_version != stationconnect_topology_version ||
+        (session.stationconnect_feature_flags & stationconnect_feature_selected_output) == 0) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Invalid StationConnect output negotiation");
+      return false;
+    }
+    const auto outputs = video::output_topology();
+    const auto capture_name = video::resolve_output_capture_name(outputs, session.output_id);
+    if (!capture_name) {
+      tree.put("root.<xmlattr>.status_code", 409);
+      tree.put("root.<xmlattr>.status_message", "Selected host output is no longer available");
+      return false;
+    }
+    session.output_name = *capture_name;
+    BOOST_LOG(info) << "StationConnect selected output "sv << logging::bracket(session.output_id)
+                    << " using capture name "sv << logging::bracket(session.output_name);
+    return true;
+  }
+
   /**
    * @brief Certificate operations supported by the pairing API.
    */
@@ -610,6 +721,12 @@ namespace nvhttp {
     launch_session->continuous_audio = util::from_view(get_arg(args, "continuousAudio", "0"));
     launch_session->gcmap = (int) util::from_view(get_arg(args, "gcmap", "0"));
     launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
+    launch_session->output_id = get_arg(args, "scOutputId", "");
+    launch_session->display_mode = get_arg(args, "scDisplayMode", "");
+    launch_session->stationconnect_protocol_version =
+      static_cast<std::uint32_t>(util::from_view(get_arg(args, "scProtocolVersion", "0")));
+    launch_session->stationconnect_feature_flags =
+      static_cast<std::uint32_t>(util::from_view(get_arg(args, "scFeatureFlags", "0")));
 
     // Encrypted RTSP is enabled with client reported corever >= 1
     auto corever = util::from_view(get_arg(args, "corever", "0"));
@@ -1120,6 +1237,10 @@ namespace nvhttp {
     tree.put("root.HttpsPort", net::map_port(PORT_HTTPS));
     tree.put("root.ExternalPort", net::map_port(PORT_HTTP));
     tree.put("root.StationConnectAuth", stationconnect_authentication ? 1 : 0);
+    if (stationconnect_authentication) {
+      tree.put("root.StationConnectTopologyVersion", stationconnect_topology_version);
+      tree.put("root.StationConnectFeatureFlags", stationconnect_topology_features);
+    }
     tree.put("root.MaxLumaPixelsHEVC", video::active_hevc_mode > 1 ? "1869449984" : "0");
 
     // Only include the MAC address for requests sent from paired clients over HTTPS.
@@ -1285,6 +1406,10 @@ namespace nvhttp {
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     auto launch_session = make_launch_session(host_audio, args);
+    if (!resolve_selected_output(*launch_session, tree)) {
+      tree.put("root.gamesession", 0);
+      return;
+    }
 
     if (rtsp_stream::session_count() == 0) {
       // The display should be restored in case something fails as there are no other sessions.
@@ -1424,6 +1549,10 @@ namespace nvhttp {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
     const auto launch_session = make_launch_session(host_audio, args);
+    if (!resolve_selected_output(*launch_session, tree)) {
+      tree.put("root.resume", 0);
+      return;
+    }
 
     if (no_active_sessions) {
       // We want to prepare display only if there are no active sessions at
@@ -1665,6 +1794,11 @@ namespace nvhttp {
     if (stationconnect_authentication) {
       https_server.resource["^/stationconnect/auth/start$"]["POST"] = auth_start;
       https_server.resource["^/stationconnect/auth/respond$"]["POST"] = auth_respond;
+      https_server.resource["^/stationconnect/topology$"]["GET"] = [](auto resp, auto req) {
+        if (require_authentication(resp, req)) {
+          output_topology(resp, req);
+        }
+      };
     } else {
       https_server.resource["^/pair$"]["GET"] = [&add_cert](auto resp, auto req) {
         pair<SunshineHTTPS>(add_cert, resp, req);

@@ -7,7 +7,10 @@
 // standard includes
 #include <chrono>
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
 
 // local includes
 #include "input.h"
@@ -49,6 +52,7 @@ namespace video {
    * @brief Encoding configuration requested by a remote client.
    */
   struct config_t {
+    std::string output_name;  ///< Capture backend name selected for this session.
     int width;  ///< Video width in pixels.
     int height;  ///< Video height in pixels.
     int framerate;  ///< Requested framerate used in the per-frame bitrate budget.
@@ -61,6 +65,7 @@ namespace video {
     int dynamicRange;  ///< Encoding color depth: 0 = 8-bit, 1 = 10-bit.
     int chromaSamplingType;  ///< Chroma sampling type: 0 = 4:2:0, 1 = 4:4:4.
     int enableIntraRefresh;  ///< Intra refresh setting: 0 = disabled, 1 = enabled.
+    bool span_desktop {};  ///< Capture and scale the complete virtual desktop rather than one output.
   };
 
   namespace amf {
@@ -659,6 +664,21 @@ namespace video {
     safe::mail_t mail,
     config_t config,
     void *channel_data
+  );
+
+  /**
+   * @brief Enumerate outputs visible to the active capture backend.
+   * @return Stable output identities and desktop geometry.
+   */
+  std::vector<platf::display_info_t> output_topology();
+
+  /**
+   * @brief Resolve one opaque output ID against a topology snapshot.
+   * @return Capture backend name, or no value when the output is absent.
+   */
+  std::optional<std::string> resolve_output_capture_name(
+    const std::vector<platf::display_info_t> &outputs,
+    std::string_view output_id
   );
 
   /**

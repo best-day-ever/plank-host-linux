@@ -921,6 +921,30 @@ namespace platf {
   std::vector<std::string> display_names(mem_type_e hwdevice_type);
 
   /**
+   * @brief Stable output metadata used by StationConnect topology negotiation.
+   */
+  struct display_info_t {
+    std::string id;  ///< Opaque stable protocol identifier.
+    std::string name;  ///< User-facing connector or display name.
+    std::string capture_name;  ///< Backend name accepted by display().
+    int x {};  ///< Output origin in desktop coordinates.
+    int y {};  ///< Output origin in desktop coordinates.
+    int width {};  ///< Active pixel width.
+    int height {};  ///< Active pixel height.
+    int rotation {};  ///< Clockwise rotation in degrees.
+    int refresh_millihz {};  ///< Active refresh rate in millihertz, or zero when unknown.
+    bool primary {};  ///< Whether the window system marks this output primary.
+  };
+
+  /**
+   * @brief Enumerate connected outputs with stable identity and desktop geometry.
+   *
+   * @param hwdevice_type Hardware device type requested for capture or encode.
+   * @return Connected outputs visible to the selected window system.
+   */
+  std::vector<display_info_t> display_infos(mem_type_e hwdevice_type);
+
+  /**
    * @brief Check if GPUs/drivers have changed since the last call to this function.
    * @return `true` if a change has occurred or if it is unknown whether a change occurred.
    */

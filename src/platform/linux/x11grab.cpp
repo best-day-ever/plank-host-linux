@@ -3,6 +3,8 @@
  * @brief Definitions for x11 capture.
  */
 // standard includes
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <ranges>
 #include <thread>
@@ -75,6 +77,7 @@ namespace platf {
       _FN(GetScreenResources, XRRScreenResources *, (Display * dpy, Window window));
       _FN(GetOutputInfo, XRROutputInfo *, (Display * dpy, XRRScreenResources *resources, RROutput output));
       _FN(GetCrtcInfo, XRRCrtcInfo *, (Display * dpy, XRRScreenResources *resources, RRCrtc crtc));
+      _FN(GetOutputPrimary, RROutput, (Display * dpy, Window window));
       _FN(FreeScreenResources, void, (XRRScreenResources * resources));
       _FN(FreeOutputInfo, void, (XRROutputInfo * outputInfo));
       _FN(FreeCrtcInfo, void, (XRRCrtcInfo * crtcInfo));
@@ -98,6 +101,7 @@ namespace platf {
           {(dyn::apiproc *) &GetScreenResources, "XRRGetScreenResources"},
           {(dyn::apiproc *) &GetOutputInfo, "XRRGetOutputInfo"},
           {(dyn::apiproc *) &GetCrtcInfo, "XRRGetCrtcInfo"},
+          {(dyn::apiproc *) &GetOutputPrimary, "XRRGetOutputPrimary"},
           {(dyn::apiproc *) &FreeScreenResources, "XRRFreeScreenResources"},
           {(dyn::apiproc *) &FreeOutputInfo, "XRRFreeOutputInfo"},
           {(dyn::apiproc *) &FreeCrtcInfo, "XRRFreeCrtcInfo"},
@@ -977,6 +981,80 @@ namespace platf {
     }
 
     return names;
+  }
+
+  /**
+   * @brief Enumerate connected XRandR outputs with stable connector identity.
+   */
+  std::vector<display_info_t> x11_display_infos() {
+    if (load_x11() || load_xcb()) {
+      return {};
+    }
+
+    x11::xdisplay_t xdisplay {x11::OpenDisplay(nullptr)};
+    if (!xdisplay) {
+      return {};
+    }
+
+    const auto root = DefaultRootWindow(xdisplay.get());
+    screen_res_t resources {x11::rr::GetScreenResources(xdisplay.get(), root)};
+    if (!resources) {
+      return {};
+    }
+    const auto primary = x11::rr::GetOutputPrimary(xdisplay.get(), root);
+
+    std::vector<display_info_t> outputs;
+    for (int index = 0; index < resources->noutput; ++index) {
+      const auto output_id = resources->outputs[index];
+      output_info_t output {x11::rr::GetOutputInfo(xdisplay.get(), resources.get(), output_id)};
+      if (!output || output->connection != RR_Connected || output->crtc == None) {
+        continue;
+      }
+      crtc_info_t crtc {x11::rr::GetCrtcInfo(xdisplay.get(), resources.get(), output->crtc)};
+      if (!crtc || crtc->width == 0 || crtc->height == 0) {
+        continue;
+      }
+
+      std::string name {output->name, static_cast<std::size_t>(output->nameLen)};
+      int rotation = 0;
+      if (crtc->rotation & RR_Rotate_90) {
+        rotation = 90;
+      } else if (crtc->rotation & RR_Rotate_180) {
+        rotation = 180;
+      } else if (crtc->rotation & RR_Rotate_270) {
+        rotation = 270;
+      }
+
+      int refresh_millihz = 0;
+      const auto mode = std::find_if(resources->modes, resources->modes + resources->nmode,
+                                     [crtc_mode = crtc->mode](const XRRModeInfo &candidate) {
+                                       return candidate.id == crtc_mode;
+                                     });
+      if (mode != resources->modes + resources->nmode && mode->hTotal && mode->vTotal) {
+        auto vertical_total = static_cast<double>(mode->vTotal);
+        if (mode->modeFlags & RR_DoubleScan) {
+          vertical_total *= 2.0;
+        }
+        refresh_millihz = static_cast<int>(std::lround(
+          (static_cast<double>(mode->dotClock) * 1000.0) /
+          (static_cast<double>(mode->hTotal) * vertical_total)
+        ));
+      }
+
+      outputs.push_back(display_info_t {
+        .id = "x11:"s + name,
+        .name = name,
+        .capture_name = name,
+        .x = crtc->x,
+        .y = crtc->y,
+        .width = static_cast<int>(crtc->width),
+        .height = static_cast<int>(crtc->height),
+        .rotation = rotation,
+        .refresh_millihz = refresh_millihz,
+        .primary = output_id == primary,
+      });
+    }
+    return outputs;
   }
 
   /**

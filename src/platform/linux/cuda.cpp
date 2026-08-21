@@ -4,8 +4,10 @@
  */
 // standard includes
 #include <bitset>
+#include <charconv>
 #include <cmath>
 #include <condition_variable>
+#include <cstring>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <filesystem>
@@ -490,6 +492,19 @@ namespace cuda {
 
       output_width = frame->width;
       output_height = frame->height;
+      const auto scalar = std::fminf(
+        output_width / static_cast<float>(width),
+        output_height / static_cast<float>(height)
+      );
+      content_width = std::max(1, static_cast<int>(width * scalar));
+      content_height = std::max(1, static_cast<int>(height * scalar));
+      content_offset_x = (output_width - content_width) / 2;
+      content_offset_y = (output_height - content_height) / 2;
+      BOOST_LOG(info)
+        << "StationConnect software capture geometry: source=" << width << 'x' << height
+        << " content=" << content_width << 'x' << content_height
+        << '+' << content_offset_x << '+' << content_offset_y
+        << " encode=" << output_width << 'x' << output_height;
       const auto plane_size = static_cast<std::size_t>(output_width) * output_height;
       native_direct = native_bgr0 && output_width == width && output_height == height;
       host_readback_size = native_bgr0 ?
@@ -505,12 +520,14 @@ namespace cuda {
           if (av_frame_get_buffer(frame, 64) < 0) {
             return -1;
           }
+          std::memset(frame->data[0], 0,
+                      static_cast<std::size_t>(frame->linesize[0]) * output_height);
           bgr_scaler.reset(sws_getContext(
             width,
             height,
             AV_PIX_FMT_BGR0,
-            output_width,
-            output_height,
+            content_width,
+            content_height,
             AV_PIX_FMT_BGR0,
             SWS_FAST_BILINEAR,
             nullptr,
@@ -530,6 +547,8 @@ namespace cuda {
         return -1;
       }
       CU_CHECK(cdf->cuMemAlloc(&device_compact, host_readback_size), "Couldn't allocate compact CUDA identity planes");
+      CU_CHECK(cdf->cuMemsetD8Async(device_compact, 0, host_readback_size, stream.get()),
+               "Couldn't initialize identity span background");
 
       auto converter = sws_t::make(width, height, output_width, output_height, width * 4);
       if (!converter) {
@@ -592,7 +611,11 @@ namespace cuda {
       if (mode == mode_e::native_bgr0 && !native_direct) {
         const std::uint8_t *source[] = {static_cast<const std::uint8_t *>(host_readback)};
         const int source_linesize[] = {width * 4};
-        if (sws_scale(bgr_scaler.get(), source, source_linesize, 0, height, frame->data, frame->linesize) != output_height) {
+        std::uint8_t *destination[] = {
+          frame->data[0] + content_offset_y * frame->linesize[0] + content_offset_x * 4
+        };
+        if (sws_scale(bgr_scaler.get(), source, source_linesize, 0, height,
+                      destination, frame->linesize) != content_height) {
           return -1;
         }
       } else if (mode == mode_e::identity_10bit) {
@@ -727,6 +750,10 @@ namespace cuda {
     int height = 0;  ///< NvFBC capture height.
     int output_width = 0;  ///< Encoded frame width.
     int output_height = 0;  ///< Encoded frame height.
+    int content_width = 0;  ///< Aspect-preserving scaled content width.
+    int content_height = 0;  ///< Aspect-preserving scaled content height.
+    int content_offset_x = 0;  ///< Horizontal letterbox offset in the encoded frame.
+    int content_offset_y = 0;  ///< Vertical letterbox offset in the encoded frame.
     bool native_direct = false;  ///< Whether pinned BGR0 can be passed to x264rgb without scaling.
     platf::pix_fmt_e capture_format = platf::pix_fmt_e::unknown;  ///< Negotiated software capture format.
     mode_e mode = mode_e::unset;  ///< Active readback and conversion mode.
@@ -1514,10 +1541,22 @@ namespace cuda {
         int streamedMonitor = -1;
         if (!display_name.empty()) {
           if (status_params->bXRandRAvailable) {
-            auto monitor_nr = util::from_view(display_name);
+            int monitor_nr = -1;
+            const auto [end, error] = std::from_chars(
+              display_name.data(), display_name.data() + display_name.size(), monitor_nr
+            );
+            const bool numeric_name = error == std::errc {} && end == display_name.data() + display_name.size();
+            if (!numeric_name) {
+              for (std::uint32_t index = 0; index < status_params->dwOutputNum; ++index) {
+                if (display_name == status_params->outputs[index].name) {
+                  monitor_nr = static_cast<int>(index);
+                  break;
+                }
+              }
+            }
 
             if (monitor_nr < 0 || monitor_nr >= status_params->dwOutputNum) {
-              BOOST_LOG(warning) << "Can't stream monitor ["sv << monitor_nr << "], it needs to be between [0] and ["sv << status_params->dwOutputNum - 1 << "], defaulting to virtual desktop"sv;
+              BOOST_LOG(warning) << "Can't stream monitor ["sv << display_name << "], defaulting to virtual desktop"sv;
             } else {
               streamedMonitor = monitor_nr;
             }
@@ -1886,7 +1925,7 @@ namespace platf {
       BOOST_LOG(debug) << "  Name: "sv << output.name;
       BOOST_LOG(info) << "  Resolution: "sv << output.trackedBox.w << 'x' << output.trackedBox.h;
       BOOST_LOG(info) << "  Offset: "sv << output.trackedBox.x << 'x' << output.trackedBox.y;
-      display_names.emplace_back(std::to_string(x));
+      display_names.emplace_back(output.name);
     }
 
     return display_names;

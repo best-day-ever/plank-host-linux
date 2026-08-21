@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <bitset>
+#include <charconv>
 #include <cerrno>
 #include <cmath>
 #include <cstring>
@@ -1698,9 +1699,16 @@ namespace video {
    * @param display_names The list of display names to repopulate.
    * @param current_display_index The current display index or -1 if not yet known.
    */
-  void refresh_displays(platf::mem_type_e dev_type, std::vector<std::string> &display_names, int &current_display_index) {
+  void refresh_displays(platf::mem_type_e dev_type, const std::string &preferred_output_name, bool span_desktop,
+                        std::vector<std::string> &display_names, int &current_display_index) {
+    if (span_desktop) {
+      display_names.assign(1, std::string {});
+      current_display_index = 0;
+      return;
+    }
+
     // It is possible that the output name may be empty even if it wasn't before (device disconnected) or vice-versa
-    const auto output_name {display_device::map_output_name(config::video.output_name)};
+    const auto output_name {display_device::map_output_name(preferred_output_name)};
     std::string current_display_name;
 
     // If we have a current display index, let's start with that
@@ -1741,6 +1749,17 @@ namespace video {
           current_display_index = x;
           return;
         }
+      }
+
+      int legacy_index = -1;
+      const auto [end, error] = std::from_chars(
+        output_name.data(), output_name.data() + output_name.size(), legacy_index
+      );
+      if (error == std::errc {} && end == output_name.data() + output_name.size() &&
+          legacy_index >= 0 && legacy_index < display_names.size()) {
+        BOOST_LOG(info) << "Resolved legacy numeric output ["sv << output_name
+                        << "] to stable display ["sv << display_names[legacy_index] << ']';
+        current_display_index = legacy_index;
       }
     }
   }
@@ -1786,7 +1805,9 @@ namespace video {
     // get the most up-to-date list available monitors
     std::vector<std::string> display_names;
     int display_p = -1;
-    refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+    refresh_displays(encoder.platform_formats->dev_type, capture_ctxs.front().config.output_name,
+                     capture_ctxs.front().config.span_desktop,
+                     display_names, display_p);
     auto disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
     if (!disp) {
       return;
@@ -1975,7 +1996,9 @@ namespace video {
               disp.reset();
 
               // Refresh display names since a display removal might have caused the reinitialization
-              refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+              refresh_displays(encoder.platform_formats->dev_type, capture_ctxs.front().config.output_name,
+                               capture_ctxs.front().config.span_desktop,
+                               display_names, display_p);
 
               // Process any pending display switch with the new list of displays
               if (switch_display_event->peek()) {
@@ -3005,7 +3028,9 @@ namespace video {
 
     while (encode_session_ctx_queue.running()) {
       // Refresh display names since a display removal might have caused the reinitialization
-      refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+      refresh_displays(encoder.platform_formats->dev_type, synced_session_ctxs.front()->config.output_name,
+                       synced_session_ctxs.front()->config.span_desktop,
+                       display_names, display_p);
 
       // Process any pending display switch with the new list of displays
       if (switch_display_event->peek()) {
@@ -3293,6 +3318,26 @@ namespace video {
     }
   }
 
+  std::vector<platf::display_info_t> output_topology() {
+    if (!chosen_encoder || !chosen_encoder->platform_formats) {
+      return {};
+    }
+    return platf::display_infos(chosen_encoder->platform_formats->dev_type);
+  }
+
+  std::optional<std::string> resolve_output_capture_name(
+    const std::vector<platf::display_info_t> &outputs,
+    std::string_view output_id
+  ) {
+    const auto output = std::find_if(outputs.begin(), outputs.end(), [output_id](const auto &candidate) {
+      return candidate.id == output_id;
+    });
+    if (output == outputs.end()) {
+      return std::nullopt;
+    }
+    return output->capture_name;
+  }
+
   /**
    * @brief Enumerates supported validate flag options.
    */
@@ -3380,8 +3425,8 @@ namespace video {
     encoder.av1.capabilities.set();
 
     // First, test encoder viability
-    config_t config_max_ref_frames {1920, 1080, 60, 6000, 1000, 1, 1, 1, 0, 0, 0};
-    config_t config_autoselect {1920, 1080, 60, 6000, 1000, 1, 0, 1, 0, 0, 0};
+    config_t config_max_ref_frames {"", 1920, 1080, 60, 6000, 1000, 1, 1, 1, 0, 0, 0};
+    config_t config_autoselect {"", 1920, 1080, 60, 6000, 1000, 1, 0, 1, 0, 0, 0};
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
     if (encoder.name == "software-cuda"sv) {
       config_max_ref_frames.encoderCscMode = (COLORSPACE_IDENTITY_GBR << 1) | 1;
@@ -3483,7 +3528,7 @@ namespace video {
     // Test HDR and YUV444 support
     {
       auto test_yuv444 = [&](auto &flag_map, auto video_format) {
-        config_t config = {1920, 1080, 60, 6000, 1000, 1, 0, 1, video_format, 0, 1};
+        config_t config = {"", 1920, 1080, 60, 6000, 1000, 1, 0, 1, video_format, 0, 1};
         if (video_format == 0) {
           config.encoderCscMode = (COLORSPACE_IDENTITY_GBR << 1) | 1;
         }
@@ -3506,7 +3551,7 @@ namespace video {
       };
 
       auto test_yuv420_hdr = [&](auto &flag_map, auto video_format) {
-        const config_t config = {1920, 1080, 60, 6000, 1000, 1, 0, 3, video_format, 1, 0};
+        const config_t config = {"", 1920, 1080, 60, 6000, 1000, 1, 0, 3, video_format, 1, 0};
 
         reset_display(disp, encoder.platform_formats->dev_type, output_name, config);
         if (!disp) {
@@ -3526,7 +3571,7 @@ namespace video {
       };
 
       auto test_yuv444_hdr = [&](auto &flag_map, auto video_format) {
-        config_t config = {1920, 1080, 60, 6000, 1000, 1, 0, 3, video_format, 1, 1};
+        config_t config = {"", 1920, 1080, 60, 6000, 1000, 1, 0, 3, video_format, 1, 1};
         if (video_format == 0) {
           config.encoderCscMode = (COLORSPACE_IDENTITY_GBR << 1) | 1;
         }

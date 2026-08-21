@@ -23,6 +23,7 @@ extern "C" {
 
 // local includes
 #include "config.h"
+#include "display_device.h"
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
@@ -1140,6 +1141,10 @@ namespace rtsp_stream {
     args.try_emplace("x-nv-video[0].clientRefreshRateX100"sv, "0"sv);
 
     stream::config_t config;
+    config.monitor.span_desktop = session.span_desktop;
+    config.monitor.output_name = session.span_desktop ? std::string {} : session.output_name.empty() ?
+                                   display_device::map_output_name(config::video.output_name) :
+                                   session.output_name;
 
     std::int64_t configuredBitrateKbps;
     config.audio.flags[audio::config_t::HOST_AUDIO] = session.host_audio;

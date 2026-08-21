@@ -39,6 +39,12 @@ namespace rtsp_stream {
     bool continuous_audio;  ///< Whether audio packets continue during silence.
     bool enable_hdr;  ///< Whether HDR streaming is requested.
     bool enable_sops;  ///< Whether sequence output protection is requested.
+    std::string output_id;  ///< Opaque StationConnect output selected by the client.
+    std::string output_name;  ///< Capture backend name resolved from output_id.
+    std::string display_mode;  ///< StationConnect presentation mode negotiated at launch.
+    bool span_desktop {};  ///< Whether the complete virtual desktop is captured for this session.
+    std::uint32_t stationconnect_protocol_version {};  ///< Selected StationConnect extension version.
+    std::uint32_t stationconnect_feature_flags {};  ///< Client-supported StationConnect feature bits.
 
     std::optional<crypto::cipher::gcm_t> rtsp_cipher;  ///< AES-GCM cipher used once encrypted RTSP is negotiated.
     std::string rtsp_url_scheme;  ///< URL scheme selected by the RTSP SETUP flow.

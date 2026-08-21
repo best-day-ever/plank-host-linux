@@ -1117,6 +1117,18 @@ namespace platf {
     return display_names;
   }
 
+  std::vector<display_info_t> display_infos(mem_type_e hwdevice_type) {
+    std::vector<display_info_t> outputs;
+    for (const auto &name : display_names(hwdevice_type)) {
+      outputs.push_back(display_info_t {
+        .id = "capture:"s + name,
+        .name = name,
+        .capture_name = name,
+      });
+    }
+    return outputs;
+  }
+
   /**
    * @brief Check whether DXGI reports that adapter or driver enumeration is stale.
    *

@@ -119,6 +119,17 @@ TEST(VideoEncoderTest, SoftwareRateControlAllowsBoundedSceneCutBursts) {
   EXPECT_EQ(rate_control.buffer_size, 5265866);
 }
 
+TEST(VideoOutputTopologyTest, ResolvesOpaqueIdentityWithoutEnumerationIndex) {
+  const std::vector<platf::display_info_t> outputs {
+    {.id = "x11:DP-1", .name = "DP-1", .capture_name = "DP-1"},
+    {.id = "x11:DP-2", .name = "DP-2", .capture_name = "DP-2"},
+  };
+
+  EXPECT_EQ(video::resolve_output_capture_name(outputs, "x11:DP-2"), "DP-2");
+  EXPECT_FALSE(video::resolve_output_capture_name(outputs, "x11:missing"));
+  EXPECT_FALSE(video::resolve_output_capture_name(outputs, "1"));
+}
+
 TEST(VideoEncoderTest, SoftwareRateControlRetainsLegacyBufferSizingWhenDisabled) {
   const auto rate_control = video::software_rate_control(78988000, 60, 100, 0);
 

@@ -1186,6 +1186,7 @@ namespace platf {
 
 #ifdef SUNSHINE_BUILD_X11
   std::vector<std::string> x11_display_names();
+  std::vector<display_info_t> x11_display_infos();
   std::shared_ptr<display_t> x11_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
 
   bool verify_x11() {
@@ -1249,6 +1250,26 @@ namespace platf {
     }
 #endif
     return {};
+  }
+
+  std::vector<display_info_t> display_infos(mem_type_e hwdevice_type) {
+#ifdef SUNSHINE_BUILD_X11
+    if (window_system == window_system_e::X11) {
+      auto outputs = x11_display_infos();
+      if (!outputs.empty()) {
+        return outputs;
+      }
+    }
+#endif
+    std::vector<display_info_t> outputs;
+    for (const auto &name : display_names(hwdevice_type)) {
+      outputs.push_back(display_info_t {
+        .id = "capture:"s + name,
+        .name = name,
+        .capture_name = name,
+      });
+    }
+    return outputs;
   }
 
   /**
