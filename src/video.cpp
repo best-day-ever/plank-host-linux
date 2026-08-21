@@ -1915,30 +1915,10 @@ namespace video {
     // Capture takes place on this thread
     platf::set_thread_name("video::capture");
     platf::adjust_thread_priority(platf::thread_priority_e::critical);
-    auto next_topology_check = std::chrono::steady_clock::now() + 1s;
-
     while (capture_ctx_queue->running()) {
       bool artificial_reinit = false;
 
       auto push_captured_image_callback = [&](std::shared_ptr<platf::img_t> &&img, bool frame_captured) -> bool {
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= next_topology_check) {
-          const auto current_generation = output_topology_generation(
-            platf::display_infos(encoder.platform_formats->dev_type)
-          );
-          for (auto &capture_ctx : capture_ctxs) {
-            if (!capture_ctx.config.topology_generation.empty() &&
-                capture_ctx.config.topology_generation != current_generation) {
-              BOOST_LOG(warning) << "StationConnect output topology changed during streaming: expected "sv
-                                 << logging::bracket(capture_ctx.config.topology_generation)
-                                 << " current "sv << logging::bracket(current_generation)
-                                 << "; ending the bound stream"sv;
-              capture_ctx.images->stop();
-            }
-          }
-          next_topology_check = now + 1s;
-        }
-
         KITTY_WHILE_LOOP(auto capture_ctx = std::begin(capture_ctxs), capture_ctx != std::end(capture_ctxs), {
           if (!capture_ctx->images->running()) {
             capture_ctx = capture_ctxs.erase(capture_ctx);
@@ -3088,7 +3068,6 @@ namespace video {
     }
 
     auto ec = platf::capture_e::ok;
-    auto next_topology_check = std::chrono::steady_clock::now() + 1s;
     while (encode_session_ctx_queue.running()) {
       auto push_captured_image_callback = [&](std::shared_ptr<platf::img_t> &&img, bool frame_captured) -> bool {
         while (encode_session_ctx_queue.peek()) {
@@ -3106,25 +3085,6 @@ namespace video {
           }
 
           synced_sessions.emplace_back(std::move(*encode_session));
-        }
-
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= next_topology_check) {
-          const auto current_generation = output_topology_generation(
-            platf::display_infos(encoder.platform_formats->dev_type)
-          );
-          for (auto &session : synced_sessions) {
-            auto *ctx = session.ctx;
-            if (!ctx->config.topology_generation.empty() &&
-                ctx->config.topology_generation != current_generation) {
-              BOOST_LOG(warning) << "StationConnect output topology changed during streaming: expected "sv
-                                 << logging::bracket(ctx->config.topology_generation)
-                                 << " current "sv << logging::bracket(current_generation)
-                                 << "; ending the bound stream"sv;
-              ctx->shutdown_event->raise(true);
-            }
-          }
-          next_topology_check = now + 1s;
         }
 
         KITTY_WHILE_LOOP(auto pos = std::begin(synced_sessions), pos != std::end(synced_sessions), {

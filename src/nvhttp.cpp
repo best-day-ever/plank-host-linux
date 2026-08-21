@@ -480,6 +480,9 @@ namespace nvhttp {
   bool bind_topology_generation(rtsp_stream::launch_session_t &session,
                                 const std::vector<platf::display_info_t> &outputs,
                                 pt::ptree &tree) {
+    // Bind the requested output layout atomically at launch. Do not poll the
+    // display server from the capture callback: NVIDIA/X11 enumeration can
+    // block physical presentation as well as the capture pipeline.
     if ((session.stationconnect_feature_flags & stationconnect_feature_topology_generation) == 0) {
       session.topology_generation.clear();
       return true;

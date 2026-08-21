@@ -66,7 +66,6 @@ namespace video {
     int chromaSamplingType;  ///< Chroma sampling type: 0 = 4:2:0, 1 = 4:4:4.
     int enableIntraRefresh;  ///< Intra refresh setting: 0 = disabled, 1 = enabled.
     bool span_desktop {};  ///< Capture and scale the complete virtual desktop rather than one output.
-    std::string topology_generation;  ///< Bound StationConnect topology generation; empty for legacy sessions.
   };
 
   namespace amf {
