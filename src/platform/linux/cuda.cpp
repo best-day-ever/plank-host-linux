@@ -591,7 +591,9 @@ namespace cuda {
       } else if (mode == mode_e::identity_10bit) {
         auto *base = reinterpret_cast<std::uint8_t *>(static_cast<std::uintptr_t>(device_compact));
         const auto plane_size = static_cast<std::size_t>(output_width) * output_height;
-        if (sws.convert_yuv444(base, base + plane_size, base + plane_size * 2U, output_width, texture.texture.point, stream.get())) {
+        const auto texture_object =
+          (width != output_width || height != output_height) ? texture.texture.linear : texture.texture.point;
+        if (sws.convert_yuv444(base, base + plane_size, base + plane_size * 2U, output_width, texture_object, stream.get())) {
           return -1;
         }
         CU_CHECK(cdf->cuMemcpyDtoHAsync(host_readback, device_compact, host_readback_size, stream.get()), "Couldn't read back compact identity planes");
