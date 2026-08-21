@@ -6,6 +6,7 @@
 
 // standard includes
 #include <chrono>
+#include <cstdint>
 #include <string_view>
 
 // local includes
@@ -22,6 +23,27 @@ extern "C" {
 struct AVPacket;
 
 namespace video {
+
+  struct software_rate_control_t {
+    std::int64_t average_rate;  ///< Sustained encoder target in bits per second.
+    std::int64_t peak_rate;  ///< Short-term encoder ceiling in bits per second.
+    std::int64_t buffer_size;  ///< VBV reservoir in bits, or zero for legacy automatic sizing.
+  };
+
+  /**
+   * @brief Calculate bounded software-encoder rate-control values.
+   *
+   * @param average_rate Requested sustained rate in bits per second.
+   * @param framerate Requested stream cadence in frames per second.
+   * @param peak_percentage Peak-rate ceiling relative to the average rate.
+   * @param buffer_frames VBV reservoir in average-rate frame units; zero selects legacy sizing.
+   */
+  software_rate_control_t software_rate_control(
+    std::int64_t average_rate,
+    int framerate,
+    int peak_percentage,
+    int buffer_frames
+  );
 
   /**
    * @brief Encoding configuration requested by a remote client.

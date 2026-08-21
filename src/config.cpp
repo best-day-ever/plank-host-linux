@@ -721,6 +721,9 @@ namespace config {
       "superfast"s,  // preset
       "zerolatency"s,  // tune
       11,  // superfast
+      100,  // VBV maximum-rate percentage
+      0,  // VBV buffer frames (legacy automatic sizing)
+      0,  // scene-change threshold
     },  // software
 
     {},  // nv
@@ -1578,6 +1581,9 @@ namespace config {
       video.sw.svtav1_preset = sw::svtav1_preset_from_view(video.sw.sw_preset);
     }
     string_f(vars, "sw_tune", video.sw.sw_tune);
+    int_between_f(vars, "sw_vbv_maxrate_percentage", video.sw.vbv_maxrate_percentage, {100, 400});
+    int_between_f(vars, "sw_vbv_buffer_frames", video.sw.vbv_buffer_frames, {0, 16});
+    int_between_f(vars, "sw_scenecut", video.sw.scenecut, {0, 100});
 
     int_between_f(vars, "nvenc_preset", video.nv.quality_preset, {1, 7});
     int_between_f(vars, "nvenc_vbv_increase", video.nv.vbv_percentage_increase, {0, 400});

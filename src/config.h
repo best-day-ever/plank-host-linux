@@ -60,6 +60,9 @@ namespace config {
       std::string sw_preset;
       std::string sw_tune;
       std::optional<int> svtav1_preset;
+      int vbv_maxrate_percentage;  ///< Peak software-encoder rate as a percentage of the requested average rate.
+      int vbv_buffer_frames;  ///< Software-encoder VBV reservoir in average-rate frame units; zero keeps legacy sizing.
+      int scenecut;  ///< x264 scene-change threshold; zero disables adaptive keyframes.
     } sw;  ///< Software encoder options.
 
     nvenc::nvenc_config nv;  ///< NVIDIA NVENC encoder settings.

@@ -111,6 +111,21 @@ TEST(VideoEncoderTest, NativeX264RgbRequiresEightBitIdentity444) {
   EXPECT_FALSE(video::use_native_x264rgb("h264_nvenc"sv, config, identity_8bit));
 }
 
+TEST(VideoEncoderTest, SoftwareRateControlAllowsBoundedSceneCutBursts) {
+  const auto rate_control = video::software_rate_control(78988000, 60, 200, 4);
+
+  EXPECT_EQ(rate_control.average_rate, 78988000);
+  EXPECT_EQ(rate_control.peak_rate, 157976000);
+  EXPECT_EQ(rate_control.buffer_size, 5265866);
+}
+
+TEST(VideoEncoderTest, SoftwareRateControlRetainsLegacyBufferSizingWhenDisabled) {
+  const auto rate_control = video::software_rate_control(78988000, 60, 100, 0);
+
+  EXPECT_EQ(rate_control.average_rate, rate_control.peak_rate);
+  EXPECT_EQ(rate_control.buffer_size, 0);
+}
+
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
 TEST(VideoColorspaceTest, IdentityGbrCudaKernelProducesExact10BitPlanes) {
   EXPECT_TRUE(cuda::test_identity_gbr_10bit_conversion());

@@ -3377,6 +3377,48 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### sw_vbv_maxrate_percentage
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Maximum short-term software-encoder bitrate as a percentage of the requested average bitrate.
+            Values above 100 allow complex frames to use a bounded burst without raising sustained bandwidth.
+        </td>
+    </tr>
+    <tr><td>Default</td><td colspan="2">@code{}100@endcode</td></tr>
+    <tr><td>Example</td><td colspan="2">@code{}sw_vbv_maxrate_percentage = 200@endcode</td></tr>
+</table>
+
+### sw_vbv_buffer_frames
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Software-encoder VBV reservoir measured in frames at the requested average bitrate.
+            Zero retains Sunshine's legacy automatic sizing; 3 or 4 is a useful low-latency quality range.
+        </td>
+    </tr>
+    <tr><td>Default</td><td colspan="2">@code{}0@endcode</td></tr>
+    <tr><td>Example</td><td colspan="2">@code{}sw_vbv_buffer_frames = 4@endcode</td></tr>
+</table>
+
+### sw_scenecut
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            x264 scene-change sensitivity from 0 to 100. Zero disables adaptive keyframes; 40 is x264's normal threshold.
+            Adaptive keyframes improve recovery at hard cuts but can create short bitrate peaks.
+        </td>
+    </tr>
+    <tr><td>Default</td><td colspan="2">@code{}0@endcode</td></tr>
+    <tr><td>Example</td><td colspan="2">@code{}sw_scenecut = 40@endcode</td></tr>
+</table>
+
 <div class="section_buttons">
 
 | Previous          |                            Next |

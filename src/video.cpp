@@ -54,6 +54,19 @@ using namespace std::literals;
 
 namespace video {
 
+  software_rate_control_t software_rate_control(
+    std::int64_t average_rate,
+    int framerate,
+    int peak_percentage,
+    int buffer_frames
+  ) {
+    return {
+      average_rate,
+      average_rate * peak_percentage / 100,
+      buffer_frames > 0 && framerate > 0 ? average_rate * buffer_frames / framerate : 0,
+    };
+  }
+
   namespace {
     constexpr double frame_budget_us = 1000000.0 / 60.0;
 
@@ -1363,6 +1376,7 @@ namespace video {
       {
         {"preset"s, &config::video.sw.sw_preset},
         {"tune"s, &config::video.sw.sw_tune},
+        {"sc_threshold"s, &config::video.sw.scenecut},
       },
       {},  // SDR-specific options
       {},  // HDR-specific options
@@ -1397,6 +1411,7 @@ namespace video {
       {
         {"preset"s, &config::video.sw.sw_preset},
         {"tune"s, &config::video.sw.sw_tune},
+        {"sc_threshold"s, &config::video.sw.scenecut},
       },
       {},
       {},
@@ -2280,6 +2295,14 @@ namespace video {
         ctx->keyint_min = std::numeric_limits<int>::max();
       }
 
+      // x264 otherwise inherits the effectively infinite minimum keyframe
+      // interval above, which prevents its scene-cut detector from emitting an
+      // adaptive I-frame. Keep the infinite maximum GOP while allowing a hard
+      // cut to reset prediction when explicitly requested.
+      if (!hardware && config.videoFormat == 0 && config::video.sw.scenecut > 0) {
+        ctx->keyint_min = 1;
+      }
+
       // Some client decoders have limits on the number of reference frames
       if (config.numRefFrames) {
         if (video_format[encoder_t::REF_FRAMES_RESTRICT]) {
@@ -2427,15 +2450,22 @@ namespace video {
         }
       }
 
-      auto bitrate = ((config::video.max_bitrate > 0) ? std::min(config.bitrate, config::video.max_bitrate) : config.bitrate) * 1000;
+      const std::int64_t bitrate =
+        ((config::video.max_bitrate > 0) ? std::min(config.bitrate, config::video.max_bitrate) : config.bitrate) * 1000LL;
       BOOST_LOG(info) << "Streaming bitrate is " << bitrate;
-      ctx->rc_max_rate = bitrate;
+      const auto sw_rate_control = software_rate_control(
+        bitrate,
+        config.framerate,
+        config::video.sw.vbv_maxrate_percentage,
+        config::video.sw.vbv_buffer_frames
+      );
+      ctx->rc_max_rate = !hardware ? sw_rate_control.peak_rate : bitrate;
       ctx->bit_rate = bitrate;
 
       if (encoder.flags & CBR_WITH_VBR) {
         // Ensure rc_max_bitrate != bit_rate to force VBR mode
         ctx->bit_rate--;
-      } else {
+      } else if (ctx->rc_max_rate == ctx->bit_rate) {
         ctx->rc_min_rate = bitrate;
       }
 
@@ -2444,7 +2474,12 @@ namespace video {
       }
 
       if (!(encoder.flags & NO_RC_BUF_LIMIT)) {
-        if (!hardware && (ctx->slices > 1 || config.videoFormat == 1)) {
+        if (!hardware && config::video.sw.vbv_buffer_frames > 0) {
+          // Express the reservoir in frame units at the requested average
+          // rate. This permits a short peak after a hard cut without raising
+          // the stream's sustained bandwidth target.
+          ctx->rc_buffer_size = sw_rate_control.buffer_size;
+        } else if (!hardware && (ctx->slices > 1 || config.videoFormat == 1)) {
           // Use a larger rc_buffer_size for software encoding when slices are enabled,
           // because libx264 can severely degrade quality if the buffer is too small.
           // libx265 encounters this issue more frequently, so always scale the
@@ -2459,6 +2494,15 @@ namespace video {
           }
 #endif
         }
+      }
+
+      if (!hardware) {
+        BOOST_LOG(info)
+          << "Software rate control: average=" << ctx->bit_rate
+          << ", peak=" << ctx->rc_max_rate
+          << ", vbv=" << ctx->rc_buffer_size
+          << ", slices=" << ctx->slices
+          << ", scenecut=" << config::video.sw.scenecut;
       }
 
       // Allow the encoding device a final opportunity to set/unset or override any options
