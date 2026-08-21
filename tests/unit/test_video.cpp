@@ -130,6 +130,30 @@ TEST(VideoOutputTopologyTest, ResolvesOpaqueIdentityWithoutEnumerationIndex) {
   EXPECT_FALSE(video::resolve_output_capture_name(outputs, "1"));
 }
 
+TEST(VideoOutputTopologyTest, GenerationTracksTopologyNotEnumerationOrder) {
+  const std::vector<platf::display_info_t> outputs {
+    {.id = "x11:DP-1", .name = "DP-1", .capture_name = "DP-1", .x = 3840,
+     .y = 0, .width = 1280, .height = 2160, .rotation = 0,
+     .refresh_millihz = 59930, .primary = false},
+    {.id = "x11:DP-2", .name = "DP-2", .capture_name = "DP-2", .x = 0,
+     .y = 0, .width = 3840, .height = 2160, .rotation = 0,
+     .refresh_millihz = 59970, .primary = true},
+  };
+  auto reordered = outputs;
+  std::reverse(reordered.begin(), reordered.end());
+  EXPECT_EQ(video::output_topology_generation(outputs),
+            video::output_topology_generation(reordered));
+
+  auto changed = outputs;
+  changed.front().x = 2560;
+  EXPECT_NE(video::output_topology_generation(outputs),
+            video::output_topology_generation(changed));
+  changed = outputs;
+  changed.front().primary = true;
+  EXPECT_NE(video::output_topology_generation(outputs),
+            video::output_topology_generation(changed));
+}
+
 TEST(VideoEncoderTest, SoftwareRateControlRetainsLegacyBufferSizingWhenDisabled) {
   const auto rate_control = video::software_rate_control(78988000, 60, 100, 0);
 

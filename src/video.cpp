@@ -3,6 +3,7 @@
  * @brief Definitions for video.
  */
 // standard includes
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <bitset>
@@ -1914,11 +1915,30 @@ namespace video {
     // Capture takes place on this thread
     platf::set_thread_name("video::capture");
     platf::adjust_thread_priority(platf::thread_priority_e::critical);
+    auto next_topology_check = std::chrono::steady_clock::now() + 1s;
 
     while (capture_ctx_queue->running()) {
       bool artificial_reinit = false;
 
       auto push_captured_image_callback = [&](std::shared_ptr<platf::img_t> &&img, bool frame_captured) -> bool {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_topology_check) {
+          const auto current_generation = output_topology_generation(
+            platf::display_infos(encoder.platform_formats->dev_type)
+          );
+          for (auto &capture_ctx : capture_ctxs) {
+            if (!capture_ctx.config.topology_generation.empty() &&
+                capture_ctx.config.topology_generation != current_generation) {
+              BOOST_LOG(warning) << "StationConnect output topology changed during streaming: expected "sv
+                                 << logging::bracket(capture_ctx.config.topology_generation)
+                                 << " current "sv << logging::bracket(current_generation)
+                                 << "; ending the bound stream"sv;
+              capture_ctx.images->stop();
+            }
+          }
+          next_topology_check = now + 1s;
+        }
+
         KITTY_WHILE_LOOP(auto capture_ctx = std::begin(capture_ctxs), capture_ctx != std::end(capture_ctxs), {
           if (!capture_ctx->images->running()) {
             capture_ctx = capture_ctxs.erase(capture_ctx);
@@ -1932,6 +1952,10 @@ namespace video {
 
           ++capture_ctx;
         })
+
+        if (capture_ctxs.empty()) {
+          return false;
+        }
 
         if (!capture_ctx_queue->running()) {
           return false;
@@ -3064,6 +3088,7 @@ namespace video {
     }
 
     auto ec = platf::capture_e::ok;
+    auto next_topology_check = std::chrono::steady_clock::now() + 1s;
     while (encode_session_ctx_queue.running()) {
       auto push_captured_image_callback = [&](std::shared_ptr<platf::img_t> &&img, bool frame_captured) -> bool {
         while (encode_session_ctx_queue.peek()) {
@@ -3081,6 +3106,25 @@ namespace video {
           }
 
           synced_sessions.emplace_back(std::move(*encode_session));
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_topology_check) {
+          const auto current_generation = output_topology_generation(
+            platf::display_infos(encoder.platform_formats->dev_type)
+          );
+          for (auto &session : synced_sessions) {
+            auto *ctx = session.ctx;
+            if (!ctx->config.topology_generation.empty() &&
+                ctx->config.topology_generation != current_generation) {
+              BOOST_LOG(warning) << "StationConnect output topology changed during streaming: expected "sv
+                                 << logging::bracket(ctx->config.topology_generation)
+                                 << " current "sv << logging::bracket(current_generation)
+                                 << "; ending the bound stream"sv;
+              ctx->shutdown_event->raise(true);
+            }
+          }
+          next_topology_check = now + 1s;
         }
 
         KITTY_WHILE_LOOP(auto pos = std::begin(synced_sessions), pos != std::end(synced_sessions), {
@@ -3323,6 +3367,25 @@ namespace video {
       return {};
     }
     return platf::display_infos(chosen_encoder->platform_formats->dev_type);
+  }
+
+  std::string output_topology_generation(const std::vector<platf::display_info_t> &outputs) {
+    auto canonical = outputs;
+    std::ranges::sort(canonical, {}, &platf::display_info_t::id);
+    std::string fingerprint;
+    for (const auto &output : canonical) {
+      fingerprint += std::format("{}:{}:{}:{}:{}:{}:{}:{};", output.id, output.x, output.y,
+                                 output.width, output.height, output.rotation,
+                                 output.refresh_millihz, output.primary);
+    }
+    // std::hash is not required to be stable across implementations or builds.
+    // Use a fixed FNV-1a fingerprint so a generation remains reproducible.
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (const auto byte : fingerprint) {
+      hash ^= static_cast<unsigned char>(byte);
+      hash *= 1099511628211ULL;
+    }
+    return std::format("x11:{:016x}", hash);
   }
 
   std::optional<std::string> resolve_output_capture_name(

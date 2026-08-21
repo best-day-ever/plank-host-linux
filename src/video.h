@@ -66,6 +66,7 @@ namespace video {
     int chromaSamplingType;  ///< Chroma sampling type: 0 = 4:2:0, 1 = 4:4:4.
     int enableIntraRefresh;  ///< Intra refresh setting: 0 = disabled, 1 = enabled.
     bool span_desktop {};  ///< Capture and scale the complete virtual desktop rather than one output.
+    std::string topology_generation;  ///< Bound StationConnect topology generation; empty for legacy sessions.
   };
 
   namespace amf {
@@ -671,6 +672,13 @@ namespace video {
    * @return Stable output identities and desktop geometry.
    */
   std::vector<platf::display_info_t> output_topology();
+
+  /**
+   * @brief Build a stable generation identifier for an output topology.
+   * @param outputs Output metadata to fingerprint independent of enumeration order.
+   * @return Opaque generation identifier sent to StationConnect clients.
+   */
+  std::string output_topology_generation(const std::vector<platf::display_info_t> &outputs);
 
   /**
    * @brief Resolve one opaque output ID against a topology snapshot.

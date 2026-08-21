@@ -42,6 +42,7 @@ namespace rtsp_stream {
     std::string output_id;  ///< Opaque StationConnect output selected by the client.
     std::string output_name;  ///< Capture backend name resolved from output_id.
     std::string display_mode;  ///< StationConnect presentation mode negotiated at launch.
+    std::string topology_generation;  ///< Client topology generation bound to this launch.
     bool span_desktop {};  ///< Whether the complete virtual desktop is captured for this session.
     std::uint32_t stationconnect_protocol_version {};  ///< Selected StationConnect extension version.
     std::uint32_t stationconnect_feature_flags {};  ///< Client-supported StationConnect feature bits.

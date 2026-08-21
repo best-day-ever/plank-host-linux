@@ -61,11 +61,13 @@ namespace nvhttp {
   constexpr std::uint32_t stationconnect_feature_selected_output = 0x2;
   constexpr std::uint32_t stationconnect_feature_unified_absolute_input = 0x4;
   constexpr std::uint32_t stationconnect_feature_scaled_span = 0x8;
+  constexpr std::uint32_t stationconnect_feature_topology_generation = 0x10;
   constexpr std::uint32_t stationconnect_topology_features =
     stationconnect_feature_output_topology |
     stationconnect_feature_selected_output |
     stationconnect_feature_unified_absolute_input |
-    stationconnect_feature_scaled_span;
+    stationconnect_feature_scaled_span |
+    stationconnect_feature_topology_generation;
 
   /**
    * @brief HTTPS server backend that adds Sunshine's client-certificate verification.
@@ -439,7 +441,6 @@ namespace nvhttp {
     int max_x = 0;
     int max_y = 0;
     bool first = true;
-    std::string fingerprint;
     for (const auto &output : outputs) {
       body["outputs"].push_back({
         {"id", output.id},
@@ -464,18 +465,38 @@ namespace nvhttp {
         max_x = std::max(max_x, output.x + output.width);
         max_y = std::max(max_y, output.y + output.height);
       }
-      fingerprint += std::format("{}:{}:{}:{}:{}:{}:{};", output.id, output.x, output.y,
-                                 output.width, output.height, output.rotation, output.refresh_millihz);
     }
     body["desktop"] = {
       {"x", min_x}, {"y", min_y}, {"width", max_x - min_x}, {"height", max_y - min_y},
     };
-    body["generation"] = std::format("x11:{}", std::hash<std::string> {}(fingerprint));
+    body["generation"] = video::output_topology_generation(outputs);
     return body;
   }
 
   void output_topology(const resp_https_t &response, const req_https_t &) {
     write_auth_json(response, SimpleWeb::StatusCode::success_ok, output_topology_json());
+  }
+
+  bool bind_topology_generation(rtsp_stream::launch_session_t &session,
+                                const std::vector<platf::display_info_t> &outputs,
+                                pt::ptree &tree) {
+    if ((session.stationconnect_feature_flags & stationconnect_feature_topology_generation) == 0) {
+      session.topology_generation.clear();
+      return true;
+    }
+    if (session.stationconnect_protocol_version != stationconnect_topology_version ||
+        session.topology_generation.empty()) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Missing StationConnect topology generation");
+      return false;
+    }
+    const auto current_generation = video::output_topology_generation(outputs);
+    if (session.topology_generation != current_generation) {
+      tree.put("root.<xmlattr>.status_code", 409);
+      tree.put("root.<xmlattr>.status_message", "Host output topology changed; refresh and retry");
+      return false;
+    }
+    return true;
   }
 
   bool resolve_selected_output(rtsp_stream::launch_session_t &session, pt::ptree &tree) {
@@ -491,6 +512,9 @@ namespace nvhttp {
       if (outputs.empty()) {
         tree.put("root.<xmlattr>.status_code", 409);
         tree.put("root.<xmlattr>.status_message", "Host desktop topology is unavailable");
+        return false;
+      }
+      if (!bind_topology_generation(session, outputs, tree)) {
         return false;
       }
       session.output_name.clear();
@@ -514,6 +538,9 @@ namespace nvhttp {
       return false;
     }
     const auto outputs = video::output_topology();
+    if (!bind_topology_generation(session, outputs, tree)) {
+      return false;
+    }
     const auto capture_name = video::resolve_output_capture_name(outputs, session.output_id);
     if (!capture_name) {
       tree.put("root.<xmlattr>.status_code", 409);
@@ -723,6 +750,7 @@ namespace nvhttp {
     launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
     launch_session->output_id = get_arg(args, "scOutputId", "");
     launch_session->display_mode = get_arg(args, "scDisplayMode", "");
+    launch_session->topology_generation = get_arg(args, "scTopologyGeneration", "");
     launch_session->stationconnect_protocol_version =
       static_cast<std::uint32_t>(util::from_view(get_arg(args, "scProtocolVersion", "0")));
     launch_session->stationconnect_feature_flags =
