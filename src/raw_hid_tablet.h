@@ -60,6 +60,13 @@ namespace raw_hid {
      */
     void reset();
 
+#ifdef SUNSHINE_TESTS
+    /**
+     * @brief Return the active generation for lifecycle regression tests.
+     */
+    std::uint16_t active_generation();
+#endif
+
   private:
     class impl_t;
     std::unique_ptr<impl_t> impl_;  ///< Platform implementation and session state.

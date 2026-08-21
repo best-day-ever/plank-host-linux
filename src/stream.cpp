@@ -479,6 +479,7 @@ namespace stream {
     safe::mail_t mail;  ///< Mailbox used to distribute packets and lifecycle events.
 
     std::shared_ptr<input::input_t> input;  ///< Platform input device state for this stream.
+    std::uint64_t input_connection_id = 0;  ///< Lease preventing an older disconnect from resetting resumed input.
 
     std::jthread audioThread;  ///< Audio thread.
     std::jthread videoThread;  ///< Video thread.
@@ -2231,7 +2232,7 @@ namespace stream {
       session.controlEnd.view();
       // Reset input on session stop to avoid stuck repeated keys
       BOOST_LOG(debug) << "Resetting Input..."sv;
-      input::reset(session.input);
+      input::reset(session.input, session.input_connection_id);
 
       // If this is the last session, invoke the platform callbacks
       if (--running_sessions == 0) {
@@ -2260,7 +2261,7 @@ namespace stream {
      * @brief Start the audio, video, and control workers for a streaming session.
      */
     int start(session_t &session, const std::string &addr_string) {
-      session.input = input::alloc(session.mail, session.input_session_id);
+      session.input = input::alloc(session.mail, session.input_session_id, session.input_connection_id);
 
       session.broadcast_ref = broadcast.ref();
       if (!session.broadcast_ref) {

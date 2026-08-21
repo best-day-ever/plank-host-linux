@@ -196,6 +196,13 @@ namespace raw_hid {
       generation_ = 0;
     }
 
+#ifdef SUNSHINE_TESTS
+    std::uint16_t active_generation() {
+      std::lock_guard lock {mutex_};
+      return generation_;
+    }
+#endif
+
   private:
     /**
      * @brief Start collecting metadata for a new device generation.
@@ -487,4 +494,10 @@ namespace raw_hid {
   void tablet_t::reset() {
     impl_->reset();
   }
+
+#ifdef SUNSHINE_TESTS
+  std::uint16_t tablet_t::active_generation() {
+    return impl_->active_generation();
+  }
+#endif
 }  // namespace raw_hid

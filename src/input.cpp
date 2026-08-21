@@ -10,6 +10,7 @@ extern "C" {
 
 // standard includes
 #include <algorithm>
+#include <atomic>
 #include <bitset>
 #include <chrono>
 #include <cmath>
@@ -249,6 +250,7 @@ namespace input {
         touch_port_event {std::move(touch_port_event)},
         feedback_queue {std::move(feedback_queue)},
         raw_hid_tablet {std::make_unique<raw_hid::tablet_t>(std::move(raw_hid_feedback_queue))},
+        connection_id {0},
         mouse_left_button_timeout {},
         touch_port {{0, 0, 0, 0}, 0, 0, 1.0f, 1.0f, 0, 0},
         accumulated_vscroll_delta {},
@@ -267,6 +269,7 @@ namespace input {
     safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event;  ///< Touch port event.
     platf::feedback_queue_t feedback_queue;  ///< Queue used to deliver controller feedback to the platform backend.
     std::unique_ptr<raw_hid::tablet_t> raw_hid_tablet;  ///< Exact client tablet owned by this stream session.
+    std::atomic<std::uint64_t> connection_id;  ///< Most recent stream lease bound to this retained state.
 
     std::list<std::vector<uint8_t>> input_queue;  ///< Pending raw input packets waiting for processing.
     std::mutex input_queue_lock;  ///< Input queue lock.
@@ -2021,7 +2024,14 @@ namespace input {
    *
    * @param input Retained stream input state to reset.
    */
-  void reset_input_state(const std::shared_ptr<input_t> &input) {
+  void reset_input_state(const std::shared_ptr<input_t> &input, const std::uint64_t connection_id) {
+    if (input->connection_id.load() != connection_id) {
+      BOOST_LOG(debug) << "Skipping stale input reset for connection "sv << connection_id;
+      return;
+    }
+
+    task_pool.cancel(key_press_repeat_id);
+    task_pool.cancel(input->mouse_left_button_timeout);
     reset_mouse_buttons();
     reset_keyboard_keys();
     reset_gamepads(input);
@@ -2031,12 +2041,12 @@ namespace input {
   /**
    * @brief Reset the object to its initial empty state.
    */
-  void reset(std::shared_ptr<input_t> &input) {
-    task_pool.cancel(key_press_repeat_id);
-    task_pool.cancel(input->mouse_left_button_timeout);
-
-    // Ensure input is synchronous, by using the task_pool
-    task_pool.push(reset_input_state, input);
+  void reset(std::shared_ptr<input_t> &input, const std::uint64_t connection_id) {
+    // Serialize reset with input delivery, but reject work from an older stream
+    // after the retained state has already been rebound to a resumed stream.
+    dispatch_input_task([input, connection_id]() {
+      reset_input_state(input, connection_id);
+    });
   }
 
   void terminate_gamepads() {
@@ -2115,7 +2125,7 @@ namespace input {
   /**
    * @brief Allocate and initialize platform input state for a stream.
    */
-  std::shared_ptr<input_t> alloc(safe::mail_t mail, std::string session_id) {
+  std::shared_ptr<input_t> alloc(safe::mail_t mail, std::string session_id, std::uint64_t &connection_id) {
     std::shared_ptr<input_t> input;
     bool resumed = false;
     {
@@ -2132,6 +2142,10 @@ namespace input {
           mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback)
         );
         state.inputs.try_emplace(std::move(session_id), input);
+      }
+      connection_id = ++input->connection_id;
+      if (connection_id == 0) {
+        connection_id = ++input->connection_id;
       }
     }
 
@@ -2168,6 +2182,14 @@ namespace input {
         return -1;
       }
       return input->gamepads[client_index].id;
+    }
+
+    bool handle_raw_hid(const std::shared_ptr<input_t> &input, const std::vector<std::uint8_t> &frame) {
+      return input && input->raw_hid_tablet->handle(frame);
+    }
+
+    std::uint16_t raw_hid_generation(const std::shared_ptr<input_t> &input) {
+      return input ? input->raw_hid_tablet->active_generation() : 0;
     }
   }  // namespace testing
 #endif

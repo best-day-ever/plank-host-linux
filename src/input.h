@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <cstdint>
 #include <functional>
 #include <string_view>
 
@@ -25,8 +26,9 @@ namespace input {
    * @brief Reset stream input state after a client disconnect or shutdown.
    *
    * @param input Shared stream input state to reset.
+   * @param connection_id Lease assigned when this stream bound the retained state.
    */
-  void reset(std::shared_ptr<input_t> &input);
+  void reset(std::shared_ptr<input_t> &input, std::uint64_t connection_id);
 
   /**
    * @brief Destroy every retained virtual gamepad session.
@@ -67,9 +69,10 @@ namespace input {
    *
    * @param mail Mailbox used to exchange messages with worker threads.
    * @param session_id Stable paired-client identity shared by launch and resume connections.
+   * @param connection_id Receives the lease identifying this stream binding.
    * @return Shared input state bound to the stream mailbox.
    */
-  std::shared_ptr<input_t> alloc(safe::mail_t mail, std::string session_id);
+  std::shared_ptr<input_t> alloc(safe::mail_t mail, std::string session_id, std::uint64_t &connection_id);
 
 #ifdef SUNSHINE_TESTS
   namespace testing {
@@ -98,6 +101,16 @@ namespace input {
      * @return Assigned global gamepad slot, or -1 when unallocated.
      */
     int gamepad_id(const std::shared_ptr<input_t> &input, std::uint8_t client_index);
+
+    /**
+     * @brief Process a raw HID frame directly for lifecycle tests.
+     */
+    bool handle_raw_hid(const std::shared_ptr<input_t> &input, const std::vector<std::uint8_t> &frame);
+
+    /**
+     * @brief Return the raw HID generation retained by a test input session.
+     */
+    std::uint16_t raw_hid_generation(const std::shared_ptr<input_t> &input);
   }  // namespace testing
 #endif
 

@@ -4,16 +4,42 @@
  */
 
 // standard includes
+#include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
+
+extern "C" {
+#include <moonlight-common-c/src/StationConnect.h>
+}
 
 // local includes
 #include "../tests_common.h"
 #include "src/config.h"
 #include "src/input.h"
 #include "src/platform/virtualhid_input.h"
+#include "src/utility.h"
 
 namespace {
+  std::vector<std::uint8_t> make_raw_hid_device_frame(const std::uint16_t generation) {
+    SC_RAW_HID_DEVICE_MESSAGE device {};
+    device.interfaceCount = util::endian::little<std::uint16_t>(1);
+    device.bus = util::endian::little<std::uint16_t>(3);
+    device.vendor = util::endian::little<std::uint32_t>(0x056a);
+    device.product = util::endian::little<std::uint32_t>(0x0357);
+
+    std::vector<std::uint8_t> frame(sizeof(SC_RAW_HID_WIRE_HEADER) + sizeof(device));
+    SC_RAW_HID_WIRE_HEADER header {};
+    header.magic = util::endian::little(static_cast<std::uint32_t>(SC_RAW_HID_WIRE_MAGIC));
+    header.version = util::endian::little(static_cast<std::uint16_t>(SC_RAW_HID_WIRE_VERSION));
+    header.type = util::endian::little(static_cast<std::uint16_t>(SC_RAW_HID_DEVICE));
+    header.generation = util::endian::little(generation);
+    header.payloadLength = util::endian::little(static_cast<std::uint32_t>(sizeof(device)));
+    std::memcpy(frame.data(), &header, sizeof(header));
+    std::memcpy(frame.data() + sizeof(header), &device, sizeof(device));
+    return frame;
+  }
+
   /**
    * @brief Fixture that installs a fake global virtual input backend.
    */
@@ -74,7 +100,8 @@ TEST(InputConfigDefaults, AdvertisesNativePenWithoutRemappingRightAlt) {
 TEST_F(InputGamepadSessionTest, ReusesGamepadsAcrossPauseAndDestroysThemOnTermination) {
   const std::string session_id = "paired-client-certificate";
   auto first_mail = std::make_shared<safe::mail_raw_t>();
-  auto first = input::alloc(first_mail, session_id);
+  std::uint64_t first_connection_id = 0;
+  auto first = input::alloc(first_mail, session_id, first_connection_id);
   ASSERT_NE(first, nullptr);
   const auto active_devices_before_gamepad = runtime().active_device_count();
 
@@ -89,7 +116,8 @@ TEST_F(InputGamepadSessionTest, ReusesGamepadsAcrossPauseAndDestroysThemOnTermin
   EXPECT_EQ(runtime().active_device_count(), active_devices_before_gamepad + 1);
 
   auto resumed_mail = std::make_shared<safe::mail_raw_t>();
-  auto resumed = input::alloc(resumed_mail, session_id);
+  std::uint64_t resumed_connection_id = 0;
+  auto resumed = input::alloc(resumed_mail, session_id, resumed_connection_id);
   ASSERT_NE(resumed, nullptr);
   EXPECT_EQ(paused.lock(), resumed);
   EXPECT_EQ(input::testing::gamepad_id(resumed, 0), original_id);
@@ -99,6 +127,28 @@ TEST_F(InputGamepadSessionTest, ReusesGamepadsAcrossPauseAndDestroysThemOnTermin
   EXPECT_EQ(input::testing::gamepad_id(resumed, 0), -1);
   EXPECT_EQ(runtime().active_device_count(), active_devices_before_gamepad);
 
-  auto replacement = input::alloc(std::make_shared<safe::mail_raw_t>(), session_id);
+  std::uint64_t replacement_connection_id = 0;
+  auto replacement = input::alloc(std::make_shared<safe::mail_raw_t>(), session_id, replacement_connection_id);
   EXPECT_NE(replacement, resumed);
+}
+
+TEST_F(InputGamepadSessionTest, StaleDisconnectCannotResetResumedRawTablet) {
+  const std::string session_id = "resumed-tablet-client";
+  std::uint64_t first_connection_id = 0;
+  auto first = input::alloc(std::make_shared<safe::mail_raw_t>(), session_id, first_connection_id);
+  ASSERT_TRUE(input::testing::handle_raw_hid(first, make_raw_hid_device_frame(7)));
+  ASSERT_EQ(input::testing::raw_hid_generation(first), 7);
+
+  std::uint64_t resumed_connection_id = 0;
+  auto resumed = input::alloc(std::make_shared<safe::mail_raw_t>(), session_id, resumed_connection_id);
+  ASSERT_EQ(first, resumed);
+  ASSERT_GT(resumed_connection_id, first_connection_id);
+  ASSERT_TRUE(input::testing::handle_raw_hid(resumed, make_raw_hid_device_frame(8)));
+  ASSERT_EQ(input::testing::raw_hid_generation(resumed), 8);
+
+  input::reset(first, first_connection_id);
+  EXPECT_EQ(input::testing::raw_hid_generation(resumed), 8);
+
+  input::reset(resumed, resumed_connection_id);
+  EXPECT_EQ(input::testing::raw_hid_generation(resumed), 0);
 }
