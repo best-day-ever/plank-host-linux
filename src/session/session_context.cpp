@@ -132,7 +132,7 @@ namespace stationconnect::session {
         return std::nullopt;
       }
       const std::string_view message {buffer.data(), static_cast<std::size_t>(size)};
-      constexpr std::string_view prefix = "SC-GREETER-1\n";
+      constexpr std::string_view prefix = "SC-SESSION-1\n";
       if (!message.starts_with(prefix)) {
         return std::nullopt;
       }
@@ -259,21 +259,24 @@ namespace stationconnect::session {
     return std::nullopt;
   }
 
-  std::string greeter_attestation_message(const descriptor_t &session) {
+  std::string session_attestation_message(const descriptor_t &session) {
     if (!eligible_graphical_session(session) || session.id.empty() ||
         session.id.find('\n') != std::string::npos || session.id.size() > 256) {
       return {};
     }
-    return "SC-GREETER-1\n" + session.id + "\n" + std::to_string(session.uid);
+    return "SC-SESSION-1\n" + session.id + "\n" + std::to_string(session.uid);
   }
 
-  bool supervisor_attests_active_seat0_greeter() {
+  bool supervisor_attests_account_for_active_seat0(uid_t account_uid) {
     static const auto attestation = read_supervisor_attestation();
-    if (!attestation || attestation->uid != geteuid()) {
+    if (geteuid() != 0 || account_uid == 0 || !attestation) {
       return false;
     }
     const auto active = active_seat0_graphical_session();
-    return active && active->id == attestation->session_id &&
-           active->uid == attestation->uid && active->session_class == "greeter";
+    if (!active || active->id != attestation->session_id ||
+        active->uid != attestation->uid) {
+      return false;
+    }
+    return active->session_class == "greeter" || active->uid == account_uid;
   }
 }  // namespace stationconnect::session

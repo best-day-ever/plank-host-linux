@@ -205,23 +205,19 @@ namespace stationconnect::auth {
   std::string secure_random_hex(std::size_t bytes);
 
   /**
-   * @brief Check whether an account resolves to the current process user.
+   * @brief Resolve a validated operating-system account through NSS.
    *
    * Name Service Switch resolution supports both local and configured domain
-   * accounts. This is the Stage A user-service ownership check; a future
-   * system service must instead compare against the selected logind session.
-   *
    * @param username PAM-authenticated operating-system account.
-   * @return True when the account UID equals the process effective UID.
+   * @return Resolved UID, or no value for an invalid/missing account.
    */
-  bool account_matches_effective_user(std::string_view username);
+  std::optional<uid_t> account_uid(std::string_view username);
 
   /**
    * Authorize a PAM account for the desktop owned by this worker.
    *
-   * A normal worker requires an effective-UID match. The only exception is a
-   * worker that logind identifies as the active local seat0 greeter; that
-   * worker may present GDM after PAM succeeds.
+   * The root machine worker accepts any non-root PAM account at the local GDM
+   * greeter. Once a user session owns seat0, the account UID must match it.
    */
   bool account_authorized_for_desktop(std::string_view username);
 }  // namespace stationconnect::auth

@@ -236,10 +236,10 @@ namespace stationconnect::auth {
     return output;
   }
 
-  bool account_matches_effective_user(std::string_view username) {
+  std::optional<uid_t> account_uid(std::string_view username) {
     if (username.empty() || username.find('\0') != std::string_view::npos ||
         username.size() > 256) {
-      return false;
+      return std::nullopt;
     }
 
     const std::string account {username};
@@ -263,31 +263,14 @@ namespace stationconnect::auth {
       buffer.resize(std::min(buffer.size() * 2, maximum_buffer_size));
     } while (true);
 
-    return status == 0 && result != nullptr && result->pw_uid == geteuid();
+    if (status != 0 || result == nullptr) {
+      return std::nullopt;
+    }
+    return result->pw_uid;
   }
 
   bool account_authorized_for_desktop(std::string_view username) {
-    constexpr std::size_t maximum_buffer_size = 1024U * 1024U;
-    if (account_matches_effective_user(username)) {
-      return true;
-    }
-    if (!stationconnect::session::supervisor_attests_active_seat0_greeter()) {
-      return false;
-    }
-
-    if (username.empty() || username.find('\0') != std::string_view::npos ||
-        username.size() > 256) {
-      return false;
-    }
-    const std::string account {username};
-    passwd record {};
-    passwd *result = nullptr;
-    std::vector<char> buffer(16384);
-    int status = getpwnam_r(account.c_str(), &record, buffer.data(), buffer.size(), &result);
-    while (status == ERANGE && buffer.size() < maximum_buffer_size) {
-      buffer.resize(std::min(buffer.size() * 2, maximum_buffer_size));
-      status = getpwnam_r(account.c_str(), &record, buffer.data(), buffer.size(), &result);
-    }
-    return status == 0 && result != nullptr;
+    const auto uid = account_uid(username);
+    return uid && stationconnect::session::supervisor_attests_account_for_active_seat0(*uid);
   }
 }  // namespace stationconnect::auth

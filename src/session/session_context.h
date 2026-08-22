@@ -43,9 +43,9 @@ namespace stationconnect::session {
    */
   std::optional<environment_t> discover_environment(const descriptor_t &session);
 
-  /** True when the calling process belongs to the active seat0 GDM greeter. */
-  bool supervisor_attests_active_seat0_greeter();
+  /** Authorize an account against the supervisor-attested active seat0 session. */
+  bool supervisor_attests_account_for_active_seat0(uid_t account_uid);
 
   /** Build the bounded message sent over the inherited supervisor socket. */
-  std::string greeter_attestation_message(const descriptor_t &session);
+  std::string session_attestation_message(const descriptor_t &session);
 }  // namespace stationconnect::session

@@ -65,12 +65,12 @@ TEST(SessionContext, RejectsUnsupportedSessionTypesAndClasses) {
 
 TEST(SessionContext, BuildsOnlyBoundedEligibleAttestations) {
   auto descriptor = valid_session();
-  EXPECT_EQ(session::greeter_attestation_message(descriptor), "SC-GREETER-1\nc7\n1000");
+  EXPECT_EQ(session::session_attestation_message(descriptor), "SC-SESSION-1\nc7\n1000");
 
   descriptor.id = "invalid\nsession";
-  EXPECT_TRUE(session::greeter_attestation_message(descriptor).empty());
+  EXPECT_TRUE(session::session_attestation_message(descriptor).empty());
 
   descriptor = valid_session();
   descriptor.remote = true;
-  EXPECT_TRUE(session::greeter_attestation_message(descriptor).empty());
+  EXPECT_TRUE(session::session_attestation_message(descriptor).empty());
 }

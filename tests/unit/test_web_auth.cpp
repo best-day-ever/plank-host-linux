@@ -158,16 +158,16 @@ TEST(WebAuthManager, GeneratesSecureIdentifiersWithinBounds) {
   EXPECT_TRUE(value.find_first_not_of("0123456789abcdef") == std::string::npos);
 }
 
-TEST(WebAuthManager, MatchesOnlyTheEffectiveUserAccount) {
+TEST(WebAuthManager, ResolvesOnlyValidOperatingSystemAccounts) {
   const passwd *account = getpwuid(geteuid());
   ASSERT_NE(account, nullptr);
   ASSERT_NE(account->pw_name, nullptr);
-  EXPECT_TRUE(auth::account_matches_effective_user(account->pw_name));
-  EXPECT_FALSE(auth::account_matches_effective_user("__stationconnect_missing_account__"));
-  EXPECT_FALSE(auth::account_matches_effective_user(""));
+  EXPECT_EQ(auth::account_uid(account->pw_name), account->pw_uid);
+  EXPECT_FALSE(auth::account_uid("__stationconnect_missing_account__"));
+  EXPECT_FALSE(auth::account_uid(""));
 
   std::string embedded_nul {account->pw_name};
   embedded_nul.push_back('\0');
   embedded_nul.append("another-account");
-  EXPECT_FALSE(auth::account_matches_effective_user(embedded_nul));
+  EXPECT_FALSE(auth::account_uid(embedded_nul));
 }

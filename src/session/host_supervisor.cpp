@@ -19,26 +19,25 @@
 #include <thread>
 #include <vector>
 
-#include <grp.h>
 #include <poll.h>
 #include <pwd.h>
 #include <systemd/sd-login.h>
+#include <linux/capability.h>
 #include <sys/prctl.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 namespace {
   constexpr std::string_view default_worker = "/usr/bin/stationconnect-host";
-  constexpr std::string_view auth_group = "stationconnect-auth";
+  constexpr std::string_view machine_home = "/var/lib/stationconnect";
 
   struct account_t {
     uid_t uid {};
-    gid_t gid {};
-    std::string name;
     std::string home;
-    std::string shell;
   };
 
   struct worker_t {
@@ -57,10 +56,7 @@ namespace {
       if (status == 0 && result != nullptr) {
         return account_t {
           uid,
-          record.pw_gid,
-          record.pw_name == nullptr ? "" : record.pw_name,
           record.pw_dir == nullptr ? "" : record.pw_dir,
-          record.pw_shell == nullptr ? "/bin/sh" : record.pw_shell,
         };
       }
       if (status != ERANGE || buffer.size() >= maximum_buffer) {
@@ -70,44 +66,6 @@ namespace {
     }
   }
 
-  std::optional<gid_t> group_id(std::string_view name) {
-    const std::string group_name {name};
-    constexpr std::size_t maximum_buffer = 1024U * 1024U;
-    std::size_t size = 16384;
-    std::vector<char> buffer(size);
-    group record {};
-    group *result = nullptr;
-    while (true) {
-      const int status = getgrnam_r(
-        group_name.c_str(), &record, buffer.data(), buffer.size(), &result
-      );
-      if (status == 0 && result != nullptr) {
-        return record.gr_gid;
-      }
-      if (status != ERANGE || buffer.size() >= maximum_buffer) {
-        return std::nullopt;
-      }
-      buffer.resize(std::min(buffer.size() * 2, maximum_buffer));
-    }
-  }
-
-  bool install_groups(const account_t &account, gid_t extra_group) {
-    int count = 0;
-    getgrouplist(account.name.c_str(), account.gid, nullptr, &count);
-    if (count <= 0 || count > 4096) {
-      return false;
-    }
-    std::vector<gid_t> groups(static_cast<std::size_t>(count));
-    if (getgrouplist(account.name.c_str(), account.gid, groups.data(), &count) < 0) {
-      return false;
-    }
-    groups.resize(static_cast<std::size_t>(count));
-    if (std::ranges::find(groups, extra_group) == groups.end()) {
-      groups.push_back(extra_group);
-    }
-    return setgroups(groups.size(), groups.data()) == 0;
-  }
-
   void set_environment_value(const char *name, const std::string &value) {
     if (!value.empty() && setenv(name, value.c_str(), 1) != 0) {
       std::cerr << "Unable to set " << name << ": " << std::strerror(errno) << '\n';
@@ -115,12 +73,25 @@ namespace {
     }
   }
 
+  bool restrict_worker_capabilities() {
+    __user_cap_header_struct header {
+      _LINUX_CAPABILITY_VERSION_3,
+      0,
+    };
+    std::array<__user_cap_data_struct, 2> capabilities {};
+    constexpr auto capability = static_cast<unsigned int>(CAP_DAC_READ_SEARCH);
+    constexpr auto word_bits = 32U;
+    const auto mask = 1U << (capability % word_bits);
+    capabilities[capability / word_bits].effective = mask;
+    capabilities[capability / word_bits].permitted = mask;
+    return syscall(SYS_capset, &header, capabilities.data()) == 0;
+  }
+
   [[noreturn]] void launch_child(
     const std::filesystem::path &worker,
     const stationconnect::session::descriptor_t &session,
     const stationconnect::session::environment_t &environment,
     const account_t &account,
-    gid_t extra_group,
     int attestation_descriptor,
     int supervisor_descriptor
   ) {
@@ -133,9 +104,13 @@ namespace {
     if (sigprocmask(SIG_SETMASK, &empty_mask, nullptr) != 0) {
       std::_Exit(126);
     }
-    if (!install_groups(account, extra_group) || setgid(account.gid) != 0 ||
-        setuid(account.uid) != 0 || geteuid() == 0) {
-      std::cerr << "Unable to drop worker privileges for UID " << account.uid << '\n';
+    if (geteuid() != 0 || getegid() != 0) {
+      std::cerr << "StationConnect machine worker lost root identity\n";
+      std::_Exit(126);
+    }
+    if (!restrict_worker_capabilities()) {
+      std::cerr << "Unable to restrict machine worker capabilities: "
+                << std::strerror(errno) << '\n';
       std::_Exit(126);
     }
 
@@ -147,10 +122,10 @@ namespace {
       std::_Exit(126);
     }
     clearenv();
-    set_environment_value("HOME", account.home);
-    set_environment_value("USER", account.name);
-    set_environment_value("LOGNAME", account.name);
-    set_environment_value("SHELL", account.shell);
+    set_environment_value("HOME", std::string {machine_home});
+    set_environment_value("USER", "root");
+    set_environment_value("LOGNAME", "root");
+    set_environment_value("SHELL", "/bin/sh");
     set_environment_value("PATH", "/usr/local/bin:/usr/bin:/bin");
     set_environment_value("DISPLAY", environment.display);
     set_environment_value("XAUTHORITY", environment.xauthority);
@@ -160,12 +135,25 @@ namespace {
     set_environment_value("XDG_SESSION_CLASS", session.session_class);
     set_environment_value("XDG_SEAT", session.seat);
     set_environment_value("DBUS_SESSION_BUS_ADDRESS", environment.dbus_address);
+    const std::filesystem::path pulse_socket =
+      std::filesystem::path {environment.runtime_directory} / "pulse/native";
+    const std::filesystem::path pulse_cookie =
+      std::filesystem::path {account.home} / ".config/pulse/cookie";
+    struct stat socket_status {};
+    struct stat cookie_status {};
+    if (lstat(pulse_socket.c_str(), &socket_status) == 0 &&
+        socket_status.st_uid == account.uid && S_ISSOCK(socket_status.st_mode) &&
+        lstat(pulse_cookie.c_str(), &cookie_status) == 0 &&
+        cookie_status.st_uid == account.uid && S_ISREG(cookie_status.st_mode)) {
+      set_environment_value("PULSE_SERVER", "unix:" + pulse_socket.string());
+      set_environment_value("PULSE_COOKIE", pulse_cookie.string());
+    }
     set_environment_value("STATIONCONNECT_HOST_OPTIONS", inherited_options);
     set_environment_value(
       "STATIONCONNECT_SESSION_ATTESTATION_FD", std::to_string(attestation_descriptor)
     );
-    if (chdir(account.home.c_str()) != 0) {
-      std::cerr << "Unable to enter worker home directory\n";
+    if (chdir(machine_home.data()) != 0) {
+      std::cerr << "Unable to enter machine worker home directory\n";
       std::_Exit(126);
     }
     execl(worker.c_str(), worker.c_str(), static_cast<char *>(nullptr));
@@ -177,14 +165,13 @@ namespace {
     const std::filesystem::path &worker,
     const stationconnect::session::descriptor_t &session,
     const stationconnect::session::environment_t &environment,
-    const account_t &account,
-    gid_t extra_group
+    const account_t &account
   ) {
     int attestation_sockets[2] {-1, -1};
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, attestation_sockets) != 0) {
       return -1;
     }
-    const std::string attestation = stationconnect::session::greeter_attestation_message(session);
+    const std::string attestation = stationconnect::session::session_attestation_message(session);
     if (attestation.empty()) {
       close(attestation_sockets[0]);
       close(attestation_sockets[1]);
@@ -193,7 +180,7 @@ namespace {
     const pid_t child = fork();
     if (child == 0) {
       launch_child(
-        worker, session, environment, account, extra_group,
+        worker, session, environment, account,
         attestation_sockets[1], attestation_sockets[0]
       );
     }
@@ -256,12 +243,6 @@ int main(int argc, char **argv) {
     std::cerr << "StationConnect worker is unavailable: " << worker_path << '\n';
     return 4;
   }
-  const auto extra_group = group_id(auth_group);
-  if (!extra_group) {
-    std::cerr << "Required group is unavailable: " << auth_group << '\n';
-    return 5;
-  }
-
   sigset_t signal_mask;
   sigemptyset(&signal_mask);
   sigaddset(&signal_mask, SIGTERM);
@@ -305,7 +286,7 @@ int main(int argc, char **argv) {
     if (selected && worker.pid <= 0 && std::chrono::steady_clock::now() >= next_launch) {
       const auto environment = stationconnect::session::discover_environment(*selected);
       const auto account = account_for_uid(selected->uid);
-      if (!environment || !account || account->name.empty() || account->home.empty()) {
+      if (!environment || !account || account->home.empty()) {
         if (pending_session != selected->id) {
           std::clog << "Waiting for graphical environment for seat0 session "
                     << selected->id << '\n';
@@ -316,13 +297,11 @@ int main(int argc, char **argv) {
         if (!confirmed || confirmed->id != selected->id || confirmed->uid != selected->uid) {
           continue;
         }
-        const pid_t child = launch_worker(
-          worker_path, *selected, *environment, *account, *extra_group
-        );
+        const pid_t child = launch_worker(worker_path, *selected, *environment, *account);
         if (child > 0) {
           worker = {child, selected->id};
           pending_session.clear();
-          std::clog << "Started unprivileged StationConnect worker for session "
+          std::clog << "Attached privileged StationConnect machine worker to session "
                     << selected->id << ", UID " << selected->uid << '\n';
         } else {
           std::cerr << "Unable to fork StationConnect worker: " << std::strerror(errno) << '\n';
