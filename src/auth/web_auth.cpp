@@ -7,9 +7,13 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <utility>
 
 #include <openssl/rand.h>
+
+#include <pwd.h>
+#include <unistd.h>
 
 namespace stationconnect::auth {
   namespace {
@@ -90,6 +94,7 @@ namespace stationconnect::auth {
     auto step = conversation->begin(transaction_id, username, remote_host);
     entry_t entry {
       std::string {remote_host},
+      std::string {username},
       now_() + conversation_lifetime_,
       std::move(conversation),
       {},
@@ -117,17 +122,24 @@ namespace stationconnect::auth {
 
   bool web_auth_manager_t::authorize(std::string_view token,
                                      std::string_view remote_host) {
+    return identity(token, remote_host).has_value();
+  }
+
+  std::optional<std::string> web_auth_manager_t::identity(
+    std::string_view token,
+    std::string_view remote_host
+  ) {
     std::lock_guard lock {mutex_};
     expire_locked();
     const auto found = tokens_.find(std::string {token});
     if (found == tokens_.end() || found->second.remote_host != remote_host) {
-      return false;
+      return std::nullopt;
     }
     if (!found->second.conversation && found->second.claimed_session.expired()) {
       tokens_.erase(found);
-      return false;
+      return std::nullopt;
     }
-    return true;
+    return found->second.username;
   }
 
   std::shared_ptr<conversation_i> web_auth_manager_t::claim(
@@ -220,5 +232,35 @@ namespace stationconnect::auth {
       output[index * 2 + 1] = digits[random[index] & 0x0fU];
     }
     return output;
+  }
+
+  bool account_matches_effective_user(std::string_view username) {
+    if (username.empty() || username.find('\0') != std::string_view::npos ||
+        username.size() > 256) {
+      return false;
+    }
+
+    const std::string account {username};
+    constexpr std::size_t minimum_buffer_size = 1024;
+    constexpr std::size_t maximum_buffer_size = 1024 * 1024;
+    const long recommended_size = sysconf(_SC_GETPW_R_SIZE_MAX);
+    std::size_t buffer_size = recommended_size > 0 ?
+                                static_cast<std::size_t>(recommended_size) :
+                                minimum_buffer_size;
+    buffer_size = std::clamp(buffer_size, minimum_buffer_size, maximum_buffer_size);
+
+    passwd record {};
+    passwd *result = nullptr;
+    std::vector<char> buffer(buffer_size);
+    int status;
+    do {
+      status = getpwnam_r(account.c_str(), &record, buffer.data(), buffer.size(), &result);
+      if (status != ERANGE || buffer.size() == maximum_buffer_size) {
+        break;
+      }
+      buffer.resize(std::min(buffer.size() * 2, maximum_buffer_size));
+    } while (true);
+
+    return status == 0 && result != nullptr && result->pw_uid == geteuid();
   }
 }  // namespace stationconnect::auth

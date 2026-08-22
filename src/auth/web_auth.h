@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -115,6 +116,16 @@ namespace stationconnect::auth {
     bool authorize(std::string_view token, std::string_view remote_host);
 
     /**
+     * @brief Return the authenticated account bound to an active token.
+     *
+     * @param token Opaque bearer token.
+     * @param remote_host Normalized TLS peer address.
+     * @return Requested PAM account, or no value when authorization fails.
+     */
+    std::optional<std::string> identity(std::string_view token,
+                                        std::string_view remote_host);
+
+    /**
      * @brief Attach an authenticated PAM session to a stream.
      *
      * The first claim transfers the manager's strong ownership to the caller.
@@ -143,6 +154,7 @@ namespace stationconnect::auth {
   private:
     struct entry_t {
       std::string remote_host;  ///< TLS peer bound to the entry.
+      std::string username;  ///< PAM-authenticated operating-system account.
       clock_t::time_point expires;  ///< Entry expiry.
       std::shared_ptr<conversation_i> conversation;  ///< Manager-owned broker connection before launch.
       std::weak_ptr<conversation_i> claimed_session;  ///< Session owned by active streams after launch.
@@ -191,4 +203,16 @@ namespace stationconnect::auth {
    * @return Lowercase hexadecimal value, or an empty string on failure.
    */
   std::string secure_random_hex(std::size_t bytes);
+
+  /**
+   * @brief Check whether an account resolves to the current process user.
+   *
+   * Name Service Switch resolution supports both local and configured domain
+   * accounts. This is the Stage A user-service ownership check; a future
+   * system service must instead compare against the selected logind session.
+   *
+   * @param username PAM-authenticated operating-system account.
+   * @return True when the account UID equals the process effective UID.
+   */
+  bool account_matches_effective_user(std::string_view username);
 }  // namespace stationconnect::auth

@@ -7,6 +7,9 @@
 
 #include <gtest/gtest.h>
 
+#include <pwd.h>
+#include <unistd.h>
+
 #include "src/auth/web_auth.h"
 
 namespace auth = stationconnect::auth;
@@ -88,10 +91,14 @@ TEST(WebAuthManager, BindsConversationAndTokenToRemotePeer) {
   EXPECT_EQ(state->responses.front(), "secret");
   EXPECT_TRUE(manager.authorize("token", "198.51.100.250"));
   EXPECT_FALSE(manager.authorize("token", "198.51.100.99"));
+  ASSERT_TRUE(manager.identity("token", "198.51.100.250"));
+  EXPECT_EQ(*manager.identity("token", "198.51.100.250"), "test-user");
+  EXPECT_FALSE(manager.identity("token", "198.51.100.99"));
   EXPECT_FALSE(manager.claim("token", "198.51.100.99"));
   auto session = manager.claim("token", "198.51.100.250");
   ASSERT_TRUE(session);
   EXPECT_EQ(manager.claim("token", "198.51.100.250"), session);
+  EXPECT_EQ(*manager.identity("token", "198.51.100.250"), "test-user");
   manager.cancel("token");
   EXPECT_FALSE(manager.authorize("token", "198.51.100.250"));
   EXPECT_EQ(state->destroyed, 0);
@@ -149,4 +156,18 @@ TEST(WebAuthManager, GeneratesSecureIdentifiersWithinBounds) {
   const auto value = auth::secure_random_hex(32);
   EXPECT_EQ(value.size(), 64);
   EXPECT_TRUE(value.find_first_not_of("0123456789abcdef") == std::string::npos);
+}
+
+TEST(WebAuthManager, MatchesOnlyTheEffectiveUserAccount) {
+  const passwd *account = getpwuid(geteuid());
+  ASSERT_NE(account, nullptr);
+  ASSERT_NE(account->pw_name, nullptr);
+  EXPECT_TRUE(auth::account_matches_effective_user(account->pw_name));
+  EXPECT_FALSE(auth::account_matches_effective_user("__stationconnect_missing_account__"));
+  EXPECT_FALSE(auth::account_matches_effective_user(""));
+
+  std::string embedded_nul {account->pw_name};
+  embedded_nul.push_back('\0');
+  embedded_nul.append("another-account");
+  EXPECT_FALSE(auth::account_matches_effective_user(embedded_nul));
 }

@@ -407,6 +407,32 @@ namespace nvhttp {
   }
 
   /**
+   * @brief Verify that a request's PAM account owns this user-service process.
+   *
+   * @param request Authorized HTTPS request.
+   * @return True outside StationConnect mode or when the account UID matches.
+   */
+  bool authentication_matches_effective_user(const req_https_t &request) {
+    if (!stationconnect_authentication) {
+      return true;
+    }
+    if (!web_auth) {
+      return false;
+    }
+    const auto token = bearer_token(request);
+    const auto identity = web_auth->identity(token, authentication_peer(request));
+    if (!identity) {
+      return false;
+    }
+    if (!stationconnect::auth::account_matches_effective_user(*identity)) {
+      web_auth->cancel(token);
+      BOOST_LOG(warning) << "Rejecting StationConnect stream for an account that does not own the desktop process"sv;
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * @brief Return a GameStream-compatible authorization failure.
    *
    * @param response HTTPS response.
@@ -1412,6 +1438,13 @@ namespace nvhttp {
 
     auto appid = util::from_view(get_arg(args, "appid"));
 
+    if (!authentication_matches_effective_user(request)) {
+      tree.put("root.gamesession", 0);
+      tree.put("root.<xmlattr>.status_code", 403);
+      tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
+      return;
+    }
+
     if (stationconnect_authentication) {
       const auto &apps = proc::proc.get_apps();
       const auto requested_app_id = std::to_string(appid);
@@ -1536,6 +1569,13 @@ namespace nvhttp {
       response->write(data.str());
       response->close_connection_after_response = true;
     });
+
+    if (!authentication_matches_effective_user(request)) {
+      tree.put("root.resume", 0);
+      tree.put("root.<xmlattr>.status_code", 403);
+      tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
+      return;
+    }
 
     auto current_appid = proc::proc.running();
     if (current_appid == 0) {
