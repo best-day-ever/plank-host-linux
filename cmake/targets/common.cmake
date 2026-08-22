@@ -23,6 +23,11 @@ elseif(UNIX)
     endif()
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_library(STATIONCONNECT_SYSTEMD_LIBRARY NAMES systemd REQUIRED)
+    list(APPEND SUNSHINE_EXTERNAL_LIBRARIES ${STATIONCONNECT_SYSTEMD_LIBRARY})
+endif()
+
 target_link_libraries(sunshine ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})
 target_compile_definitions(sunshine PUBLIC ${SUNSHINE_DEFINITIONS})
 
@@ -45,6 +50,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_options(stationconnect-pam-broker PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
     target_link_options(stationconnect-pam-broker PRIVATE ${SUNSHINE_LINK_OPTIONS})
     install(TARGETS stationconnect-pam-broker
+            RUNTIME DESTINATION bin
+            COMPONENT sunshine)
+
+    add_executable(stationconnect-host-supervisor
+            "${CMAKE_SOURCE_DIR}/src/session/host_supervisor.cpp"
+            "${CMAKE_SOURCE_DIR}/src/session/session_context.cpp"
+            "${CMAKE_SOURCE_DIR}/src/session/session_context.h")
+    target_link_libraries(stationconnect-host-supervisor PRIVATE ${STATIONCONNECT_SYSTEMD_LIBRARY})
+    target_compile_options(stationconnect-host-supervisor PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+    target_link_options(stationconnect-host-supervisor PRIVATE ${SUNSHINE_LINK_OPTIONS})
+    install(TARGETS stationconnect-host-supervisor
             RUNTIME DESTINATION bin
             COMPONENT sunshine)
 endif()

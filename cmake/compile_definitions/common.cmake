@@ -146,6 +146,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/auth/pam_client.h"
         "${CMAKE_SOURCE_DIR}/src/auth/web_auth.cpp"
         "${CMAKE_SOURCE_DIR}/src/auth/web_auth.h"
+        "${CMAKE_SOURCE_DIR}/src/session/session_context.cpp"
+        "${CMAKE_SOURCE_DIR}/src/session/session_context.h"
         "${CMAKE_SOURCE_DIR}/third-party/moonlight-common-c/src/Input.h"
         "${CMAKE_SOURCE_DIR}/third-party/moonlight-common-c/src/Rtsp.h"
         "${CMAKE_SOURCE_DIR}/third-party/moonlight-common-c/src/RtspParser.c"

@@ -215,4 +215,13 @@ namespace stationconnect::auth {
    * @return True when the account UID equals the process effective UID.
    */
   bool account_matches_effective_user(std::string_view username);
+
+  /**
+   * Authorize a PAM account for the desktop owned by this worker.
+   *
+   * A normal worker requires an effective-UID match. The only exception is a
+   * worker that logind identifies as the active local seat0 greeter; that
+   * worker may present GDM after PAM succeeds.
+   */
+  bool account_authorized_for_desktop(std::string_view username);
 }  // namespace stationconnect::auth

@@ -424,9 +424,9 @@ namespace nvhttp {
     if (!identity) {
       return false;
     }
-    if (!stationconnect::auth::account_matches_effective_user(*identity)) {
+    if (!stationconnect::auth::account_authorized_for_desktop(*identity)) {
       web_auth->cancel(token);
-      BOOST_LOG(warning) << "Rejecting StationConnect stream for an account that does not own the desktop process"sv;
+      BOOST_LOG(warning) << "Rejecting StationConnect stream for an account that is not authorized for the active desktop"sv;
       return false;
     }
     return true;
