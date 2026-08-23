@@ -132,7 +132,7 @@ TEST_F(InputGamepadSessionTest, ReusesGamepadsAcrossPauseAndDestroysThemOnTermin
   EXPECT_NE(replacement, resumed);
 }
 
-TEST_F(InputGamepadSessionTest, StaleDisconnectCannotResetResumedRawTablet) {
+TEST_F(InputGamepadSessionTest, DisconnectSuspendsRatherThanDiscardingResumableRawTablet) {
   const std::string session_id = "resumed-tablet-client";
   std::uint64_t first_connection_id = 0;
   auto first = input::alloc(std::make_shared<safe::mail_raw_t>(), session_id, first_connection_id);
@@ -150,5 +150,5 @@ TEST_F(InputGamepadSessionTest, StaleDisconnectCannotResetResumedRawTablet) {
   EXPECT_EQ(input::testing::raw_hid_generation(resumed), 8);
 
   input::reset(resumed, resumed_connection_id);
-  EXPECT_EQ(input::testing::raw_hid_generation(resumed), 0);
+  EXPECT_EQ(input::testing::raw_hid_generation(resumed), 8);
 }

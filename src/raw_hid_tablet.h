@@ -56,6 +56,14 @@ namespace raw_hid {
     void rebind(feedback_queue_t feedback_queue);
 
     /**
+     * @brief Suspend transport delivery while retaining stable UHID endpoints.
+     *
+     * A resumed client must present the same device identity and report
+     * descriptors before input delivery is enabled again.
+     */
+    void suspend();
+
+    /**
      * @brief Destroy every virtual interface and discard pending state.
      */
     void reset();
@@ -65,6 +73,11 @@ namespace raw_hid {
      * @brief Return the active generation for lifecycle regression tests.
      */
     std::uint16_t active_generation();
+
+    /**
+     * @brief Return the endpoint creation epoch for reconnect regression tests.
+     */
+    std::uint64_t endpoint_epoch();
 #endif
 
   private:

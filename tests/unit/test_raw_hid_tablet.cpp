@@ -97,3 +97,47 @@ TEST(RawHidTablet, EnforcesGenerationAndInterfaceBounds) {
     sizeof(descriptor)
   )));
 }
+
+TEST(RawHidTablet, ReusesIdenticalEndpointsAcrossTransportResume) {
+  if (!raw_hid::available()) {
+    GTEST_SKIP() << "/dev/uhid is unavailable to the test process";
+  }
+
+  const auto first_mail = std::make_shared<safe::mail_raw_t>();
+  raw_hid::tablet_t tablet {first_mail->queue<std::vector<std::uint8_t>>("raw-hid-test")};
+  SC_RAW_HID_DEVICE_MESSAGE device {};
+  device.interfaceCount = util::endian::little<std::uint16_t>(1);
+  device.bus = util::endian::little<std::uint16_t>(3);
+  device.vendor = util::endian::little<std::uint32_t>(0x056a);
+  device.product = util::endian::little<std::uint32_t>(0x0358);
+  std::memcpy(device.name, "StationConnect Wacom test", 25);
+  std::memcpy(device.unique, "stable-tablet", 13);
+
+  // Minimal valid HID application collection. The reconnect assertion is
+  // based on the synchronous UHID endpoint creation epoch, not udev timing.
+  const std::uint8_t descriptor[] {
+    0x05, 0x01,  // Usage Page (Generic Desktop)
+    0x09, 0x02,  // Usage (Mouse)
+    0xa1, 0x01,  // Collection (Application)
+    0xc0,  // End Collection
+  };
+
+  ASSERT_TRUE(tablet.handle(make_frame(SC_RAW_HID_DEVICE, 0, 7, &device, sizeof(device))));
+  ASSERT_TRUE(tablet.handle(make_frame(SC_RAW_HID_DESCRIPTOR, 0, 7, descriptor, sizeof(descriptor))));
+  const auto initial_epoch = tablet.endpoint_epoch();
+  ASSERT_GT(initial_epoch, 0);
+
+  tablet.suspend();
+  const auto resumed_mail = std::make_shared<safe::mail_raw_t>();
+  tablet.rebind(resumed_mail->queue<std::vector<std::uint8_t>>("raw-hid-test-resumed"));
+  ASSERT_TRUE(tablet.handle(make_frame(SC_RAW_HID_DEVICE, 0, 8, &device, sizeof(device))));
+  ASSERT_TRUE(tablet.handle(make_frame(SC_RAW_HID_DESCRIPTOR, 0, 8, descriptor, sizeof(descriptor))));
+
+  EXPECT_EQ(tablet.active_generation(), 8);
+  EXPECT_EQ(tablet.endpoint_epoch(), initial_epoch);
+
+  device.product = util::endian::little<std::uint32_t>(0x0357);
+  ASSERT_TRUE(tablet.handle(make_frame(SC_RAW_HID_DEVICE, 0, 9, &device, sizeof(device))));
+  ASSERT_TRUE(tablet.handle(make_frame(SC_RAW_HID_DESCRIPTOR, 0, 9, descriptor, sizeof(descriptor))));
+  EXPECT_GT(tablet.endpoint_epoch(), initial_epoch);
+}

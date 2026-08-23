@@ -2035,7 +2035,10 @@ namespace input {
     reset_mouse_buttons();
     reset_keyboard_keys();
     reset_gamepads(input);
-    input->raw_hid_tablet->reset();
+    // Keep the host UHID/XInput endpoints stable while this retained session
+    // is resumable. The replacement transport must re-present the same USB
+    // identity and descriptors before tablet reports are accepted again.
+    input->raw_hid_tablet->suspend();
   }
 
   /**
@@ -2150,6 +2153,12 @@ namespace input {
     }
 
     if (resumed) {
+      // Bind raw-HID feedback synchronously before the replacement control
+      // stream can submit its attach descriptors. The remaining platform
+      // rebind work stays serialized on the input task thread.
+      input->raw_hid_tablet->rebind(
+        mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback)
+      );
       dispatch_input_task([input, mail = std::move(mail)]() {
         rebind_input(input, mail);
       });

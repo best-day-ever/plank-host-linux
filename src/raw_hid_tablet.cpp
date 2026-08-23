@@ -118,12 +118,19 @@ namespace raw_hid {
         return false;
       }
       if (type == SC_RAW_HID_DESCRIPTOR) {
-        return accept_descriptor(interface_id, payload);
+        const bool accepted = accept_descriptor(interface_id, payload);
+        const bool replace_interfaces = replace_interfaces_;
+        replace_interfaces_ = false;
+        lock.unlock();
+        return accepted && (!replace_interfaces || replace_group());
       }
       if (type == SC_RAW_HID_DETACH) {
         lock.unlock();
         reset();
         return true;
+      }
+      if (!transport_active_) {
+        return false;
       }
       if (interface_id >= uhid_fds_.size()) {
         return false;
@@ -177,6 +184,15 @@ namespace raw_hid {
     }
 
     /**
+     * @brief Stop accepting reports while preserving the kernel device nodes.
+     */
+    void suspend() {
+      std::lock_guard lock {mutex_};
+      transport_active_ = false;
+      feedback_queue_ = {};
+    }
+
+    /**
      * @brief Stop the poll worker and destroy all UHID interfaces.
      */
     void reset() {
@@ -193,13 +209,22 @@ namespace raw_hid {
       descriptors_.clear();
       started_.clear();
       device_.reset();
+      retained_device_.reset();
+      retained_descriptors_.clear();
       generation_ = 0;
+      transport_active_ = false;
+      replace_interfaces_ = false;
     }
 
 #ifdef SUNSHINE_TESTS
     std::uint16_t active_generation() {
       std::lock_guard lock {mutex_};
       return generation_;
+    }
+
+    std::uint64_t endpoint_epoch() {
+      std::lock_guard lock {mutex_};
+      return endpoint_epoch_;
     }
 #endif
 
@@ -215,8 +240,6 @@ namespace raw_hid {
       if (payload.size() != sizeof(SC_RAW_HID_DEVICE_MESSAGE)) {
         return false;
       }
-      reset();
-
       SC_RAW_HID_DEVICE_MESSAGE device;
       std::memcpy(&device, payload.data(), sizeof(device));
       const auto interface_count = read_little(device.interfaceCount);
@@ -231,8 +254,9 @@ namespace raw_hid {
       std::lock_guard lock {mutex_};
       generation_ = generation;
       device_ = device;
-      descriptors_.resize(interface_count);
+      descriptors_.assign(interface_count, {});
       started_.assign(interface_count, false);
+      transport_active_ = false;
       return true;
     }
 
@@ -254,7 +278,21 @@ namespace raw_hid {
           })) {
         return true;
       }
-      return create_group();
+
+      if (!uhid_fds_.empty() && retained_device_ &&
+          std::memcmp(std::addressof(*retained_device_), std::addressof(*device_), sizeof(*device_)) == 0 &&
+          retained_descriptors_ == descriptors_) {
+        retained_device_ = device_;
+        retained_descriptors_ = descriptors_;
+        started_.assign(descriptors_.size(), true);
+        transport_active_ = true;
+        BOOST_LOG(info) << "Reused stable raw HID tablet endpoints for generation "sv << generation_;
+        send_attach_result(generation_, success);
+        return true;
+      }
+
+      replace_interfaces_ = true;
+      return true;
     }
 
     /**
@@ -264,11 +302,13 @@ namespace raw_hid {
      */
     bool create_group() {
 #ifdef __linux__
+      transport_active_ = true;
       const auto &device = *device_;
       for (const auto &descriptor : descriptors_) {
         const int fd = open("/dev/uhid", O_RDWR | O_CLOEXEC | O_NONBLOCK);
         if (fd < 0) {
           const int error_code = errno;
+          transport_active_ = false;
           BOOST_LOG(error) << "Raw HID tablet cannot open /dev/uhid: "sv << std::strerror(error_code);
           destroy_interfaces();
           send_attach_result(generation_, error_code);
@@ -290,6 +330,7 @@ namespace raw_hid {
         create.u.create2.country = read_little(device.country);
         std::ranges::copy(descriptor, create.u.create2.rd_data);
         if (!write_event(fd, create)) {
+          transport_active_ = false;
           destroy_interfaces();
           send_attach_result(generation_, EIO);
           return false;
@@ -298,8 +339,14 @@ namespace raw_hid {
       poll_thread_ = std::jthread {[this](std::stop_token stop_token) {
         poll_uhid(stop_token);
       }};
+      retained_device_ = device_;
+      retained_descriptors_ = descriptors_;
+#ifdef SUNSHINE_TESTS
+      ++endpoint_epoch_;
+#endif
       return true;
 #else
+      transport_active_ = false;
       send_attach_result(generation_, ENOTSUP);
       return false;
 #endif
@@ -333,6 +380,21 @@ namespace raw_hid {
         close(fd);
       }
       uhid_fds_.clear();
+    }
+
+    /**
+     * @brief Stop the UHID poller and remove endpoints without clearing a pending attach.
+     */
+    bool replace_group() {
+      poll_thread_.request_stop();
+      if (poll_thread_.joinable() && poll_thread_.get_id() != std::this_thread::get_id()) {
+        poll_thread_.join();
+      }
+      std::lock_guard lock {mutex_};
+      destroy_interfaces();
+      retained_device_.reset();
+      retained_descriptors_.clear();
+      return create_group();
     }
 
     /**
@@ -376,6 +438,12 @@ namespace raw_hid {
      * @param event Kernel event.
      */
     void handle_uhid_event(std::uint16_t interface_id, const uhid_event &event) {
+      {
+        std::lock_guard lock {mutex_};
+        if (!transport_active_) {
+          return;
+        }
+      }
       if (event.type == UHID_START) {
         bool all_started = false;
         {
@@ -459,6 +527,13 @@ namespace raw_hid {
     std::vector<std::vector<std::uint8_t>> descriptors_;  ///< Original report descriptors by interface.
     std::vector<bool> started_;  ///< Kernel start state by interface.
     std::vector<int> uhid_fds_;  ///< UHID endpoints by interface.
+    std::optional<SC_RAW_HID_DEVICE_MESSAGE> retained_device_;  ///< Identity backing retained UHID endpoints.
+    std::vector<std::vector<std::uint8_t>> retained_descriptors_;  ///< Descriptors backing retained endpoints.
+    bool transport_active_ = false;  ///< Whether the current transport may deliver tablet frames.
+    bool replace_interfaces_ = false;  ///< Whether a completed attach requires endpoint replacement.
+#ifdef SUNSHINE_TESTS
+    std::uint64_t endpoint_epoch_ = 0;  ///< Number of successfully created endpoint groups.
+#endif
 #ifdef __linux__
     std::jthread poll_thread_;  ///< Worker relaying kernel control requests.
 #endif
@@ -491,6 +566,10 @@ namespace raw_hid {
     impl_->rebind(std::move(feedback_queue));
   }
 
+  void tablet_t::suspend() {
+    impl_->suspend();
+  }
+
   void tablet_t::reset() {
     impl_->reset();
   }
@@ -498,6 +577,10 @@ namespace raw_hid {
 #ifdef SUNSHINE_TESTS
   std::uint16_t tablet_t::active_generation() {
     return impl_->active_generation();
+  }
+
+  std::uint64_t tablet_t::endpoint_epoch() {
+    return impl_->endpoint_epoch();
   }
 #endif
 }  // namespace raw_hid
