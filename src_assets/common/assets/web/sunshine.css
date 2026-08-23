@@ -1134,6 +1134,10 @@ body {
 }
 
 .navbar-sunshine .navbar-brand {
+    color: var(--navbar-text) !important;
+    font-size: 1.2rem;
+    font-weight: 650;
+    letter-spacing: 0.01em;
     transition: transform var(--transition-fast);
 }
 
