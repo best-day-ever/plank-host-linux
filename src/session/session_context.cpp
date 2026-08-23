@@ -151,7 +151,8 @@ namespace stationconnect::session {
       if (!update.environment.pulse_server.starts_with(unix_prefix) ||
           update.environment.pulse_cookie.empty()) return false;
       struct stat cookie_status {};
-      constexpr std::string_view runtime_cookie = "/run/stationconnect/pulse-cookie";
+      constexpr std::string_view runtime_cookie =
+        "/run/stationconnect-host/pulse-cookie";
       const bool valid_runtime_cookie = update.environment.pulse_cookie == runtime_cookie &&
         lstat(update.environment.pulse_cookie.c_str(), &cookie_status) == 0 &&
         cookie_status.st_uid == 0 && S_ISREG(cookie_status.st_mode) &&

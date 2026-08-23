@@ -35,7 +35,7 @@ namespace {
   constexpr std::string_view default_worker = "/usr/bin/stationconnect-host";
   constexpr std::string_view machine_home = "/var/lib/stationconnect";
   constexpr std::string_view runtime_pulse_cookie =
-    "/run/stationconnect/pulse-cookie";
+    "/run/stationconnect-host/pulse-cookie";
 
   struct account_t {
     uid_t uid {};
