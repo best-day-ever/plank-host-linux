@@ -674,44 +674,6 @@ namespace video {
       request_idr_frame();
     }
 
-    bool update_bitrate(int bitrate_kbps) override {
-      // FFmpeg's libx264 wrapper checks these AVCodecContext fields before
-      // encoding each frame and invokes x264_encoder_reconfig() when they
-      // change. Keep this path deliberately scoped to the qualified
-      // StationConnect software H.264 encoder.
-      if (!avcodec_ctx || avcodec_ctx->codec_id != AV_CODEC_ID_H264 ||
-          avcodec_ctx->hw_frames_ctx != nullptr) {
-        return false;
-      }
-
-      const std::int64_t requested_rate = static_cast<std::int64_t>(bitrate_kbps) * 1000LL;
-      const std::int64_t average_rate = config::video.max_bitrate > 0 ?
-                                          std::min(requested_rate,
-                                                   static_cast<std::int64_t>(config::video.max_bitrate) *
-                                                     static_cast<std::int64_t>(1000)) :
-                                          requested_rate;
-      const auto rate_control = software_rate_control(
-        average_rate,
-        avcodec_ctx->framerate.num > 0 ?
-          avcodec_ctx->framerate.num / std::max(avcodec_ctx->framerate.den, 1) : 60,
-        config::video.sw.vbv_maxrate_percentage,
-        config::video.sw.vbv_buffer_frames
-      );
-
-      avcodec_ctx->bit_rate = rate_control.average_rate;
-      avcodec_ctx->rc_max_rate = rate_control.peak_rate;
-      avcodec_ctx->rc_min_rate = 0;
-      if (config::video.sw.vbv_buffer_frames > 0) {
-        avcodec_ctx->rc_buffer_size = rate_control.buffer_size;
-      }
-
-      BOOST_LOG(info) << "Updated active StationConnect video bitrate: average="sv
-                      << avcodec_ctx->bit_rate << ", peak="sv
-                      << avcodec_ctx->rc_max_rate << ", vbv="sv
-                      << avcodec_ctx->rc_buffer_size;
-      return true;
-    }
-
     avcodec_ctx_t avcodec_ctx;  ///< FFmpeg codec context owned by the encode session.
     std::unique_ptr<platf::avcodec_encode_device_t> device;  ///< Platform device used by the FFmpeg hardware encoder.
 
@@ -2761,7 +2723,7 @@ namespace video {
     int &frame_nr,  // Store progress of the frame number
     safe::mail_t mail,
     img_event_t images,
-    config_t config,
+    config_t &config,
     std::shared_ptr<platf::display_t> disp,
     std::unique_ptr<platf::encode_device_t> encode_device,
     safe::signal_t &reinit_event,
@@ -2817,14 +2779,22 @@ namespace video {
     while (true) {
       bool requested_idr_frame = false;
 
+      std::optional<int> requested_bitrate_kbps;
       while (bitrate_events->peek()) {
-        if (auto bitrate_kbps = bitrate_events->pop(0ms)) {
-          if (session->update_bitrate(*bitrate_kbps)) {
-            config.bitrate = *bitrate_kbps;
-          } else {
-            BOOST_LOG(warning) << "Active encoder rejected StationConnect bitrate update"sv;
-          }
-        }
+        requested_bitrate_kbps = bitrate_events->pop(0ms);
+      }
+      if (requested_bitrate_kbps && *requested_bitrate_kbps != config.bitrate) {
+        // x264 only supports changing an active bitrate when its ABR engine is
+        // operating as CBR. StationConnect's qualified bounded-ABR profile
+        // deliberately uses a 2x VBV peak, so changing AVCodecContext fields
+        // would update public parameters while leaving x264's real sustained
+        // target unchanged. Return to capture_async(), which preserves the
+        // stream and display while creating a fresh encoder at the new target.
+        BOOST_LOG(info) << "Recreating active StationConnect ABR encoder: old="sv
+                        << config.bitrate << " Kbps, new="sv
+                        << *requested_bitrate_kbps << " Kbps"sv;
+        config.bitrate = *requested_bitrate_kbps;
+        return;
       }
 
       while (invalidate_ref_frames_events->peek()) {
@@ -3201,14 +3171,22 @@ namespace video {
             ctx->idr_events->pop();
           }
 
+          std::optional<int> requested_bitrate_kbps;
           while (ctx->bitrate_events->peek()) {
-            if (auto bitrate_kbps = ctx->bitrate_events->pop(0ms)) {
-              if (pos->session->update_bitrate(*bitrate_kbps)) {
-                ctx->config.bitrate = *bitrate_kbps;
-              } else {
-                BOOST_LOG(warning) << "Active encoder rejected StationConnect bitrate update"sv;
-              }
+            requested_bitrate_kbps = ctx->bitrate_events->pop(0ms);
+          }
+          if (requested_bitrate_kbps && *requested_bitrate_kbps != ctx->config.bitrate) {
+            BOOST_LOG(info) << "Recreating active StationConnect ABR encoder: old="sv
+                            << ctx->config.bitrate << " Kbps, new="sv
+                            << *requested_bitrate_kbps << " Kbps"sv;
+            ctx->config.bitrate = *requested_bitrate_kbps;
+            auto replacement = make_synced_session(disp.get(), encoder, *img, *ctx);
+            if (!replacement) {
+              BOOST_LOG(error) << "Failed to recreate active StationConnect ABR encoder"sv;
+              ctx->shutdown_event->raise(true);
+              continue;
             }
+            *pos = std::move(*replacement);
           }
 
           if (frame_captured && pos->session->convert(*img)) {
