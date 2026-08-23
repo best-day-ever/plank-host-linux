@@ -21,6 +21,16 @@ namespace {
       false,
     };
   }
+
+  session::update_t valid_update() {
+    return {
+      7,
+      valid_session(),
+      {":0", "/run/user/1000/gdm/Xauthority", "/run/user/1000",
+       "unix:path=/run/user/1000/bus", "unix:/run/user/1000/pulse/native",
+       "/home/test/.config/pulse/cookie"},
+    };
+  }
 }  // namespace
 
 TEST(SessionContext, AcceptsActiveLocalSeat0UserAndGreeter) {
@@ -63,14 +73,29 @@ TEST(SessionContext, RejectsUnsupportedSessionTypesAndClasses) {
   EXPECT_FALSE(session::eligible_graphical_session(descriptor));
 }
 
-TEST(SessionContext, BuildsOnlyBoundedEligibleAttestations) {
-  auto descriptor = valid_session();
-  EXPECT_EQ(session::session_attestation_message(descriptor), "SC-SESSION-1\nc7\n1000");
+TEST(SessionContext, RoundTripsBoundedDesktopUpdates) {
+  const auto update = valid_update();
+  const auto message = session::session_update_message(update);
+  const auto parsed = session::parse_session_update(message);
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->generation, update.generation);
+  EXPECT_EQ(parsed->session.id, update.session.id);
+  EXPECT_EQ(parsed->session.uid, update.session.uid);
+  EXPECT_EQ(parsed->environment.display, update.environment.display);
+  EXPECT_EQ(parsed->environment.pulse_cookie, update.environment.pulse_cookie);
+}
 
-  descriptor.id = "invalid\nsession";
-  EXPECT_TRUE(session::session_attestation_message(descriptor).empty());
+TEST(SessionContext, RejectsMalformedOrIneligibleDesktopUpdates) {
+  auto update = valid_update();
+  auto message = session::session_update_message(update);
+  ASSERT_FALSE(message.empty());
+  message.pop_back();
+  EXPECT_FALSE(session::parse_session_update(message));
 
-  descriptor = valid_session();
-  descriptor.remote = true;
-  EXPECT_TRUE(session::session_attestation_message(descriptor).empty());
+  update.session.remote = true;
+  EXPECT_TRUE(session::session_update_message(update).empty());
+
+  update = valid_update();
+  update.generation = 0;
+  EXPECT_TRUE(session::session_update_message(update).empty());
 }

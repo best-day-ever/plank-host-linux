@@ -42,7 +42,9 @@ namespace {
 
   struct worker_t {
     pid_t pid {-1};
+    int control_descriptor {-1};
     std::string session_id;
+    std::uint64_t generation {};
   };
 
   std::optional<account_t> account_for_uid(uid_t uid) {
@@ -73,6 +75,26 @@ namespace {
     }
   }
 
+  stationconnect::session::environment_t add_audio_environment(
+    stationconnect::session::environment_t environment,
+    const account_t &account
+  ) {
+    const std::filesystem::path pulse_socket =
+      std::filesystem::path {environment.runtime_directory} / "pulse/native";
+    const std::filesystem::path pulse_cookie =
+      std::filesystem::path {account.home} / ".config/pulse/cookie";
+    struct stat socket_status {};
+    struct stat cookie_status {};
+    if (lstat(pulse_socket.c_str(), &socket_status) == 0 &&
+        socket_status.st_uid == account.uid && S_ISSOCK(socket_status.st_mode) &&
+        lstat(pulse_cookie.c_str(), &cookie_status) == 0 &&
+        cookie_status.st_uid == account.uid && S_ISREG(cookie_status.st_mode)) {
+      environment.pulse_server = "unix:" + pulse_socket.string();
+      environment.pulse_cookie = pulse_cookie.string();
+    }
+    return environment;
+  }
+
   bool restrict_worker_capabilities() {
     __user_cap_header_struct header {
       _LINUX_CAPABILITY_VERSION_3,
@@ -91,8 +113,7 @@ namespace {
     const std::filesystem::path &worker,
     const stationconnect::session::descriptor_t &session,
     const stationconnect::session::environment_t &environment,
-    const account_t &account,
-    int attestation_descriptor,
+    int control_descriptor,
     int supervisor_descriptor
   ) {
     close(supervisor_descriptor);
@@ -116,9 +137,9 @@ namespace {
 
     const char *host_options = getenv("STATIONCONNECT_HOST_OPTIONS");
     const std::string inherited_options = host_options == nullptr ? "" : host_options;
-    const int descriptor_flags = fcntl(attestation_descriptor, F_GETFD);
+    const int descriptor_flags = fcntl(control_descriptor, F_GETFD);
     if (descriptor_flags < 0 ||
-        fcntl(attestation_descriptor, F_SETFD, descriptor_flags & ~FD_CLOEXEC) != 0) {
+        fcntl(control_descriptor, F_SETFD, descriptor_flags & ~FD_CLOEXEC) != 0) {
       std::_Exit(126);
     }
     clearenv();
@@ -135,22 +156,11 @@ namespace {
     set_environment_value("XDG_SESSION_CLASS", session.session_class);
     set_environment_value("XDG_SEAT", session.seat);
     set_environment_value("DBUS_SESSION_BUS_ADDRESS", environment.dbus_address);
-    const std::filesystem::path pulse_socket =
-      std::filesystem::path {environment.runtime_directory} / "pulse/native";
-    const std::filesystem::path pulse_cookie =
-      std::filesystem::path {account.home} / ".config/pulse/cookie";
-    struct stat socket_status {};
-    struct stat cookie_status {};
-    if (lstat(pulse_socket.c_str(), &socket_status) == 0 &&
-        socket_status.st_uid == account.uid && S_ISSOCK(socket_status.st_mode) &&
-        lstat(pulse_cookie.c_str(), &cookie_status) == 0 &&
-        cookie_status.st_uid == account.uid && S_ISREG(cookie_status.st_mode)) {
-      set_environment_value("PULSE_SERVER", "unix:" + pulse_socket.string());
-      set_environment_value("PULSE_COOKIE", pulse_cookie.string());
-    }
+    set_environment_value("PULSE_SERVER", environment.pulse_server);
+    set_environment_value("PULSE_COOKIE", environment.pulse_cookie);
     set_environment_value("STATIONCONNECT_HOST_OPTIONS", inherited_options);
     set_environment_value(
-      "STATIONCONNECT_SESSION_ATTESTATION_FD", std::to_string(attestation_descriptor)
+      "STATIONCONNECT_SESSION_CONTROL_FD", std::to_string(control_descriptor)
     );
     if (chdir(machine_home.data()) != 0) {
       std::cerr << "Unable to enter machine worker home directory\n";
@@ -161,43 +171,71 @@ namespace {
     std::_Exit(127);
   }
 
-  pid_t launch_worker(
+  bool send_update(
+    worker_t &worker,
+    const stationconnect::session::descriptor_t &session,
+    const stationconnect::session::environment_t &environment
+  ) {
+    const stationconnect::session::update_t update {
+      worker.generation + 1, session, environment
+    };
+    const std::string message = stationconnect::session::session_update_message(update);
+    if (message.empty()) {
+      return false;
+    }
+    const ssize_t sent = send(
+      worker.control_descriptor, message.data(), message.size(), MSG_NOSIGNAL
+    );
+    if (sent != static_cast<ssize_t>(message.size())) {
+      return false;
+    }
+    pollfd response {worker.control_descriptor, POLLIN, 0};
+    if (poll(&response, 1, 10000) != 1 || (response.revents & POLLIN) == 0) {
+      return false;
+    }
+    std::array<char, 128> reply {};
+    const ssize_t reply_size = recv(
+      worker.control_descriptor, reply.data(), reply.size(), 0
+    );
+    const std::string expected =
+      "SC-ACK-2\n" + std::to_string(update.generation) + "\nOK";
+    if (reply_size != static_cast<ssize_t>(expected.size()) ||
+        std::string_view {reply.data(), static_cast<std::size_t>(reply_size)} != expected) {
+      return false;
+    }
+    worker.session_id = session.id;
+    worker.generation = update.generation;
+    return true;
+  }
+
+  worker_t launch_worker(
     const std::filesystem::path &worker,
     const stationconnect::session::descriptor_t &session,
-    const stationconnect::session::environment_t &environment,
-    const account_t &account
+    const stationconnect::session::environment_t &environment
   ) {
-    int attestation_sockets[2] {-1, -1};
-    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, attestation_sockets) != 0) {
-      return -1;
-    }
-    const std::string attestation = stationconnect::session::session_attestation_message(session);
-    if (attestation.empty()) {
-      close(attestation_sockets[0]);
-      close(attestation_sockets[1]);
-      return -1;
+    int control_sockets[2] {-1, -1};
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, control_sockets) != 0) {
+      return {};
     }
     const pid_t child = fork();
     if (child == 0) {
       launch_child(
-        worker, session, environment, account,
-        attestation_sockets[1], attestation_sockets[0]
+        worker, session, environment, control_sockets[1], control_sockets[0]
       );
     }
-    close(attestation_sockets[1]);
-    if (child > 0) {
-      const ssize_t sent = send(
-        attestation_sockets[0], attestation.data(), attestation.size(), MSG_NOSIGNAL
-      );
-      if (sent != static_cast<ssize_t>(attestation.size())) {
-        kill(child, SIGKILL);
-        waitpid(child, nullptr, 0);
-        close(attestation_sockets[0]);
-        return -1;
-      }
+    close(control_sockets[1]);
+    if (child <= 0) {
+      close(control_sockets[0]);
+      return {};
     }
-    close(attestation_sockets[0]);
-    return child;
+    worker_t result {child, control_sockets[0], {}, 0};
+    if (!send_update(result, session, environment)) {
+      kill(child, SIGKILL);
+      waitpid(child, nullptr, 0);
+      close(control_sockets[0]);
+      return {};
+    }
+    return result;
   }
 
   void stop_worker(worker_t &worker) {
@@ -209,6 +247,7 @@ namespace {
     while (std::chrono::steady_clock::now() < deadline) {
       const pid_t result = waitpid(worker.pid, nullptr, WNOHANG);
       if (result == worker.pid || (result < 0 && errno == ECHILD)) {
+        close(worker.control_descriptor);
         worker = {};
         return;
       }
@@ -216,6 +255,7 @@ namespace {
     }
     kill(worker.pid, SIGKILL);
     waitpid(worker.pid, nullptr, 0);
+    close(worker.control_descriptor);
     worker = {};
   }
 
@@ -271,19 +311,9 @@ int main(int argc, char **argv) {
   while (!stopping) {
     const auto selected = stationconnect::session::active_seat0_graphical_session();
     if (!selected) {
-      if (worker.pid > 0) {
-        std::clog << "Active seat0 graphical session ended; stopping worker\n";
-        stop_worker(worker);
-      }
       pending_session.clear();
-    } else if (worker.pid > 0 && worker.session_id != selected->id) {
-      std::clog << "Active seat0 session changed from " << worker.session_id << " to "
-                << selected->id << "; stopping old worker\n";
-      stop_worker(worker);
-      next_launch = std::chrono::steady_clock::now();
-    }
-
-    if (selected && worker.pid <= 0 && std::chrono::steady_clock::now() >= next_launch) {
+    } else if ((worker.pid <= 0 || worker.session_id != selected->id) &&
+               std::chrono::steady_clock::now() >= next_launch) {
       const auto environment = stationconnect::session::discover_environment(*selected);
       const auto account = account_for_uid(selected->uid);
       if (!environment || !account || account->home.empty()) {
@@ -297,14 +327,31 @@ int main(int argc, char **argv) {
         if (!confirmed || confirmed->id != selected->id || confirmed->uid != selected->uid) {
           continue;
         }
-        const pid_t child = launch_worker(worker_path, *selected, *environment, *account);
-        if (child > 0) {
-          worker = {child, selected->id};
-          pending_session.clear();
-          std::clog << "Attached privileged StationConnect machine worker to session "
-                    << selected->id << ", UID " << selected->uid << '\n';
+        const auto complete_environment = add_audio_environment(*environment, *account);
+        if (worker.pid > 0) {
+          const auto previous_session = worker.session_id;
+          if (send_update(worker, *selected, complete_environment)) {
+            std::clog << "Reattached persistent StationConnect worker from session "
+                      << previous_session << " to " << selected->id << ", UID "
+                      << selected->uid << ", generation " << worker.generation << '\n';
+            pending_session.clear();
+          } else {
+            std::cerr << "Desktop reattachment channel failed; restarting worker\n";
+            stop_worker(worker);
+          }
         } else {
-          std::cerr << "Unable to fork StationConnect worker: " << std::strerror(errno) << '\n';
+          auto launched = launch_worker(worker_path, *selected, complete_environment);
+          if (launched.pid > 0) {
+            worker = std::move(launched);
+            pending_session.clear();
+            std::clog << "Attached persistent StationConnect machine worker to session "
+                      << selected->id << ", UID " << selected->uid << '\n';
+          } else {
+            std::cerr << "Unable to fork StationConnect worker: " << std::strerror(errno) << '\n';
+          }
+        }
+        if (worker.pid > 0) {
+          pending_session.clear();
         }
         next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {2};
       }
@@ -331,6 +378,7 @@ int main(int argc, char **argv) {
           const pid_t result = waitpid(worker.pid, nullptr, WNOHANG);
           if (result == worker.pid) {
             std::clog << "StationConnect worker exited; scheduling restart\n";
+            close(worker.control_descriptor);
             worker = {};
             next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {2};
           }

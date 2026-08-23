@@ -45,6 +45,9 @@ extern "C" {
 #include "platform/common.h"
 #include "sync.h"
 #include "video.h"
+#ifdef __linux__
+  #include "session/session_context.h"
+#endif
 
 #ifdef _WIN32
 extern "C" {
@@ -1794,6 +1797,11 @@ namespace video {
     });
 
     auto switch_display_event = mail::man->event<int>(mail::switch_display);
+    auto desktop_reattach_event =
+      mail::man->event<std::uint64_t>(mail::desktop_reattach);
+#ifdef __linux__
+    auto attached_generation = stationconnect::session::desktop_generation();
+#endif
 
     // Wait for the initial capture context or a request to stop the queue
     auto initial_capture_ctx = capture_ctx_queue->pop();
@@ -1945,7 +1953,7 @@ namespace video {
           capture_ctxs.emplace_back(std::move(*capture_ctx_queue->pop()));
         }
 
-        if (switch_display_event->peek()) {
+        if (switch_display_event->peek() || desktop_reattach_event->peek()) {
           artificial_reinit = true;
           return false;
         }
@@ -1954,6 +1962,21 @@ namespace video {
       };
 
       auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &display_cursor);
+
+#ifdef __linux__
+      if (status == platf::capture_e::error &&
+          getenv("STATIONCONNECT_SESSION_CONTROL_FD") != nullptr) {
+        const auto deadline = std::chrono::steady_clock::now() + 10s;
+        while (capture_ctx_queue->running() &&
+               stationconnect::session::desktop_generation() == attached_generation &&
+               std::chrono::steady_clock::now() < deadline) {
+          std::this_thread::sleep_for(50ms);
+        }
+        if (stationconnect::session::desktop_generation() != attached_generation) {
+          status = platf::capture_e::reinit;
+        }
+      }
+#endif
 
       if (artificial_reinit && status != platf::capture_e::error) {
         status = platf::capture_e::reinit;
@@ -1964,6 +1987,16 @@ namespace video {
       switch (status) {
         case platf::capture_e::reinit:
           {
+            while (desktop_reattach_event->peek()) {
+              const auto generation = desktop_reattach_event->pop();
+              if (generation) {
+                BOOST_LOG(info) << "Reinitializing video for desktop generation "sv
+                                << *generation;
+              }
+            }
+#ifdef __linux__
+            attached_generation = stationconnect::session::desktop_generation();
+#endif
             reinit_event.raise(true);
 
             // Some classes of images contain references to the display --> display won't delete unless img is deleted
@@ -3020,6 +3053,11 @@ namespace video {
     std::shared_ptr<platf::display_t> disp;
 
     auto switch_display_event = mail::man->event<int>(mail::switch_display);
+    auto desktop_reattach_event =
+      mail::man->event<std::uint64_t>(mail::desktop_reattach);
+#ifdef __linux__
+    const auto attached_generation = stationconnect::session::desktop_generation();
+#endif
 
     if (synced_session_ctxs.empty()) {
       auto ctx = encode_session_ctx_queue.pop();
@@ -3031,6 +3069,9 @@ namespace video {
     }
 
     while (encode_session_ctx_queue.running()) {
+      while (desktop_reattach_event->peek()) {
+        desktop_reattach_event->pop();
+      }
       // Refresh display names since a display removal might have caused the reinitialization
       refresh_displays(encoder.platform_formats->dev_type, synced_session_ctxs.front()->config.output_name,
                        synced_session_ctxs.front()->config.span_desktop,
@@ -3134,7 +3175,7 @@ namespace video {
           ++pos;
         })
 
-        if (switch_display_event->peek()) {
+        if (switch_display_event->peek() || desktop_reattach_event->peek()) {
           ec = platf::capture_e::reinit;
           return false;
         }
@@ -3149,6 +3190,20 @@ namespace video {
       };
 
       auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &display_cursor);
+#ifdef __linux__
+      if (status == platf::capture_e::error &&
+          getenv("STATIONCONNECT_SESSION_CONTROL_FD") != nullptr) {
+        const auto deadline = std::chrono::steady_clock::now() + 10s;
+        while (encode_session_ctx_queue.running() &&
+               stationconnect::session::desktop_generation() == attached_generation &&
+               std::chrono::steady_clock::now() < deadline) {
+          std::this_thread::sleep_for(50ms);
+        }
+        if (stationconnect::session::desktop_generation() != attached_generation) {
+          return encode_e::reinit;
+        }
+      }
+#endif
       switch (status) {
         case platf::capture_e::reinit:
         case platf::capture_e::error:

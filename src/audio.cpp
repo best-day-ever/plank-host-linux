@@ -3,6 +3,8 @@
  * @brief Definitions for audio capture and encoding.
  */
 // standard includes
+#include <map>
+#include <mutex>
 #include <thread>
 
 // lib includes
@@ -14,6 +16,9 @@
 #include "globals.h"
 #include "logging.h"
 #include "platform/common.h"
+#ifdef __linux__
+  #include "session/session_context.h"
+#endif
 #include "thread_safe.h"
 #include "utility.h"
 
@@ -165,117 +170,118 @@ namespace audio {
       apply_surround_params(stream, config.customStreamParams);
     }
 
-    auto ref = get_audio_ctx_ref();
-    if (!ref) {
-      return;
-    }
-
-    auto init_failure_fg = util::fail_guard([&shutdown_event]() {
-      BOOST_LOG(error) << "Unable to initialize audio capture. The stream will not have audio."sv;
-
-      // Wait for shutdown to be signalled if we fail init.
-      // This allows streaming to continue without audio.
-      shutdown_event->view();
-    });
-
-    auto &control = ref->control;
-    if (!control) {
-      return;
-    }
-
-    // Order of priority:
-    // 1. Virtual sink
-    // 2. Audio sink
-    // 3. Host
-    std::string *sink = &ref->sink.host;
-    if (!config::audio.sink.empty()) {
-      sink = &config::audio.sink;
-    }
-
-    // Prefer the virtual sink if host playback is disabled or there's no other sink
-    if (ref->sink.null && (!config.flags[config_t::HOST_AUDIO] || sink->empty())) {
-      auto &null = *ref->sink.null;
-      switch (stream.channelCount) {
-        case 2:
-          sink = &null.stereo;
-          break;
-        case 6:
-          sink = &null.surround51;
-          break;
-        case 8:
-          sink = &null.surround71;
-          break;
-      }
-    }
-
-    // Only the first to start a session may change the default sink
-    if (!ref->sink_flag->exchange(true, std::memory_order_acquire)) {
-      // If the selected sink is different than the current one, change sinks.
-      ref->restore_sink = ref->sink.host != *sink;
-      if (ref->restore_sink) {
-        if (control->set_sink(*sink)) {
-          return;
-        }
-      }
-    }
-
     auto frame_size = config.packetDuration * stream.sampleRate / 1000;
     bool host_audio = config.flags[config_t::HOST_AUDIO];
     bool continuous_audio = config.flags[config_t::CONTINUOUS_AUDIO];
-    auto mic = control->microphone(stream.mapping, stream.channelCount, stream.sampleRate, frame_size, continuous_audio, host_audio);
-    if (!mic) {
-      return;
-    }
-
-    // Audio is initialized, so we don't want to print the failure message
-    init_failure_fg.disable();
-
-    // Capture takes place on this thread
-    platf::adjust_thread_priority(platf::thread_priority_e::critical);
-
-    auto samples = std::make_shared<sample_queue_t::element_type>(30);
-    std::jthread thread {encodeThread, samples, config, channel_data};
-
-    auto fg = util::fail_guard([&]() {
-      samples->stop();
-      thread.join();
-
-      shutdown_event->view();
-    });
-
     int samples_per_frame = frame_size * stream.channelCount;
 
-    while (!shutdown_event->peek()) {
-      std::vector<float> sample_buffer;
-      sample_buffer.resize(samples_per_frame);
+    auto generation = []() -> std::uint64_t {
+#ifdef __linux__
+      return stationconnect::session::desktop_generation();
+#else
+      return 0;
+#endif
+    };
 
-      auto status = mic->sample(sample_buffer);
-      switch (status) {
-        case platf::capture_e::ok:
-          break;
-        case platf::capture_e::timeout:
-          continue;
-        case platf::capture_e::reinit:
-          BOOST_LOG(info) << "Reinitializing audio capture"sv;
-          mic.reset();
-          do {
-            mic = control->microphone(stream.mapping, stream.channelCount, stream.sampleRate, frame_size, continuous_audio, host_audio);
-            if (!mic) {
-              BOOST_LOG(warning) << "Couldn't re-initialize audio input"sv;
-            }
-          } while (!mic && !shutdown_event->view(5s));
-          continue;
-        default:
-          return;
+    enum class capture_result_e { shutdown, reattach, unavailable };
+    auto capture_generation = [&](std::uint64_t attached_generation) {
+      auto ref = get_audio_ctx_ref();
+      if (!ref || !ref->control) return capture_result_e::unavailable;
+
+      // Order of priority: virtual sink, configured sink, then host sink.
+      std::string *sink = &ref->sink.host;
+      if (!config::audio.sink.empty()) sink = &config::audio.sink;
+      if (ref->sink.null && (!config.flags[config_t::HOST_AUDIO] || sink->empty())) {
+        auto &null = *ref->sink.null;
+        switch (stream.channelCount) {
+          case 2: sink = &null.stereo; break;
+          case 6: sink = &null.surround51; break;
+          case 8: sink = &null.surround71; break;
+        }
       }
 
-      samples->raise(std::move(sample_buffer));
+      if (!ref->sink_flag->exchange(true, std::memory_order_acquire)) {
+        ref->restore_sink = ref->sink.host != *sink;
+        if (ref->restore_sink && ref->control->set_sink(*sink)) {
+          return capture_result_e::unavailable;
+        }
+      }
+
+      auto mic = ref->control->microphone(
+        stream.mapping, stream.channelCount, stream.sampleRate, frame_size,
+        continuous_audio, host_audio
+      );
+      if (!mic) return capture_result_e::unavailable;
+
+      auto samples = std::make_shared<sample_queue_t::element_type>(30);
+      std::jthread thread {encodeThread, samples, config, channel_data};
+      auto encoder_guard = util::fail_guard([&]() {
+        samples->stop();
+        thread.join();
+      });
+
+      while (!shutdown_event->peek()) {
+        if (generation() != attached_generation) return capture_result_e::reattach;
+        std::vector<float> sample_buffer(samples_per_frame);
+        const auto status = mic->sample(sample_buffer);
+        if (generation() != attached_generation) return capture_result_e::reattach;
+        switch (status) {
+          case platf::capture_e::ok:
+            samples->raise(std::move(sample_buffer));
+            break;
+          case platf::capture_e::timeout:
+            break;
+          case platf::capture_e::reinit:
+            BOOST_LOG(info) << "Reinitializing audio capture"sv;
+            mic.reset();
+            do {
+              mic = ref->control->microphone(
+                stream.mapping, stream.channelCount, stream.sampleRate, frame_size,
+                continuous_audio, host_audio
+              );
+              if (!mic) BOOST_LOG(warning) << "Couldn't re-initialize audio input"sv;
+            } while (!mic && generation() == attached_generation &&
+                     !shutdown_event->view(5s));
+            if (generation() != attached_generation) return capture_result_e::reattach;
+            if (!mic) return capture_result_e::shutdown;
+            break;
+          default:
+            return capture_result_e::unavailable;
+        }
+      }
+      return capture_result_e::shutdown;
+    };
+
+    platf::adjust_thread_priority(platf::thread_priority_e::critical);
+    while (!shutdown_event->peek()) {
+      const auto attached_generation = generation();
+      const auto result = capture_generation(attached_generation);
+      if (result == capture_result_e::shutdown) return;
+      if (result == capture_result_e::reattach) {
+        BOOST_LOG(info) << "Rebinding audio to desktop generation "sv << generation();
+        continue;
+      }
+
+      BOOST_LOG(error) << "Unable to initialize audio capture. The stream will not have audio."sv;
+      while (!shutdown_event->view(1s) && generation() == attached_generation) {}
     }
   }
 
   audio_ctx_ref_t get_audio_ctx_ref() {
-    static auto control_shared {safe::make_shared<audio_ctx_t>(start_audio_control, stop_audio_control)};
-    return control_shared.ref();
+    static std::mutex controls_mutex;
+    static std::map<std::uint64_t, std::unique_ptr<safe::shared_t<audio_ctx_t>>> controls;
+    std::uint64_t generation = 0;
+#ifdef __linux__
+    generation = stationconnect::session::desktop_generation();
+#endif
+    std::lock_guard lock {controls_mutex};
+    auto &control = controls[generation];
+    if (!control) {
+      control = std::make_unique<safe::shared_t<audio_ctx_t>>(
+        start_audio_control, stop_audio_control
+      );
+    }
+    return control->ref();
   }
 
   bool is_audio_ctx_sink_available(const audio_ctx_t &ctx) {

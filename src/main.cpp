@@ -26,6 +26,9 @@
 #include "main.h"
 #include "nvhttp.h"
 #include "process.h"
+#ifdef __linux__
+  #include "session/session_context.h"
+#endif
 #include "system_tray.h"
 #include "upnp.h"
 #include "video.h"
@@ -223,6 +226,19 @@ int main(int argc, char *argv[]) {
   // Log modified_config_settings
   config::log_config_settings(config::modified_config_settings, false);
   config::modified_config_settings.clear();
+
+#ifdef __linux__
+  auto supervisor_control = stationconnect::session::start_supervisor_control(
+    [](std::uint64_t generation) {
+      BOOST_LOG(info) << "Desktop attachment changed to generation "sv << generation;
+      mail::man->event<std::uint64_t>(mail::desktop_reattach)->raise(generation);
+    }
+  );
+  if (getenv("STATIONCONNECT_SESSION_CONTROL_FD") != nullptr && !supervisor_control) {
+    BOOST_LOG(fatal) << "Supervisor desktop control channel was rejected"sv;
+    return 8;
+  }
+#endif
 
   if (!config::sunshine.cmd.name.empty()) {
     auto fn = cmd_to_func.find(config::sunshine.cmd.name);

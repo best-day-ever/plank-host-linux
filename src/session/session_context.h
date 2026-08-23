@@ -4,8 +4,12 @@
  */
 #pragma once
 
+#include <cstdint>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include <sys/types.h>
 
@@ -26,6 +30,19 @@ namespace stationconnect::session {
     std::string xauthority;
     std::string runtime_directory;
     std::string dbus_address;
+    std::string pulse_server;
+    std::string pulse_cookie;
+  };
+
+  struct update_t {
+    std::uint64_t generation {};
+    descriptor_t session;
+    environment_t environment;
+  };
+
+  class supervisor_control_t {
+  public:
+    virtual ~supervisor_control_t() = default;
   };
 
   /** Return true only for a supported, local active seat0 session. */
@@ -43,9 +60,18 @@ namespace stationconnect::session {
    */
   std::optional<environment_t> discover_environment(const descriptor_t &session);
 
-  /** Authorize an account against the supervisor-attested active seat0 session. */
+  /** Authorize an account against the supervisor-controlled active seat0 session. */
   bool supervisor_attests_account_for_active_seat0(uid_t account_uid);
 
-  /** Build the bounded message sent over the inherited supervisor socket. */
-  std::string session_attestation_message(const descriptor_t &session);
+  /** Encode or decode one bounded supervisor desktop-attachment update. */
+  std::string session_update_message(const update_t &update);
+  std::optional<update_t> parse_session_update(std::string_view message);
+
+  /** Begin monitoring the inherited, root-authenticated supervisor channel. */
+  std::unique_ptr<supervisor_control_t> start_supervisor_control(
+    std::function<void(std::uint64_t)> on_reattach
+  );
+
+  /** Return the most recently accepted desktop attachment generation. */
+  std::uint64_t desktop_generation();
 }  // namespace stationconnect::session

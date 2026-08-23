@@ -1,29 +1,39 @@
 /**
  * @file src/session/session_context.cpp
- * @brief Logind-backed graphical-session selection for StationConnect.
+ * @brief Logind-backed graphical-session selection and desktop reattachment.
  */
 #include "session_context.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <regex>
-#include <string_view>
+#include <stop_token>
+#include <thread>
 #include <vector>
 
 #include <systemd/sd-login.h>
-#include <sys/stat.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace stationconnect::session {
   namespace {
+    constexpr std::string_view update_prefix = "SC-SESSION-2";
+    constexpr std::size_t maximum_update_size = 8192;
     using login_string_t = std::unique_ptr<char, decltype(&free)>;
+
+    std::mutex current_update_mutex;
+    std::optional<update_t> current_update;
+    std::atomic_uint64_t current_generation {};
 
     std::optional<std::string> session_string(
       int (*getter)(const char *, char **),
@@ -31,19 +41,21 @@ namespace stationconnect::session {
     ) {
       char *raw = nullptr;
       const std::string id {session_id};
-      if (getter(id.c_str(), &raw) < 0 || raw == nullptr) {
-        return std::nullopt;
-      }
+      if (getter(id.c_str(), &raw) < 0 || raw == nullptr) return std::nullopt;
       login_string_t value {raw, &free};
       return std::string {value.get()};
     }
 
     bool owned_path(const std::filesystem::path &path, uid_t uid, bool directory) {
       struct stat status {};
-      if (lstat(path.c_str(), &status) != 0 || status.st_uid != uid) {
-        return false;
-      }
+      if (lstat(path.c_str(), &status) != 0 || status.st_uid != uid) return false;
       return directory ? S_ISDIR(status.st_mode) : S_ISREG(status.st_mode);
+    }
+
+    bool owned_socket(const std::filesystem::path &path, uid_t uid) {
+      struct stat status {};
+      return lstat(path.c_str(), &status) == 0 && status.st_uid == uid &&
+             S_ISSOCK(status.st_mode);
     }
 
     std::optional<pid_t> parse_pid(const std::filesystem::path &path) {
@@ -61,20 +73,12 @@ namespace stationconnect::session {
       const std::array<std::string_view, 4> allowed {
         "DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"
       };
-      std::ifstream input {
-        "/proc/" + std::to_string(pid) + "/environ",
-        std::ios::binary
-      };
-      if (!input) {
-        return {};
-      }
+      std::ifstream input {"/proc/" + std::to_string(pid) + "/environ", std::ios::binary};
+      if (!input) return {};
       std::string contents(
-        std::istreambuf_iterator<char> {input},
-        std::istreambuf_iterator<char> {}
+        std::istreambuf_iterator<char> {input}, std::istreambuf_iterator<char> {}
       );
-      if (contents.size() > maximum_environment_size) {
-        return {};
-      }
+      if (contents.size() > maximum_environment_size) return {};
 
       std::map<std::string, std::string> result;
       std::size_t offset = 0;
@@ -89,71 +93,145 @@ namespace stationconnect::session {
             result.emplace(name, entry.substr(separator + 1));
           }
         }
-        if (end == std::string::npos) {
-          break;
-        }
+        if (end == std::string::npos) break;
         offset = end + 1;
       }
       return result;
     }
 
-    struct attestation_t {
-      std::string session_id;
-      uid_t uid {};
-    };
-
-    std::optional<attestation_t> read_supervisor_attestation() {
-      const char *raw_descriptor = getenv("STATIONCONNECT_SESSION_ATTESTATION_FD");
-      if (raw_descriptor == nullptr) {
+    template<class Integer>
+    std::optional<Integer> parse_integer(std::string_view value) {
+      Integer result {};
+      const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
+      if (value.empty() || parsed.ec != std::errc {} || parsed.ptr != value.data() + value.size()) {
         return std::nullopt;
       }
-      const std::string_view descriptor_text {raw_descriptor};
-      int descriptor = -1;
-      const auto parsed_descriptor = std::from_chars(
-        descriptor_text.data(), descriptor_text.data() + descriptor_text.size(), descriptor
-      );
-      if (parsed_descriptor.ec != std::errc {} ||
-          parsed_descriptor.ptr != descriptor_text.data() + descriptor_text.size() ||
-          descriptor <= STDERR_FILENO) {
-        return std::nullopt;
-      }
+      return result;
+    }
 
+    std::optional<int> inherited_control_descriptor() {
+      const char *raw_descriptor = getenv("STATIONCONNECT_SESSION_CONTROL_FD");
+      if (raw_descriptor == nullptr) return std::nullopt;
+      const auto descriptor = parse_integer<int>(raw_descriptor);
+      if (!descriptor || *descriptor <= STDERR_FILENO) return std::nullopt;
+      return descriptor;
+    }
+
+    bool root_supervisor_peer(int descriptor) {
       ucred peer {};
       socklen_t peer_size = sizeof(peer);
-      if (getsockopt(descriptor, SOL_SOCKET, SO_PEERCRED, &peer, &peer_size) != 0 ||
-          peer_size != sizeof(peer) || peer.uid != 0 || peer.pid <= 1) {
-        close(descriptor);
-        return std::nullopt;
-      }
-      std::array<char, 512> buffer {};
-      const ssize_t size = recv(descriptor, buffer.data(), buffer.size(), 0);
-      close(descriptor);
-      if (size <= 0 || static_cast<std::size_t>(size) == buffer.size()) {
-        return std::nullopt;
-      }
-      const std::string_view message {buffer.data(), static_cast<std::size_t>(size)};
-      constexpr std::string_view prefix = "SC-SESSION-1\n";
-      if (!message.starts_with(prefix)) {
-        return std::nullopt;
-      }
-      const auto session_end = message.find('\n', prefix.size());
-      if (session_end == std::string_view::npos || session_end == prefix.size()) {
-        return std::nullopt;
-      }
-      const auto uid_text = message.substr(session_end + 1);
-      unsigned long long wire_uid {};
-      const auto parsed_uid = std::from_chars(
-        uid_text.data(), uid_text.data() + uid_text.size(), wire_uid
-      );
-      if (parsed_uid.ec != std::errc {} || parsed_uid.ptr != uid_text.data() + uid_text.size() ||
-          wire_uid > std::numeric_limits<uid_t>::max()) {
-        return std::nullopt;
-      }
-      return attestation_t {
-        std::string {message.substr(prefix.size(), session_end - prefix.size())},
-        static_cast<uid_t>(wire_uid),
-      };
+      return getsockopt(descriptor, SOL_SOCKET, SO_PEERCRED, &peer, &peer_size) == 0 &&
+             peer_size == sizeof(peer) && peer.uid == 0 && peer.pid > 1;
     }
+
+    std::optional<update_t> receive_update(int descriptor) {
+      std::array<char, maximum_update_size + 1> buffer {};
+      const ssize_t size = recv(descriptor, buffer.data(), buffer.size(), 0);
+      if (size <= 0 || static_cast<std::size_t>(size) > maximum_update_size) {
+        return std::nullopt;
+      }
+      return parse_session_update(
+        std::string_view {buffer.data(), static_cast<std::size_t>(size)}
+      );
+    }
+
+    bool same_active_session(const descriptor_t &candidate) {
+      const auto active = active_seat0_graphical_session();
+      return active && active->id == candidate.id && active->uid == candidate.uid &&
+             active->seat == candidate.seat && active->type == candidate.type &&
+             active->session_class == candidate.session_class &&
+             eligible_graphical_session(candidate);
+    }
+
+    bool valid_optional_audio_paths(const update_t &update) {
+      if (update.environment.pulse_server.empty() && update.environment.pulse_cookie.empty()) {
+        return true;
+      }
+      constexpr std::string_view unix_prefix = "unix:";
+      if (!update.environment.pulse_server.starts_with(unix_prefix) ||
+          update.environment.pulse_cookie.empty()) return false;
+      return owned_socket(
+               update.environment.pulse_server.substr(unix_prefix.size()), update.session.uid
+             ) && owned_path(update.environment.pulse_cookie, update.session.uid, false);
+    }
+
+    bool valid_update_environment(const update_t &update) {
+      static const std::regex local_display {R"(^:[0-9]+(?:\.[0-9]+)?$)"};
+      const std::string required_runtime = "/run/user/" + std::to_string(update.session.uid);
+      const auto &environment = update.environment;
+      if (!std::regex_match(environment.display, local_display) ||
+          environment.runtime_directory != required_runtime ||
+          !owned_path(environment.runtime_directory, update.session.uid, true) ||
+          environment.xauthority.empty() || environment.xauthority.front() != '/' ||
+          !owned_path(environment.xauthority, update.session.uid, false)) {
+        return false;
+      }
+      const std::string expected_bus = "unix:path=" + required_runtime + "/bus";
+      return (environment.dbus_address.empty() || environment.dbus_address == expected_bus) &&
+             valid_optional_audio_paths(update);
+    }
+
+    void set_or_unset(const char *name, const std::string &value) {
+      if (value.empty()) unsetenv(name);
+      else setenv(name, value.c_str(), 1);
+    }
+
+    bool accept_update(const update_t &update) {
+      if (update.generation == 0 || update.generation <= current_generation.load() ||
+          !same_active_session(update.session) || !valid_update_environment(update)) return false;
+
+      set_or_unset("DISPLAY", update.environment.display);
+      set_or_unset("XAUTHORITY", update.environment.xauthority);
+      set_or_unset("XDG_RUNTIME_DIR", update.environment.runtime_directory);
+      set_or_unset("XDG_SESSION_ID", update.session.id);
+      set_or_unset("XDG_SESSION_TYPE", update.session.type);
+      set_or_unset("XDG_SESSION_CLASS", update.session.session_class);
+      set_or_unset("XDG_SEAT", update.session.seat);
+      set_or_unset("DBUS_SESSION_BUS_ADDRESS", update.environment.dbus_address);
+      set_or_unset("PULSE_SERVER", update.environment.pulse_server);
+      set_or_unset("PULSE_COOKIE", update.environment.pulse_cookie);
+      {
+        std::lock_guard lock {current_update_mutex};
+        current_update = update;
+      }
+      current_generation.store(update.generation, std::memory_order_release);
+      return true;
+    }
+
+    void acknowledge_update(int descriptor, std::uint64_t generation, bool accepted) {
+      const std::string message = "SC-ACK-2\n" + std::to_string(generation) +
+                                  (accepted ? "\nOK" : "\nREJECT");
+      send(descriptor, message.data(), message.size(), MSG_NOSIGNAL);
+    }
+
+    class supervisor_control_impl_t final: public supervisor_control_t {
+    public:
+      supervisor_control_impl_t(int descriptor, std::function<void(std::uint64_t)> on_reattach):
+          descriptor_ {descriptor},
+          thread_ {[this, callback = std::move(on_reattach)](std::stop_token stop) {
+            while (!stop.stop_requested()) {
+              const auto update = receive_update(descriptor_);
+              if (!update) break;
+              const bool accepted = accept_update(*update);
+              acknowledge_update(descriptor_, update->generation, accepted);
+              if (accepted) callback(update->generation);
+            }
+            std::lock_guard lock {current_update_mutex};
+            current_update.reset();
+          }} {
+      }
+
+      ~supervisor_control_impl_t() override {
+        thread_.request_stop();
+        shutdown(descriptor_, SHUT_RDWR);
+        if (thread_.joinable()) thread_.join();
+        close(descriptor_);
+      }
+
+    private:
+      int descriptor_ {-1};
+      std::jthread thread_;
+    };
   }  // namespace
 
   bool eligible_graphical_session(const descriptor_t &session) {
@@ -163,31 +241,23 @@ namespace stationconnect::session {
   }
 
   std::optional<descriptor_t> describe(std::string_view session_id) {
-    if (session_id.empty() || session_id.find('\0') != std::string_view::npos) {
-      return std::nullopt;
-    }
+    if (session_id.empty() || session_id.find('\0') != std::string_view::npos) return std::nullopt;
     const std::string id {session_id};
     descriptor_t result;
     result.id = id;
-    if (sd_session_get_uid(id.c_str(), &result.uid) < 0) {
-      return std::nullopt;
-    }
+    if (sd_session_get_uid(id.c_str(), &result.uid) < 0) return std::nullopt;
     const auto seat = session_string(sd_session_get_seat, id);
     const auto type = session_string(sd_session_get_type, id);
     const auto session_class = session_string(sd_session_get_class, id);
     const auto state = session_string(sd_session_get_state, id);
-    if (!seat || !type || !session_class || !state) {
-      return std::nullopt;
-    }
+    if (!seat || !type || !session_class || !state) return std::nullopt;
     result.seat = *seat;
     result.type = *type;
     result.session_class = *session_class;
     result.state = *state;
     const int active = sd_session_is_active(id.c_str());
     const int remote = sd_session_is_remote(id.c_str());
-    if (active < 0 || remote < 0) {
-      return std::nullopt;
-    }
+    if (active < 0 || remote < 0) return std::nullopt;
     result.active = active > 0;
     result.remote = remote > 0;
     return result;
@@ -201,39 +271,25 @@ namespace stationconnect::session {
     }
     login_string_t session_id {raw_session, &free};
     auto result = describe(session_id.get());
-    if (!result || result->uid != uid || !eligible_graphical_session(*result)) {
-      return std::nullopt;
-    }
+    if (!result || result->uid != uid || !eligible_graphical_session(*result)) return std::nullopt;
     return result;
   }
 
   std::optional<environment_t> discover_environment(const descriptor_t &session) {
-    if (!eligible_graphical_session(session)) {
-      return std::nullopt;
-    }
+    if (!eligible_graphical_session(session)) return std::nullopt;
     const std::string required_runtime = "/run/user/" + std::to_string(session.uid);
-    if (!owned_path(required_runtime, session.uid, true)) {
-      return std::nullopt;
-    }
+    if (!owned_path(required_runtime, session.uid, true)) return std::nullopt;
     static const std::regex local_display {R"(^:[0-9]+(?:\.[0-9]+)?$)"};
 
     std::error_code error;
     for (const auto &entry : std::filesystem::directory_iterator("/proc", error)) {
-      if (error) {
-        break;
-      }
+      if (error) break;
       const auto pid = parse_pid(entry.path());
-      if (!pid) {
-        continue;
-      }
+      if (!pid) continue;
       char *raw_session = nullptr;
-      if (sd_pid_get_session(*pid, &raw_session) < 0 || raw_session == nullptr) {
-        continue;
-      }
+      if (sd_pid_get_session(*pid, &raw_session) < 0 || raw_session == nullptr) continue;
       login_string_t process_session {raw_session, &free};
-      if (session.id != process_session.get()) {
-        continue;
-      }
+      if (session.id != process_session.get()) continue;
       const auto values = read_selected_environment(*pid);
       const auto display = values.find("DISPLAY");
       const auto xauthority = values.find("XAUTHORITY");
@@ -241,15 +297,11 @@ namespace stationconnect::session {
       if (display == values.end() || xauthority == values.end() || runtime == values.end() ||
           !std::regex_match(display->second, local_display) ||
           runtime->second != required_runtime || xauthority->second.empty() ||
-          xauthority->second.front() != '/' ||
-          !owned_path(xauthority->second, session.uid, false)) {
+          xauthority->second.front() != '/' || !owned_path(xauthority->second, session.uid, false)) {
         continue;
       }
       environment_t result {
-        display->second,
-        xauthority->second,
-        runtime->second,
-        {},
+        display->second, xauthority->second, runtime->second, {}, {}, {}
       };
       if (const auto dbus = values.find("DBUS_SESSION_BUS_ADDRESS"); dbus != values.end()) {
         result.dbus_address = dbus->second;
@@ -259,24 +311,97 @@ namespace stationconnect::session {
     return std::nullopt;
   }
 
-  std::string session_attestation_message(const descriptor_t &session) {
-    if (!eligible_graphical_session(session) || session.id.empty() ||
-        session.id.find('\n') != std::string::npos || session.id.size() > 256) {
+  std::string session_update_message(const update_t &update) {
+    const std::array<std::string, 15> fields {
+      std::to_string(update.generation), update.session.id, std::to_string(update.session.uid),
+      update.session.seat, update.session.type, update.session.session_class, update.session.state,
+      update.session.active ? "1" : "0", update.session.remote ? "1" : "0",
+      update.environment.display, update.environment.xauthority,
+      update.environment.runtime_directory, update.environment.dbus_address,
+      update.environment.pulse_server, update.environment.pulse_cookie,
+    };
+    if (update.generation == 0 || !eligible_graphical_session(update.session) ||
+        update.session.id.empty() || !std::ranges::all_of(fields, [](const auto &field) {
+          return field.find('\0') == std::string::npos;
+        })) return {};
+    std::string message {update_prefix};
+    message.push_back('\0');
+    for (const auto &field : fields) {
+      message.append(field);
+      message.push_back('\0');
+    }
+    return message.size() <= maximum_update_size ? message : std::string {};
+  }
+
+  std::optional<update_t> parse_session_update(std::string_view message) {
+    std::vector<std::string_view> fields;
+    std::size_t offset = 0;
+    while (offset < message.size()) {
+      const auto end = message.find('\0', offset);
+      if (end == std::string_view::npos) return std::nullopt;
+      fields.emplace_back(message.substr(offset, end - offset));
+      offset = end + 1;
+    }
+    if (message.size() > maximum_update_size || fields.size() != 16 ||
+        fields.front() != update_prefix) return std::nullopt;
+    const auto generation = parse_integer<std::uint64_t>(fields[1]);
+    const auto uid = parse_integer<unsigned long long>(fields[3]);
+    if (!generation || *generation == 0 || !uid || *uid > std::numeric_limits<uid_t>::max() ||
+        (fields[8] != "0" && fields[8] != "1") ||
+        (fields[9] != "0" && fields[9] != "1")) return std::nullopt;
+    update_t result {
+      *generation,
+      {
+        std::string {fields[2]}, static_cast<uid_t>(*uid), std::string {fields[4]},
+        std::string {fields[5]}, std::string {fields[6]}, std::string {fields[7]},
+        fields[8] == "1", fields[9] == "1",
+      },
+      {
+        std::string {fields[10]}, std::string {fields[11]}, std::string {fields[12]},
+        std::string {fields[13]}, std::string {fields[14]}, std::string {fields[15]},
+      },
+    };
+    return eligible_graphical_session(result.session) ?
+             std::optional<update_t> {std::move(result)} : std::nullopt;
+  }
+
+  std::unique_ptr<supervisor_control_t> start_supervisor_control(
+    std::function<void(std::uint64_t)> on_reattach
+  ) {
+    const auto descriptor = inherited_control_descriptor();
+    if (!descriptor || !root_supervisor_peer(*descriptor)) {
+      if (descriptor) close(*descriptor);
       return {};
     }
-    return "SC-SESSION-1\n" + session.id + "\n" + std::to_string(session.uid);
+    const auto initial = receive_update(*descriptor);
+    if (!initial) {
+      close(*descriptor);
+      return {};
+    }
+    const bool accepted = accept_update(*initial);
+    acknowledge_update(*descriptor, initial->generation, accepted);
+    if (!accepted) {
+      close(*descriptor);
+      return {};
+    }
+    return std::make_unique<supervisor_control_impl_t>(*descriptor, std::move(on_reattach));
   }
 
   bool supervisor_attests_account_for_active_seat0(uid_t account_uid) {
-    static const auto attestation = read_supervisor_attestation();
-    if (geteuid() != 0 || account_uid == 0 || !attestation) {
-      return false;
+    if (geteuid() != 0 || account_uid == 0) return false;
+    std::optional<update_t> attestation;
+    {
+      std::lock_guard lock {current_update_mutex};
+      attestation = current_update;
     }
+    if (!attestation) return false;
     const auto active = active_seat0_graphical_session();
-    if (!active || active->id != attestation->session_id ||
-        active->uid != attestation->uid) {
-      return false;
-    }
+    if (!active || active->id != attestation->session.id ||
+        active->uid != attestation->session.uid) return false;
     return active->session_class == "greeter" || active->uid == account_uid;
+  }
+
+  std::uint64_t desktop_generation() {
+    return current_generation.load(std::memory_order_acquire);
   }
 }  // namespace stationconnect::session
