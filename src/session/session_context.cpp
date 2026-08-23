@@ -150,9 +150,15 @@ namespace stationconnect::session {
       constexpr std::string_view unix_prefix = "unix:";
       if (!update.environment.pulse_server.starts_with(unix_prefix) ||
           update.environment.pulse_cookie.empty()) return false;
+      struct stat cookie_status {};
+      constexpr std::string_view runtime_cookie = "/run/stationconnect/pulse-cookie";
+      const bool valid_runtime_cookie = update.environment.pulse_cookie == runtime_cookie &&
+        lstat(update.environment.pulse_cookie.c_str(), &cookie_status) == 0 &&
+        cookie_status.st_uid == 0 && S_ISREG(cookie_status.st_mode) &&
+        (cookie_status.st_mode & 0777) == 0600;
       return owned_socket(
                update.environment.pulse_server.substr(unix_prefix.size()), update.session.uid
-             ) && owned_path(update.environment.pulse_cookie, update.session.uid, false);
+             ) && valid_runtime_cookie;
     }
 
     bool valid_update_environment(const update_t &update) {

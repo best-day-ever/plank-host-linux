@@ -34,6 +34,8 @@
 namespace {
   constexpr std::string_view default_worker = "/usr/bin/stationconnect-host";
   constexpr std::string_view machine_home = "/var/lib/stationconnect";
+  constexpr std::string_view runtime_pulse_cookie =
+    "/run/stationconnect/pulse-cookie";
 
   struct account_t {
     uid_t uid {};
@@ -75,6 +77,54 @@ namespace {
     }
   }
 
+  bool stage_pulse_cookie(const std::filesystem::path &source, uid_t uid) {
+    constexpr off_t maximum_cookie_size = 4096;
+    int source_descriptor = open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (source_descriptor < 0) return false;
+    auto close_source = std::unique_ptr<int, std::function<void(int *)>> {
+      &source_descriptor, [](int *descriptor) { close(*descriptor); }
+    };
+
+    struct stat source_status {};
+    if (fstat(source_descriptor, &source_status) != 0 ||
+        source_status.st_uid != uid || !S_ISREG(source_status.st_mode) ||
+        source_status.st_size <= 0 || source_status.st_size > maximum_cookie_size) {
+      return false;
+    }
+
+    int destination_descriptor = open(
+      runtime_pulse_cookie.data(),
+      O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW,
+      S_IRUSR | S_IWUSR
+    );
+    if (destination_descriptor < 0) return false;
+    auto close_destination = std::unique_ptr<int, std::function<void(int *)>> {
+      &destination_descriptor, [](int *descriptor) { close(*descriptor); }
+    };
+    if (fchmod(destination_descriptor, S_IRUSR | S_IWUSR) != 0) return false;
+
+    std::array<char, 4096> buffer {};
+    off_t copied = 0;
+    while (copied < source_status.st_size) {
+      const auto remaining = static_cast<std::size_t>(source_status.st_size - copied);
+      const ssize_t received = read(
+        source_descriptor, buffer.data(), std::min(buffer.size(), remaining)
+      );
+      if (received <= 0) return false;
+      ssize_t offset = 0;
+      while (offset < received) {
+        const ssize_t written = write(
+          destination_descriptor, buffer.data() + offset,
+          static_cast<std::size_t>(received - offset)
+        );
+        if (written <= 0) return false;
+        offset += written;
+      }
+      copied += received;
+    }
+    return fsync(destination_descriptor) == 0;
+  }
+
   stationconnect::session::environment_t add_audio_environment(
     stationconnect::session::environment_t environment,
     const account_t &account
@@ -88,9 +138,10 @@ namespace {
     if (lstat(pulse_socket.c_str(), &socket_status) == 0 &&
         socket_status.st_uid == account.uid && S_ISSOCK(socket_status.st_mode) &&
         lstat(pulse_cookie.c_str(), &cookie_status) == 0 &&
-        cookie_status.st_uid == account.uid && S_ISREG(cookie_status.st_mode)) {
+        cookie_status.st_uid == account.uid && S_ISREG(cookie_status.st_mode) &&
+        stage_pulse_cookie(pulse_cookie, account.uid)) {
       environment.pulse_server = "unix:" + pulse_socket.string();
-      environment.pulse_cookie = pulse_cookie.string();
+      environment.pulse_cookie = std::string {runtime_pulse_cookie};
     }
     return environment;
   }
