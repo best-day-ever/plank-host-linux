@@ -1484,11 +1484,11 @@ namespace nvhttp {
       // change the active displays.
       display_device::configure_display(config::video, *launch_session);
 
-      // Probe encoders again before streaming to ensure our chosen
-      // encoder matches the active GPU (which could have changed
-      // due to hotplugging, driver crash, primary monitor change,
-      // or any number of other factors).
-      if (video::probe_encoders()) {
+      // A StationConnect media worker probes capture and encoding before its
+      // HTTP interface starts. Reprobing here can overlap a reconnecting RTSP
+      // session's capture thread and is unsafe for NvFBC. Generic Sunshine
+      // retains the upstream hotplug-oriented per-launch probe.
+      if (!stationconnect_authentication && video::probe_encoders()) {
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
         tree.put("root.gamesession", 0);
@@ -1631,11 +1631,10 @@ namespace nvhttp {
       // change the active displays.
       display_device::configure_display(config::video, *launch_session);
 
-      // Probe encoders again before streaming to ensure our chosen
-      // encoder matches the active GPU (which could have changed
-      // due to hotplugging, driver crash, primary monitor change,
-      // or any number of other factors).
-      if (video::probe_encoders()) {
+      // StationConnect replaces the media worker when graphical-session
+      // topology changes, so its startup probe remains authoritative here.
+      // Avoid racing NvFBC probing with a prior stream's capture teardown.
+      if (!stationconnect_authentication && video::probe_encoders()) {
         tree.put("root.resume", 0);
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
