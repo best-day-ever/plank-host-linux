@@ -53,7 +53,7 @@ namespace nvhttp {
   namespace pt = boost::property_tree;
 
   crypto::cert_chain_t cert_chain;  ///< Certificate chain presented by Sunshine's GameStream HTTPS server.
-  constexpr std::string_view pam_broker_socket = "/run/stationconnect/auth.sock"sv;  ///< Privileged broker activation path.
+  constexpr std::string_view pam_broker_socket = "/run/stationconnect/pam/auth.sock"sv;  ///< Privileged broker activation path.
   std::unique_ptr<stationconnect::auth::web_auth_manager_t> web_auth;  ///< PAM conversations and ephemeral tokens.
   bool stationconnect_authentication = false;  ///< Whether pairing has been replaced by PAM for this process.
   constexpr std::uint32_t stationconnect_topology_version = 1;

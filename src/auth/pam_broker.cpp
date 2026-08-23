@@ -31,7 +31,7 @@
 namespace auth = stationconnect::auth;
 
 namespace {
-  constexpr std::string_view default_socket_path = "/run/stationconnect/auth.sock";
+  constexpr std::string_view default_socket_path = "/run/stationconnect/pam/auth.sock";
   constexpr std::string_view default_socket_group = "stationconnect-auth";
   constexpr std::string_view pam_service = "remote-desktop";
 
