@@ -330,16 +330,12 @@ int main(int argc, char **argv) {
         const auto complete_environment = add_audio_environment(*environment, *account);
         if (worker.pid > 0) {
           const auto previous_session = worker.session_id;
-          if (send_update(worker, *selected, complete_environment)) {
-            std::clog << "Reattached persistent StationConnect worker from session "
-                      << previous_session << " to " << selected->id << ", UID "
-                      << selected->uid << ", generation " << worker.generation << '\n';
-            pending_session.clear();
-          } else {
-            std::cerr << "Desktop reattachment channel failed; restarting worker\n";
-            stop_worker(worker);
-          }
-        } else {
+          std::clog << "Graphical session changed from " << previous_session
+                    << " to " << selected->id
+                    << "; restarting the StationConnect media worker for fresh X11/NvFBC state\n";
+          stop_worker(worker);
+        }
+        if (worker.pid <= 0) {
           auto launched = launch_worker(worker_path, *selected, complete_environment);
           if (launched.pid > 0) {
             worker = std::move(launched);
