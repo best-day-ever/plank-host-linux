@@ -32,3 +32,15 @@ TEST(StationConnectBitrate, RejectsMalformedAndOutOfRangeRequests) {
   const std::array<char, 4> above_maximum {char(0x21), char(0xA1), char(0x07), char(0x00)};
   EXPECT_FALSE(stationconnect::bitrate::decode_request(payload(above_maximum)).has_value());
 }
+
+TEST(StationConnectBitrate, ValidatesExactStartupTarget) {
+  EXPECT_EQ(stationconnect::bitrate::validate_target(100000), 100000);
+  EXPECT_EQ(stationconnect::bitrate::validate_target(
+              stationconnect::bitrate::minimum_kbps),
+            stationconnect::bitrate::minimum_kbps);
+  EXPECT_EQ(stationconnect::bitrate::validate_target(
+              stationconnect::bitrate::maximum_kbps),
+            stationconnect::bitrate::maximum_kbps);
+  EXPECT_FALSE(stationconnect::bitrate::validate_target(0).has_value());
+  EXPECT_FALSE(stationconnect::bitrate::validate_target(500001).has_value());
+}

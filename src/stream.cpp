@@ -53,6 +53,7 @@ constexpr int IDX_SET_RGB_LED = 14;  ///< Control-stream message index for set r
 constexpr int IDX_SET_ADAPTIVE_TRIGGERS = 15;  ///< Control-stream message index for set adaptive triggers.
 constexpr int IDX_RAW_HID_CONTROL = 16;  ///< Control-stream message index for StationConnect raw HID requests.
 constexpr int IDX_SET_VIDEO_BITRATE = 17;  ///< Control-stream message index for StationConnect bitrate updates.
+constexpr int IDX_VIDEO_BITRATE_APPLIED = 18;  ///< Control-stream message index for StationConnect bitrate acknowledgements.
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -73,6 +74,7 @@ static const short packetTypes[] = {
   0x5503,  // Set Adaptive triggers (Sunshine protocol extension)
   0x5504,  // Raw HID control (StationConnect protocol extension)
   0x5505,  // Dynamic video bitrate (StationConnect protocol extension)
+  0x5506,  // Applied video bitrate (StationConnect protocol extension)
 };
 
 namespace asio = boost::asio;
@@ -273,6 +275,16 @@ namespace stream {
 
     // Sunshine protocol extension
     SS_HDR_METADATA metadata;  ///< HDR10 metadata sent with the control message.
+  };
+
+  /**
+   * @brief StationConnect acknowledgement for an accepted encoder target.
+   */
+  struct control_video_bitrate_applied_t {
+    control_header_v2 header;
+    boost::endian::little_uint32_at requested_kbps;
+    boost::endian::little_uint32_at applied_kbps;
+    boost::endian::little_uint32_at peak_kbps;
   };
 
   /**
@@ -1138,6 +1150,38 @@ namespace stream {
   }
 
   /**
+   * @brief Confirm an accepted StationConnect encoder target to the client.
+   */
+  int send_video_bitrate_applied(session_t *session, const int requested_kbps) {
+    if (!session->control.peer) {
+      return -1;
+    }
+
+    const int applied_kbps = config::video.max_bitrate > 0 ?
+                               std::min(requested_kbps, config::video.max_bitrate) :
+                               requested_kbps;
+    const int peak_kbps = applied_kbps * config::video.sw.vbv_maxrate_percentage / 100;
+
+    control_video_bitrate_applied_t plaintext {};
+    plaintext.header.type = packetTypes[IDX_VIDEO_BITRATE_APPLIED];
+    plaintext.header.payloadLength = sizeof(plaintext) - sizeof(control_header_v2);
+    plaintext.requested_kbps = requested_kbps;
+    plaintext.applied_kbps = applied_kbps;
+    plaintext.peak_kbps = peak_kbps;
+
+    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+      encrypted_payload;
+    const auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
+    const auto result = session->broadcast_ref->control_server.send(payload, session->control.peer);
+    if (!result) {
+      BOOST_LOG(info) << "Confirmed StationConnect encoder target: requested="sv
+                      << requested_kbps << " Kbps, applied="sv << applied_kbps
+                      << " Kbps, peak="sv << peak_kbps << " Kbps"sv;
+    }
+    return result;
+  }
+
+  /**
    * @brief Run the broadcast control-channel worker thread.
    *
    * @param server RTSP server instance handling the request.
@@ -1185,6 +1229,7 @@ namespace stream {
       }
 
       session->mail->event<int>(mail::video_bitrate)->raise(*bitrate_kbps);
+      send_video_bitrate_applied(session, *bitrate_kbps);
     });
 
     server->map(packetTypes[IDX_INVALIDATE_REF_FRAMES], [&](session_t *session, const std::string_view &payload) {

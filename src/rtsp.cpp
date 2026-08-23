@@ -29,6 +29,7 @@ extern "C" {
 #include "logging.h"
 #include "network.h"
 #include "rtsp.h"
+#include "stationconnect_bitrate.h"
 #include "stream.h"
 #include "sync.h"
 #include "video.h"
@@ -926,7 +927,9 @@ namespace rtsp_stream {
 
     // Tell the client about our supported features
     ss << "a=x-ss-general.featureFlags:"
-       << (uint32_t) (platf::get_capabilities() | platf::platform_caps::dynamic_video_bitrate)
+       << (uint32_t) (platf::get_capabilities() |
+                      platf::platform_caps::dynamic_video_bitrate |
+                      platf::platform_caps::encoder_target_ack)
        << std::endl;
 
     // Always request new control stream encryption if the client supports it
@@ -1137,6 +1140,7 @@ namespace rtsp_stream {
     args.try_emplace("x-nv-vqos[0].qosTrafficType"sv, "5"sv);
     args.try_emplace("x-nv-aqos.qosTrafficType"sv, "4"sv);
     args.try_emplace("x-ml-video.configuredBitrateKbps"sv, "0"sv);
+    args.try_emplace("x-sc-video.encoderTargetKbps"sv, "0"sv);
     args.try_emplace("x-ss-general.encryptionEnabled"sv, "0"sv);
     args.try_emplace("x-ss-video[0].chromaSamplingType"sv, "0"sv);
     args.try_emplace("x-ss-video[0].intraRefresh"sv, "0"sv);
@@ -1149,6 +1153,7 @@ namespace rtsp_stream {
                                    session.output_name;
 
     std::int64_t configuredBitrateKbps;
+    std::int64_t encoderTargetKbps;
     config.audio.flags[audio::config_t::HOST_AUDIO] = session.host_audio;
     try {
       config.audio.channels = (int) util::from_view(args.at("x-nv-audio.surround.numChannels"sv));
@@ -1212,6 +1217,7 @@ namespace rtsp_stream {
       config.monitor.enableIntraRefresh = (int) util::from_view(args.at("x-ss-video[0].intraRefresh"sv));
 
       configuredBitrateKbps = util::from_view(args.at("x-ml-video.configuredBitrateKbps"sv));
+      encoderTargetKbps = util::from_view(args.at("x-sc-video.encoderTargetKbps"sv));
     } catch (std::out_of_range &) {
       respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
       return;
@@ -1271,11 +1277,29 @@ namespace rtsp_stream {
       config.audio.flags[audio::config_t::CONTINUOUS_AUDIO] = true;
     }
 
+    const auto exactEncoderTarget = encoderTargetKbps != 0 ?
+                                      stationconnect::bitrate::validate_target(encoderTargetKbps) :
+                                      std::optional<int> {};
+    if (encoderTargetKbps != 0 && !exactEncoderTarget) {
+      BOOST_LOG(warning) << "Rejecting out-of-range StationConnect encoder target: "sv
+                         << encoderTargetKbps << " Kbps"sv;
+      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+      return;
+    }
+
+    // New StationConnect clients provide an exact encoder target separately
+    // from Moonlight's total network budget. Apply it before the encoder is
+    // created so startup quality cannot depend on an early control packet.
+    if (exactEncoderTarget) {
+      config.monitor.bitrate = *exactEncoderTarget;
+      BOOST_LOG(info) << "StationConnect exact startup encoder target is "sv
+                      << config.monitor.bitrate << " Kbps"sv;
+    }
     // If the client sent a configured bitrate, we will choose the actual bitrate ourselves
     // by using FEC percentage and audio quality settings. If the calculated bitrate ends up
     // too low, we'll allow it to exceed the limits rather than reducing the encoding bitrate
     // down to nearly nothing.
-    if (configuredBitrateKbps) {
+    else if (configuredBitrateKbps) {
       BOOST_LOG(debug) << "Client configured bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
 
       // If the FEC percentage isn't too high, adjust the configured bitrate to ensure video

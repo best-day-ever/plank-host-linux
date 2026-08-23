@@ -391,6 +391,7 @@ namespace platf {
      * @brief Capability bit indicating active-session video bitrate updates.
      */
     constexpr caps_t dynamic_video_bitrate = 0x08;  // Live encoder bitrate control
+    constexpr caps_t encoder_target_ack = 0x10;  // Exact startup target and applied-target acknowledgement
   };  // namespace platform_caps
 
   /**

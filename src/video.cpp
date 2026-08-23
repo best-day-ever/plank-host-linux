@@ -2786,7 +2786,7 @@ namespace video {
       if (requested_bitrate_kbps && *requested_bitrate_kbps != config.bitrate) {
         // x264 only supports changing an active bitrate when its ABR engine is
         // operating as CBR. StationConnect's qualified bounded-ABR profile
-        // deliberately uses a 2x VBV peak, so changing AVCodecContext fields
+        // deliberately uses a raised VBV peak, so changing AVCodecContext fields
         // would update public parameters while leaving x264's real sustained
         // target unchanged. Return to capture_async(), which preserves the
         // stream and display while creating a fresh encoder at the new target.
