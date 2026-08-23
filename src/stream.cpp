@@ -201,71 +201,6 @@ namespace stream {
   };
 
   /**
-   * @brief Control payload that sets controller rumble motors.
-   */
-  struct control_rumble_t {
-    control_header_v2 header;  ///< Control message header preceding this payload.
-
-    std::uint32_t useless;  ///< Reserved field kept for protocol compatibility.
-
-    std::uint16_t id;  ///< Controller identifier associated with this message.
-    std::uint16_t lowfreq;  ///< Low-frequency rumble motor intensity.
-    std::uint16_t highfreq;  ///< High-frequency rumble motor intensity.
-  };
-
-  /**
-   * @brief Control payload that sets trigger rumble motors.
-   */
-  struct control_rumble_triggers_t {
-    control_header_v2 header;  ///< Control message header preceding this payload.
-
-    std::uint16_t id;  ///< Controller identifier associated with this message.
-    std::uint16_t left;  ///< Left trigger or motor intensity.
-    std::uint16_t right;  ///< Right trigger or motor intensity.
-  };
-
-  /**
-   * @brief Control payload that enables or disables motion reports.
-   */
-  struct control_set_motion_event_t {
-    control_header_v2 header;  ///< Control message header preceding this payload.
-
-    std::uint16_t id;  ///< Controller identifier associated with this message.
-    std::uint16_t reportrate;  ///< Requested motion report rate.
-    std::uint8_t type;  ///< Protocol or controller type discriminator.
-  };
-
-  /**
-   * @brief Control payload that sets controller RGB LED color.
-   */
-  struct control_set_rgb_led_t {
-    control_header_v2 header;  ///< Control message header preceding this payload.
-
-    std::uint16_t id;  ///< Controller identifier associated with this message.
-    std::uint8_t r;  ///< Red LED channel.
-    std::uint8_t g;  ///< Green LED channel.
-    std::uint8_t b;  ///< Blue LED channel.
-  };
-
-  /**
-   * @brief Control payload that configures DualSense adaptive triggers.
-   */
-  struct control_adaptive_triggers_t {
-    control_header_v2 header;  ///< Control message header preceding this payload.
-
-    std::uint16_t id;  ///< Controller identifier associated with this message.
-    /**
-     * 0x04 - Right trigger
-     * 0x08 - Left trigger
-     */
-    std::uint8_t event_flags;
-    std::uint8_t type_left;  ///< Adaptive-trigger mode for the left trigger.
-    std::uint8_t type_right;  ///< Adaptive-trigger mode for the right trigger.
-    std::uint8_t left[DS_EFFECT_PAYLOAD_SIZE];  ///< Left adaptive-trigger effect payload.
-    std::uint8_t right[DS_EFFECT_PAYLOAD_SIZE];  ///< Right adaptive-trigger effect payload.
-  };
-
-  /**
    * @brief Control payload that toggles HDR mode and carries metadata.
    */
   struct control_hdr_mode_t {
@@ -549,7 +484,6 @@ namespace stream {
       net::peer_t peer;
       std::uint32_t seq;
 
-      platf::feedback_queue_t feedback_queue;
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
       raw_hid::feedback_queue_t raw_hid_feedback_queue;
     } control;  ///< Runtime state for the encrypted GameStream control channel.
@@ -977,117 +911,6 @@ namespace stream {
   }
 
   /**
-   * @brief Pass gamepad feedback data back to the client.
-   * @param session The session object.
-   * @param msg The message to pass.
-   * @return 0 on success.
-   */
-  int send_feedback_msg(session_t *session, platf::gamepad_feedback_msg_t &msg) {
-    if (!session->control.peer) {
-      BOOST_LOG(warning) << "Couldn't send gamepad feedback data, still waiting for PING from Moonlight"sv;
-      // Still waiting for PING from Moonlight
-      return -1;
-    }
-
-    std::string payload;
-    if (msg.type == platf::gamepad_feedback_e::rumble) {
-      control_rumble_t plaintext;
-      plaintext.header.type = packetTypes[IDX_RUMBLE_DATA];
-      plaintext.header.payloadLength = sizeof(plaintext) - sizeof(control_header_v2);
-
-      auto &data = msg.data.rumble;
-
-      plaintext.useless = 0xC0FFEE;
-      plaintext.id = util::endian::little(msg.id);
-      plaintext.lowfreq = util::endian::little(data.lowfreq);
-      plaintext.highfreq = util::endian::little(data.highfreq);
-
-      BOOST_LOG(verbose) << "Rumble: "sv << msg.id << " :: "sv << util::hex(data.lowfreq).to_string_view() << " :: "sv << util::hex(data.highfreq).to_string_view();
-      std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
-        encrypted_payload;
-
-      payload = encode_control(session, util::view(plaintext), encrypted_payload);
-    } else if (msg.type == platf::gamepad_feedback_e::rumble_triggers) {
-      control_rumble_triggers_t plaintext;
-      plaintext.header.type = packetTypes[IDX_RUMBLE_TRIGGER_DATA];
-      plaintext.header.payloadLength = sizeof(plaintext) - sizeof(control_header_v2);
-
-      auto &data = msg.data.rumble_triggers;
-
-      plaintext.id = util::endian::little(msg.id);
-      plaintext.left = util::endian::little(data.left_trigger);
-      plaintext.right = util::endian::little(data.right_trigger);
-
-      BOOST_LOG(verbose) << "Rumble triggers: "sv << msg.id << " :: "sv << util::hex(data.left_trigger).to_string_view() << " :: "sv << util::hex(data.right_trigger).to_string_view();
-      std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
-        encrypted_payload;
-
-      payload = encode_control(session, util::view(plaintext), encrypted_payload);
-    } else if (msg.type == platf::gamepad_feedback_e::set_motion_event_state) {
-      control_set_motion_event_t plaintext;
-      plaintext.header.type = packetTypes[IDX_SET_MOTION_EVENT];
-      plaintext.header.payloadLength = sizeof(plaintext) - sizeof(control_header_v2);
-
-      auto &data = msg.data.motion_event_state;
-
-      plaintext.id = util::endian::little(msg.id);
-      plaintext.reportrate = util::endian::little(data.report_rate);
-      plaintext.type = data.motion_type;
-
-      BOOST_LOG(verbose) << "Motion event state: "sv << msg.id << " :: "sv << util::hex(data.report_rate).to_string_view() << " :: "sv << util::hex(data.motion_type).to_string_view();
-      std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
-        encrypted_payload;
-
-      payload = encode_control(session, util::view(plaintext), encrypted_payload);
-    } else if (msg.type == platf::gamepad_feedback_e::set_rgb_led) {
-      control_set_rgb_led_t plaintext;
-      plaintext.header.type = packetTypes[IDX_SET_RGB_LED];
-      plaintext.header.payloadLength = sizeof(plaintext) - sizeof(control_header_v2);
-
-      auto &data = msg.data.rgb_led;
-
-      plaintext.id = util::endian::little(msg.id);
-      plaintext.r = data.r;
-      plaintext.g = data.g;
-      plaintext.b = data.b;
-
-      BOOST_LOG(verbose) << "RGB: "sv << msg.id << " :: "sv << util::hex(data.r).to_string_view() << util::hex(data.g).to_string_view() << util::hex(data.b).to_string_view();
-      std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
-        encrypted_payload;
-
-      payload = encode_control(session, util::view(plaintext), encrypted_payload);
-    } else if (msg.type == platf::gamepad_feedback_e::set_adaptive_triggers) {
-      control_adaptive_triggers_t plaintext;
-      plaintext.header.type = packetTypes[IDX_SET_ADAPTIVE_TRIGGERS];
-      plaintext.header.payloadLength = sizeof(plaintext) - sizeof(control_header_v2);
-
-      plaintext.id = util::endian::little(msg.id);
-      plaintext.event_flags = msg.data.adaptive_triggers.event_flags;
-      plaintext.type_left = msg.data.adaptive_triggers.type_left;
-      std::ranges::copy(msg.data.adaptive_triggers.left, plaintext.left);
-      plaintext.type_right = msg.data.adaptive_triggers.type_right;
-      std::ranges::copy(msg.data.adaptive_triggers.right, plaintext.right);
-
-      std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
-        encrypted_payload;
-
-      payload = encode_control(session, util::view(plaintext), encrypted_payload);
-    } else {
-      BOOST_LOG(error) << "Unknown gamepad feedback message type"sv;
-      return -1;
-    }
-
-    if (session->broadcast_ref->control_server.send(payload, session->control.peer)) {
-      TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
-      BOOST_LOG(warning) << "Couldn't send gamepad feedback to ["sv << addr << ':' << port << ']';
-
-      return -1;
-    }
-
-    return 0;
-  }
-
-  /**
    * @brief Send the selected HDR mode to the connected client over the control channel.
    *
    * @param session Active streaming or pairing session for the request.
@@ -1390,13 +1213,6 @@ namespace stream {
           if (!session->control.peer) {
             has_session_awaiting_peer = true;
           } else {
-            auto &feedback_queue = session->control.feedback_queue;
-            while (feedback_queue->peek()) {
-              auto feedback_msg = feedback_queue->pop();
-
-              send_feedback_msg(session, *feedback_msg);
-            }
-
             auto &hdr_queue = session->control.hdr_queue;
             while (session->control.peer && hdr_queue->peek()) {
               auto hdr_info = hdr_queue->pop();
@@ -2302,7 +2118,7 @@ namespace stream {
         } else {
           // We have no app running and also no clients anymore.
           revert_display_config = true;
-          input::terminate_gamepads();
+          input::terminate_retained_input();
         }
 
         if (revert_display_config) {
@@ -2377,7 +2193,6 @@ namespace stream {
       session->config = config;
 
       session->control.connect_data = launch_session.control_connect_data;
-      session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
       session->control.hdr_queue = mail->event<video::hdr_info_t>(mail::hdr);
       session->control.raw_hid_feedback_queue = mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback);
       session->control.legacy_input_enc_iv = launch_session.iv;

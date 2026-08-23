@@ -273,21 +273,20 @@ namespace config {
   struct input_t {
     std::unordered_map<int, int> keybindings;  ///< Client keycode to platform keycode bindings.
 
-    std::chrono::milliseconds back_button_timeout;  ///< Hold duration that turns a controller Back button into a special action.
     std::chrono::milliseconds key_repeat_delay;  ///< Delay before repeating a held keyboard key.
     std::chrono::duration<double> key_repeat_period;  ///< Interval between repeated keyboard key events.
 
-    std::string gamepad;  ///< Virtual controller backend selected by configuration.
-    bool ds4_back_as_touchpad_click;  ///< Map Back/Select to touchpad click for PlayStation-style gamepads.
-    bool motion_as_ds4;  ///< Prefer PlayStation-style emulation for client gamepads with motion controls.
-    bool touchpad_as_ds4;  ///< Prefer PlayStation-style emulation for client gamepads with touchpad input.
-    bool virtualhid_randomize_mac;  ///< Randomize the libvirtualhid virtual controller MAC address.
+#ifdef _WIN32
+    std::string gamepad;  ///< Legacy Windows-only virtual controller backend selection.
+    bool ds4_back_as_touchpad_click;  ///< Legacy Windows-only Back/Select mapping.
+    bool motion_as_ds4;  ///< Legacy Windows-only motion-controller mapping.
+    bool touchpad_as_ds4;  ///< Legacy Windows-only touch-controller mapping.
+    bool virtualhid_randomize_mac;  ///< Legacy Windows-only virtual controller identity policy.
+#endif
 
     bool keyboard;  ///< Enable keyboard input from clients.
     bool key_rightalt_to_key_win;  ///< Map the client Right Alt key to the Windows key.
     bool mouse;  ///< Enable mouse input from clients.
-    bool controller;  ///< Enable controller input from clients.
-
     bool always_send_scancodes;  ///< Always send keyboard scancodes when available.
 
     bool high_resolution_scrolling;  ///< Enable high-resolution mouse-wheel events.

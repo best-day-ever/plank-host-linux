@@ -760,7 +760,7 @@ namespace rtsp_stream {
 
   void terminate_sessions() {
     server.clear(true);
-    input::terminate_gamepads();
+    input::terminate_retained_input();
   }
 
   /**
@@ -768,7 +768,7 @@ namespace rtsp_stream {
    */
   void terminate_sessions_by_cert(std::string_view cert) {
     server.clear_by_cert(cert);
-    input::terminate_gamepads(cert);
+    input::terminate_retained_input(cert);
   }
 
   /**

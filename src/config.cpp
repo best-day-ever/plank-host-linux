@@ -844,23 +844,20 @@ namespace config {
       {0x11, 0xA2},
       {0x12, 0xA4},
     },
-    -1ms,  // back_button_timeout
     500ms,  // key_repeat_delay
     std::chrono::duration<double> {1 / 24.9},  // key_repeat_period
 
-    {
-      platf::supported_gamepads(nullptr).front().name.data(),
-      platf::supported_gamepads(nullptr).front().name.size(),
-    },  // Default gamepad
-    true,  // back as touchpad click enabled for PlayStation-style gamepads
-    true,  // client gamepads with motion events use PlayStation-style emulation
-    true,  // client gamepads with touchpads use PlayStation-style emulation
-    true,  // virtualhid_randomize_mac
+#ifdef _WIN32
+    "auto"s,  // Legacy Windows-only virtual-HID gamepad profile
+    false,  // legacy gamepad touchpad click mapping disabled
+    false,  // legacy gamepad motion mapping disabled
+    false,  // legacy gamepad touch mapping disabled
+    false,  // legacy gamepad identity randomization disabled
+#endif
 
     true,  // keyboard enabled
     false,  // map Right Alt to the Windows key
     true,  // mouse enabled
-    true,  // controller enabled
     true,  // always send scancodes
     true,  // high resolution scrolling
     true,  // native pen/touch support
@@ -1535,21 +1532,6 @@ namespace config {
   }
 
   /**
-   * @brief Get supported gamepad options.
-   *
-   * @return Platform-supported gamepad backend names accepted by configuration.
-   */
-  std::vector<std::string_view> &get_supported_gamepad_options() {
-    const auto options = platf::supported_gamepads(nullptr);
-    static std::vector<std::string_view> opts {};
-    opts.reserve(options.size());
-    for (auto &opt : options) {
-      opts.emplace_back(opt.name);
-    }
-    return opts;
-  }
-
-  /**
    * @brief Log parsed configuration entries and optionally record them as modified.
    */
   void log_config_settings(const std::unordered_map<std::string, std::string> &vars, bool save) {
@@ -1768,13 +1750,6 @@ namespace config {
       input.keybindings.emplace(0xA5, 0x5B);
     }
 
-    to = std::numeric_limits<int>::min();
-    int_f(vars, "back_button_timeout", to);
-
-    if (to > std::numeric_limits<int>::min()) {
-      input.back_button_timeout = std::chrono::milliseconds {to};
-    }
-
     double repeat_frequency {0};
     double_between_f(vars, "key_repeat_frequency", repeat_frequency, {0, std::numeric_limits<double>::max()});
 
@@ -1788,15 +1763,8 @@ namespace config {
       input.key_repeat_delay = std::chrono::milliseconds {to};
     }
 
-    string_restricted_f(vars, "gamepad"s, input.gamepad, get_supported_gamepad_options());
-    bool_f(vars, "ds4_back_as_touchpad_click", input.ds4_back_as_touchpad_click);
-    bool_f(vars, "motion_as_ds4", input.motion_as_ds4);
-    bool_f(vars, "touchpad_as_ds4", input.touchpad_as_ds4);
-    bool_f(vars, "virtualhid_randomize_mac", input.virtualhid_randomize_mac);
-
     bool_f(vars, "mouse", input.mouse);
     bool_f(vars, "keyboard", input.keyboard);
-    bool_f(vars, "controller", input.controller);
 
     bool_f(vars, "always_send_scancodes", input.always_send_scancodes);
 

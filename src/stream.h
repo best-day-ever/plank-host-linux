@@ -38,7 +38,6 @@ namespace stream {
 
     uint32_t encryptionFlagsEnabled;  ///< Bitmask of GameStream encryption features enabled for the session.
 
-    std::optional<int> gcmap;  ///< Optional game-controller mapping override from the launch request.
   };
 
   namespace session {

@@ -1,6 +1,6 @@
 /**
  * @file src/input.h
- * @brief Declarations for gamepad, keyboard, and mouse input handling.
+ * @brief Declarations for keyboard, mouse, touch, pen, and raw-HID input handling.
  */
 #pragma once
 
@@ -31,19 +31,19 @@ namespace input {
   void reset(std::shared_ptr<input_t> &input, std::uint64_t connection_id);
 
   /**
-   * @brief Destroy every retained virtual gamepad session.
+   * @brief Destroy every retained input session.
    *
-   * Retained gamepads survive a paused transport connection so they can be reused on resume. Call this when the
-   * streamed application or all streaming sessions are explicitly terminated.
+   * Retained raw-HID tablet endpoints survive a paused transport connection so they can be reused on resume. Call
+   * this when the streamed application or all streaming sessions are explicitly terminated.
    */
-  void terminate_gamepads();
+  void terminate_retained_input();
 
   /**
-   * @brief Destroy virtual gamepads retained for one paired client.
+   * @brief Destroy input state retained for one paired client.
    *
    * @param session_id Stable paired-client identity used by alloc().
    */
-  void terminate_gamepads(std::string_view session_id);
+  void terminate_retained_input(std::string_view session_id);
 
   /**
    * @brief Queue a raw input message for platform passthrough.
@@ -56,13 +56,6 @@ namespace input {
    * @return Cleanup handle for initialized input resources, or null if none are required.
    */
   [[nodiscard]] std::unique_ptr<platf::deinit_t> init();
-
-  /**
-   * @brief Probe whether the platform can create virtual gamepads.
-   *
-   * @return True when at least one configured gamepad backend is available.
-   */
-  bool probe_gamepads();
 
   /**
    * @brief Allocate and initialize platform input state for a stream.
@@ -82,25 +75,6 @@ namespace input {
      * @param input Test-owned platform input backend.
      */
     void set_platform_input(platf::input_t input);
-
-    /**
-     * @brief Allocate a gamepad directly in retained input state for a unit test.
-     *
-     * @param input Retained input state.
-     * @param client_index Client-relative controller index.
-     * @param metadata Client-reported controller metadata.
-     * @return Assigned global gamepad slot, or -1 on failure.
-     */
-    int alloc_gamepad(std::shared_ptr<input_t> &input, std::uint8_t client_index, const platf::gamepad_arrival_t &metadata);
-
-    /**
-     * @brief Return the global gamepad slot stored for a test controller.
-     *
-     * @param input Retained input state.
-     * @param client_index Client-relative controller index.
-     * @return Assigned global gamepad slot, or -1 when unallocated.
-     */
-    int gamepad_id(const std::shared_ptr<input_t> &input, std::uint8_t client_index);
 
     /**
      * @brief Process a raw HID frame directly for lifecycle tests.
