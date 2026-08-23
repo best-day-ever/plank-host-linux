@@ -30,6 +30,7 @@ extern "C" {
 #include "process.h"
 #include "raw_hid_tablet.h"
 #include "stream.h"
+#include "stationconnect_bitrate.h"
 #include "sync.h"
 #include "system_tray.h"
 #include "thread_safe.h"
@@ -51,6 +52,7 @@ constexpr int IDX_SET_MOTION_EVENT = 13;  ///< Control-stream message index for 
 constexpr int IDX_SET_RGB_LED = 14;  ///< Control-stream message index for set rgb led.
 constexpr int IDX_SET_ADAPTIVE_TRIGGERS = 15;  ///< Control-stream message index for set adaptive triggers.
 constexpr int IDX_RAW_HID_CONTROL = 16;  ///< Control-stream message index for StationConnect raw HID requests.
+constexpr int IDX_SET_VIDEO_BITRATE = 17;  ///< Control-stream message index for StationConnect bitrate updates.
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -70,6 +72,7 @@ static const short packetTypes[] = {
   0x5502,  // Set RGB LED (Sunshine protocol extension)
   0x5503,  // Set Adaptive triggers (Sunshine protocol extension)
   0x5504,  // Raw HID control (StationConnect protocol extension)
+  0x5505,  // Dynamic video bitrate (StationConnect protocol extension)
 };
 
 namespace asio = boost::asio;
@@ -1172,6 +1175,16 @@ namespace stream {
       BOOST_LOG(debug) << "type [IDX_REQUEST_IDR_FRAME]"sv;
 
       session->video.idr_events->raise(true);
+    });
+
+    server->map(packetTypes[IDX_SET_VIDEO_BITRATE], [&](session_t *session, const std::string_view &payload) {
+      const auto bitrate_kbps = stationconnect::bitrate::decode_request(payload);
+      if (!bitrate_kbps) {
+        BOOST_LOG(warning) << "Rejected malformed or out-of-range StationConnect bitrate request"sv;
+        return;
+      }
+
+      session->mail->event<int>(mail::video_bitrate)->raise(*bitrate_kbps);
     });
 
     server->map(packetTypes[IDX_INVALIDATE_REF_FRAMES], [&](session_t *session, const std::string_view &payload) {

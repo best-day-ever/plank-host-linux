@@ -422,6 +422,16 @@ namespace video {
      * @param last_frame Last frame.
      */
     virtual void invalidate_ref_frames(int64_t first_frame, int64_t last_frame) = 0;
+
+    /**
+     * @brief Apply a new active-session encoder bitrate.
+     *
+     * @param bitrate_kbps Requested bitrate in kilobits per second.
+     * @return True when the active encoder accepted the update.
+     */
+    virtual bool update_bitrate(int bitrate_kbps) {
+      return false;
+    }
   };
 
   // encoders

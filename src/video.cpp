@@ -674,6 +674,44 @@ namespace video {
       request_idr_frame();
     }
 
+    bool update_bitrate(int bitrate_kbps) override {
+      // FFmpeg's libx264 wrapper checks these AVCodecContext fields before
+      // encoding each frame and invokes x264_encoder_reconfig() when they
+      // change. Keep this path deliberately scoped to the qualified
+      // StationConnect software H.264 encoder.
+      if (!avcodec_ctx || avcodec_ctx->codec_id != AV_CODEC_ID_H264 ||
+          avcodec_ctx->hw_frames_ctx != nullptr) {
+        return false;
+      }
+
+      const std::int64_t requested_rate = static_cast<std::int64_t>(bitrate_kbps) * 1000LL;
+      const std::int64_t average_rate = config::video.max_bitrate > 0 ?
+                                          std::min(requested_rate,
+                                                   static_cast<std::int64_t>(config::video.max_bitrate) *
+                                                     static_cast<std::int64_t>(1000)) :
+                                          requested_rate;
+      const auto rate_control = software_rate_control(
+        average_rate,
+        avcodec_ctx->framerate.num > 0 ?
+          avcodec_ctx->framerate.num / std::max(avcodec_ctx->framerate.den, 1) : 60,
+        config::video.sw.vbv_maxrate_percentage,
+        config::video.sw.vbv_buffer_frames
+      );
+
+      avcodec_ctx->bit_rate = rate_control.average_rate;
+      avcodec_ctx->rc_max_rate = rate_control.peak_rate;
+      avcodec_ctx->rc_min_rate = 0;
+      if (config::video.sw.vbv_buffer_frames > 0) {
+        avcodec_ctx->rc_buffer_size = rate_control.buffer_size;
+      }
+
+      BOOST_LOG(info) << "Updated active StationConnect video bitrate: average="sv
+                      << avcodec_ctx->bit_rate << ", peak="sv
+                      << avcodec_ctx->rc_max_rate << ", vbv="sv
+                      << avcodec_ctx->rc_buffer_size;
+      return true;
+    }
+
     avcodec_ctx_t avcodec_ctx;  ///< FFmpeg codec context owned by the encode session.
     std::unique_ptr<platf::avcodec_encode_device_t> device;  ///< Platform device used by the FFmpeg hardware encoder.
 
@@ -792,6 +830,7 @@ namespace video {
     safe::mail_raw_t::event_t<bool> idr_events;  ///< Event raised when an IDR frame is requested.
     safe::mail_raw_t::event_t<hdr_info_t> hdr_events;  ///< Event carrying updated HDR metadata.
     safe::mail_raw_t::event_t<input::touch_port_t> touch_port_events;  ///< Event carrying updated touch viewport metadata.
+    safe::mail_raw_t::event_t<int> bitrate_events;  ///< Active-session bitrate requests in kilobits per second.
 
     config_t config;  ///< Stream or encoder configuration captured for the worker.
     int frame_nr;  ///< Next capture-frame number assigned to encoded packets.
@@ -2762,6 +2801,7 @@ namespace video {
     auto packets = mail::man->queue<packet_t>(mail::video_packets);
     auto idr_events = mail->event<bool>(mail::idr);
     auto invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
+    auto bitrate_events = mail->event<int>(mail::video_bitrate);
 
     {
       // Load a dummy image into the AVFrame to ensure we have something to encode
@@ -2776,6 +2816,16 @@ namespace video {
 
     while (true) {
       bool requested_idr_frame = false;
+
+      while (bitrate_events->peek()) {
+        if (auto bitrate_kbps = bitrate_events->pop(0ms)) {
+          if (session->update_bitrate(*bitrate_kbps)) {
+            config.bitrate = *bitrate_kbps;
+          } else {
+            BOOST_LOG(warning) << "Active encoder rejected StationConnect bitrate update"sv;
+          }
+        }
+      }
 
       while (invalidate_ref_frames_events->peek()) {
         if (auto frames = invalidate_ref_frames_events->pop(0ms)) {
@@ -3151,6 +3201,16 @@ namespace video {
             ctx->idr_events->pop();
           }
 
+          while (ctx->bitrate_events->peek()) {
+            if (auto bitrate_kbps = ctx->bitrate_events->pop(0ms)) {
+              if (pos->session->update_bitrate(*bitrate_kbps)) {
+                ctx->config.bitrate = *bitrate_kbps;
+              } else {
+                BOOST_LOG(warning) << "Active encoder rejected StationConnect bitrate update"sv;
+              }
+            }
+          }
+
           if (frame_captured && pos->session->convert(*img)) {
             BOOST_LOG(error) << "Could not convert image"sv;
             ctx->shutdown_event->raise(true);
@@ -3367,6 +3427,7 @@ namespace video {
         std::move(idr_events),
         mail->event<hdr_info_t>(mail::hdr),
         mail->event<input::touch_port_t>(mail::touch_port),
+        mail->event<int>(mail::video_bitrate),
         config,
         1,
         channel_data,

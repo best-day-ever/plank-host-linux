@@ -387,6 +387,10 @@ namespace platf {
      * @brief Capability bit indicating encrypted raw HID tablet redirection.
      */
     constexpr caps_t raw_hid_tablet = 0x04;  // Session-scoped raw HID tablet transport
+    /**
+     * @brief Capability bit indicating active-session video bitrate updates.
+     */
+    constexpr caps_t dynamic_video_bitrate = 0x08;  // Live encoder bitrate control
   };  // namespace platform_caps
 
   /**
