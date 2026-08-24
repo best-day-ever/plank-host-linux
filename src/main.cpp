@@ -5,6 +5,8 @@
 // standard includes
 #include <codecvt>
 #include <csignal>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -36,6 +38,21 @@
 using namespace std::literals;
 
 std::map<int, std::function<void()>> signal_handlers;  ///< Signal handlers.
+
+namespace {
+  bool stationconnect_mdns_discovery_enabled() {
+    const char *value = std::getenv("STATIONCONNECT_MDNS_DISCOVERY");
+    if (value == nullptr || std::strcmp(value, "0") == 0) {
+      return false;
+    }
+    if (std::strcmp(value, "1") == 0) {
+      return true;
+    }
+
+    BOOST_LOG(warning) << "Invalid STATIONCONNECT_MDNS_DISCOVERY value; disabling mDNS advertisement"sv;
+    return false;
+  }
+}
 
 /**
  * @brief Forward a POSIX signal to the registered Sunshine handler.
@@ -435,8 +452,14 @@ int main(int argc, char *argv[]) {
   }
 
   std::unique_ptr<platf::deinit_t> mDNS;
-  auto sync_mDNS = std::async(std::launch::async, [&mDNS]() {
-    mDNS = platf::publish::start();
+  const bool mdns_discovery_enabled = stationconnect_mdns_discovery_enabled();
+  if (!mdns_discovery_enabled) {
+    BOOST_LOG(info) << "StationConnect mDNS advertisement is disabled"sv;
+  }
+  auto sync_mDNS = std::async(std::launch::async, [&mDNS, mdns_discovery_enabled]() {
+    if (mdns_discovery_enabled) {
+      mDNS = platf::publish::start();
+    }
   });
 
   std::unique_ptr<platf::deinit_t> upnp_unmap;

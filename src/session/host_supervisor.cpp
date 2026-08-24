@@ -188,6 +188,10 @@ namespace {
 
     const char *host_options = getenv("STATIONCONNECT_HOST_OPTIONS");
     const std::string inherited_options = host_options == nullptr ? "" : host_options;
+    const char *mdns_discovery = getenv("STATIONCONNECT_MDNS_DISCOVERY");
+    const std::optional<std::string> inherited_mdns_discovery =
+      mdns_discovery == nullptr ? std::nullopt :
+                                  std::optional<std::string> {mdns_discovery};
     const int descriptor_flags = fcntl(control_descriptor, F_GETFD);
     if (descriptor_flags < 0 ||
         fcntl(control_descriptor, F_SETFD, descriptor_flags & ~FD_CLOEXEC) != 0) {
@@ -210,6 +214,11 @@ namespace {
     set_environment_value("PULSE_SERVER", environment.pulse_server);
     set_environment_value("PULSE_COOKIE", environment.pulse_cookie);
     set_environment_value("STATIONCONNECT_HOST_OPTIONS", inherited_options);
+    if (inherited_mdns_discovery) {
+      set_environment_value(
+        "STATIONCONNECT_MDNS_DISCOVERY", *inherited_mdns_discovery
+      );
+    }
     set_environment_value(
       "STATIONCONNECT_SESSION_CONTROL_FD", std::to_string(control_descriptor)
     );
