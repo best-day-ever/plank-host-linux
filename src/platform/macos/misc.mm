@@ -21,7 +21,6 @@
 #include <dlfcn.h>
 #include <Foundation/Foundation.h>
 #include <mach-o/dyld.h>
-#include <net/if_dl.h>
 #include <pwd.h>
 #include <sys/qos.h>
 
@@ -148,43 +147,6 @@ namespace platf {
     }
 
     return {port, std::string {data}};
-  }
-
-  std::string get_mac_address(const std::string_view &address) {
-    auto ifaddrs = get_ifaddrs();
-
-    for (auto pos = ifaddrs.get(); pos != nullptr; pos = pos->ifa_next) {
-      if (pos->ifa_addr && address == from_sockaddr(pos->ifa_addr)) {
-        BOOST_LOG(verbose) << "Looking for MAC of "sv << pos->ifa_name;
-
-        struct ifaddrs *ifap, *ifaptr;
-        unsigned char *ptr;
-        std::string mac_address;
-
-        if (getifaddrs(&ifap) == 0) {
-          for (ifaptr = ifap; ifaptr != nullptr; ifaptr = (ifaptr)->ifa_next) {
-            if (!strcmp((ifaptr)->ifa_name, pos->ifa_name) && (((ifaptr)->ifa_addr)->sa_family == AF_LINK)) {
-              ptr = (unsigned char *) LLADDR((struct sockaddr_dl *) (ifaptr)->ifa_addr);
-              char buff[100];
-
-              snprintf(buff, sizeof(buff), "%02x:%02x:%02x:%02x:%02x:%02x", *ptr, *(ptr + 1), *(ptr + 2), *(ptr + 3), *(ptr + 4), *(ptr + 5));
-              mac_address = buff;
-              break;
-            }
-          }
-
-          freeifaddrs(ifap);
-
-          if (ifaptr != nullptr) {
-            BOOST_LOG(verbose) << "Found MAC of "sv << pos->ifa_name << ": "sv << mac_address;
-            return mac_address;
-          }
-        }
-      }
-    }
-
-    BOOST_LOG(warning) << "Unable to find MAC address for "sv << address;
-    return "00:00:00:00:00:00"s;
   }
 
   bp::child run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group) {

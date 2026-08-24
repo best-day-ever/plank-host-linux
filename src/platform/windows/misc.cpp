@@ -5,10 +5,8 @@
 // standard includes
 #include <csignal>
 #include <filesystem>
-#include <iomanip>
 #include <iterator>
 #include <set>
-#include <sstream>
 #include <vector>
 
 // lib includes
@@ -20,7 +18,6 @@
 // prevent clang format from "optimizing" the header include order
 // clang-format off
 #include <dwmapi.h>
-#include <iphlpapi.h>
 #include <iterator>
 #include <timeapi.h>
 #include <UserEnv.h>
@@ -122,11 +119,6 @@ namespace bp = boost::process::v1;
 using namespace std::literals;
 
 namespace platf {
-  /**
-   * @brief Owning pointer for `GetAdaptersAddresses` results.
-   */
-  using adapteraddrs_t = util::c_ptr<IP_ADAPTER_ADDRESSES>;
-
   bool enabled_mouse_keys = false;  ///< Tracks whether Windows Mouse Keys was enabled before Sunshine changed it.
   MOUSEKEYS previous_mouse_keys_state;  ///< Previous mouse keys state.
 
@@ -177,43 +169,6 @@ namespace platf {
     }
 
     return {port, std::string {data}};
-  }
-
-  /**
-   * @brief Read Windows adapter addresses with automatic buffer sizing.
-   *
-   * @return Adapter-address list populated by GetAdaptersAddresses.
-   */
-  adapteraddrs_t get_adapteraddrs() {
-    adapteraddrs_t info {nullptr};
-    ULONG size = 0;
-
-    while (GetAdaptersAddresses(AF_UNSPEC, 0, nullptr, info.get(), &size) == ERROR_BUFFER_OVERFLOW) {
-      info.reset((PIP_ADAPTER_ADDRESSES) malloc(size));
-    }
-
-    return info;
-  }
-
-  std::string get_mac_address(const std::string_view &address) {
-    adapteraddrs_t info = get_adapteraddrs();
-    for (auto adapter_pos = info.get(); adapter_pos != nullptr; adapter_pos = adapter_pos->Next) {
-      for (auto addr_pos = adapter_pos->FirstUnicastAddress; addr_pos != nullptr; addr_pos = addr_pos->Next) {
-        if (adapter_pos->PhysicalAddressLength != 0 && address == from_sockaddr(addr_pos->Address.lpSockaddr)) {
-          std::stringstream mac_addr;
-          mac_addr << std::hex;
-          for (int i = 0; i < adapter_pos->PhysicalAddressLength; i++) {
-            if (i > 0) {
-              mac_addr << ':';
-            }
-            mac_addr << std::setw(2) << std::setfill('0') << (int) adapter_pos->PhysicalAddress[i];
-          }
-          return mac_addr.str();
-        }
-      }
-    }
-    BOOST_LOG(warning) << "Unable to find MAC address for "sv << address;
-    return "00:00:00:00:00:00"s;
   }
 
   /**

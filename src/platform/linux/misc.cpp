@@ -16,8 +16,6 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <sstream>
 
@@ -37,7 +35,6 @@
   #include <sys/prctl.h>
 #endif
 #ifdef __FreeBSD__
-  #include <net/if_dl.h>  // For sockaddr_dl, LLADDR, and AF_LINK
   #include <sys/syscall.h>  // For syscall: SYS_thr_self
   #include <sys/thr.h>  // For thr_self
 #endif
@@ -357,60 +354,6 @@ namespace platf {
     }
 
     return {port, std::string {data}};
-  }
-
-  /**
-   * @brief Return the hardware MAC address associated with a network address.
-   */
-  std::string get_mac_address(const std::string_view &address) {
-    auto ifaddrs = get_ifaddrs();
-
-#ifdef __FreeBSD__
-    // On FreeBSD, we need to find the interface name first, then look for its AF_LINK entry
-    std::string interface_name;
-    for (auto pos = ifaddrs.get(); pos != nullptr; pos = pos->ifa_next) {
-      if (pos->ifa_addr && address == from_sockaddr(pos->ifa_addr)) {
-        interface_name = pos->ifa_name;
-        break;
-      }
-    }
-
-    if (!interface_name.empty()) {
-      // Find the AF_LINK entry for this interface to get MAC address
-      for (auto pos = ifaddrs.get(); pos != nullptr; pos = pos->ifa_next) {
-        if (pos->ifa_addr && pos->ifa_addr->sa_family == AF_LINK && interface_name == pos->ifa_name) {
-          auto sdl = (struct sockaddr_dl *) pos->ifa_addr;
-          auto mac = (unsigned char *) LLADDR(sdl);
-
-          // Format MAC address as XX:XX:XX:XX:XX:XX
-          std::ostringstream mac_stream;
-          mac_stream << std::hex << std::setfill('0');
-          for (int i = 0; i < sdl->sdl_alen; i++) {
-            if (i > 0) {
-              mac_stream << ':';
-            }
-            mac_stream << std::setw(2) << (int) mac[i];
-          }
-          return mac_stream.str();
-        }
-      }
-    }
-#else
-    // On Linux, read MAC address from sysfs
-    for (auto pos = ifaddrs.get(); pos != nullptr; pos = pos->ifa_next) {
-      if (pos->ifa_addr && address == from_sockaddr(pos->ifa_addr)) {
-        std::ifstream mac_file("/sys/class/net/"s + pos->ifa_name + "/address");
-        if (mac_file.good()) {
-          std::string mac_address;
-          std::getline(mac_file, mac_address);
-          return mac_address;
-        }
-      }
-    }
-#endif
-
-    BOOST_LOG(warning) << "Unable to find MAC address for "sv << address;
-    return "00:00:00:00:00:00"s;
   }
 
   bp::child run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group) {

@@ -877,14 +877,6 @@ namespace platf {
   std::filesystem::path appdata();
 
   /**
-   * @brief Return the hardware MAC address associated with a network address.
-   *
-   * @param address Network address being parsed or filtered.
-   * @return Hardware MAC address string, or an empty string when it cannot be resolved.
-   */
-  std::string get_mac_address(const std::string_view &address);
-
-  /**
    * @brief Convert a socket address to a printable IP address.
    *
    * @param ip_addr Socket address to format.

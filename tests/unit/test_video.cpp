@@ -18,6 +18,10 @@
 #include <src/video.h>
 #include <src/video_colorspace.h>
 
+extern "C" {
+#include <libavutil/pixdesc.h>
+}
+
 using namespace std::literals;
 
 TEST(VideoColorspaceTest, IdentityGbrUsesExactPlaneMapping) {
@@ -56,6 +60,7 @@ TEST(VideoColorspaceTest, IdentityGbrUsesMatrixZeroMetadata) {
   EXPECT_EQ(avcodec.transfer_function, AVCOL_TRC_IEC61966_2_1);
   EXPECT_EQ(avcodec.matrix, AVCOL_SPC_RGB);
   EXPECT_EQ(avcodec.range, AVCOL_RANGE_JPEG);
+  EXPECT_STREQ(av_color_range_name(avcodec.range), "pc");
   EXPECT_FALSE(video::colorspace_is_hdr(colorspace));
 }
 

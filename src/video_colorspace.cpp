@@ -10,6 +10,7 @@
 #include "video.h"
 
 extern "C" {
+#include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 }
 
@@ -141,7 +142,11 @@ namespace video {
         break;
     }
 
-    avcodec_colorspace.range = sunshine_colorspace.full_range ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+    const int ffmpeg_range = av_color_range_from_name(
+      sunshine_colorspace.full_range ? "pc" : "tv"
+    );
+    assert(ffmpeg_range >= 0);
+    avcodec_colorspace.range = static_cast<AVColorRange>(ffmpeg_range);
 
     return avcodec_colorspace;
   }
