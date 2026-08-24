@@ -48,6 +48,11 @@ TEST(RawHidTablet, RejectsMalformedTransportFrames) {
   frame = make_frame(SC_RAW_HID_DETACH, 0, 1, nullptr, 0);
   reinterpret_cast<SC_RAW_HID_WIRE_HEADER *>(frame.data())->payloadLength = util::endian::little<std::uint32_t>(1);
   EXPECT_FALSE(tablet.handle(frame));
+
+  frame = make_frame(SC_RAW_HID_DETACH, 0, 1, nullptr, 0);
+  reinterpret_cast<SC_RAW_HID_WIRE_HEADER *>(frame.data())->version =
+    util::endian::little<std::uint16_t>(SC_RAW_HID_WIRE_VERSION - 1);
+  EXPECT_FALSE(tablet.handle(frame));
 }
 
 TEST(RawHidTablet, EnforcesGenerationAndInterfaceBounds) {
@@ -98,7 +103,7 @@ TEST(RawHidTablet, EnforcesGenerationAndInterfaceBounds) {
   )));
 }
 
-TEST(RawHidTablet, ReusesIdenticalEndpointsAcrossTransportResume) {
+TEST(RawHidTablet, ReusesIdenticalEndpointsAcrossFocusAndTransportResume) {
   if (!raw_hid::available()) {
     GTEST_SKIP() << "/dev/uhid is unavailable to the test process";
   }
@@ -127,17 +132,38 @@ TEST(RawHidTablet, ReusesIdenticalEndpointsAcrossTransportResume) {
   const auto initial_epoch = tablet.endpoint_epoch();
   ASSERT_GT(initial_epoch, 0);
 
-  tablet.suspend();
-  const auto resumed_mail = std::make_shared<safe::mail_raw_t>();
-  tablet.rebind(resumed_mail->queue<std::vector<std::uint8_t>>("raw-hid-test-resumed"));
+  ASSERT_TRUE(tablet.handle(make_frame(SC_RAW_HID_SUSPEND, 0, 7, nullptr, 0)));
+  EXPECT_FALSE(tablet.handle(make_frame(SC_RAW_HID_SUSPEND, 1, 7, nullptr, 0)));
+  EXPECT_FALSE(tablet.handle(make_frame(SC_RAW_HID_SUSPEND, 0, 8, nullptr, 0)));
+  auto malformed_suspend = make_frame(SC_RAW_HID_SUSPEND, 0, 7, nullptr, 0);
+  reinterpret_cast<SC_RAW_HID_WIRE_HEADER *>(malformed_suspend.data())->transactionId =
+    util::endian::little<std::uint32_t>(1);
+  EXPECT_FALSE(tablet.handle(malformed_suspend));
+  const std::uint8_t invalid_suspend_payload = 0;
+  EXPECT_FALSE(tablet.handle(make_frame(
+    SC_RAW_HID_SUSPEND,
+    0,
+    7,
+    &invalid_suspend_payload,
+    sizeof(invalid_suspend_payload)
+  )));
   ASSERT_TRUE(tablet.handle(make_frame(SC_RAW_HID_DEVICE, 0, 8, &device, sizeof(device))));
   ASSERT_TRUE(tablet.handle(make_frame(SC_RAW_HID_DESCRIPTOR, 0, 8, descriptor, sizeof(descriptor))));
 
   EXPECT_EQ(tablet.active_generation(), 8);
   EXPECT_EQ(tablet.endpoint_epoch(), initial_epoch);
 
-  device.product = util::endian::little<std::uint32_t>(0x0357);
+  tablet.suspend();
+  const auto resumed_mail = std::make_shared<safe::mail_raw_t>();
+  tablet.rebind(resumed_mail->queue<std::vector<std::uint8_t>>("raw-hid-test-resumed"));
   ASSERT_TRUE(tablet.handle(make_frame(SC_RAW_HID_DEVICE, 0, 9, &device, sizeof(device))));
   ASSERT_TRUE(tablet.handle(make_frame(SC_RAW_HID_DESCRIPTOR, 0, 9, descriptor, sizeof(descriptor))));
+
+  EXPECT_EQ(tablet.active_generation(), 9);
+  EXPECT_EQ(tablet.endpoint_epoch(), initial_epoch);
+
+  device.product = util::endian::little<std::uint32_t>(0x0357);
+  ASSERT_TRUE(tablet.handle(make_frame(SC_RAW_HID_DEVICE, 0, 10, &device, sizeof(device))));
+  ASSERT_TRUE(tablet.handle(make_frame(SC_RAW_HID_DESCRIPTOR, 0, 10, descriptor, sizeof(descriptor))));
   EXPECT_GT(tablet.endpoint_epoch(), initial_epoch);
 }

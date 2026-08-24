@@ -129,6 +129,14 @@ namespace raw_hid {
         reset();
         return true;
       }
+      if (type == SC_RAW_HID_SUSPEND) {
+        if (interface_id != 0 || transaction_id != 0 || !payload.empty() || uhid_fds_.empty()) {
+          return false;
+        }
+        transport_active_ = false;
+        BOOST_LOG(info) << "Suspended raw HID tablet transport while retaining endpoints for generation "sv << generation_;
+        return true;
+      }
       if (!transport_active_) {
         return false;
       }

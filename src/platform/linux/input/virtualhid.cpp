@@ -20,7 +20,10 @@ using namespace std::literals;
 
 namespace platf {
   platform_caps::caps_t get_capabilities() {
-    platform_caps::caps_t caps = raw_hid::available() ? platform_caps::raw_hid_tablet : 0;
+    platform_caps::caps_t caps = raw_hid::available() ?
+                                   platform_caps::raw_hid_tablet |
+                                     platform_caps::raw_hid_focus_suspend :
+                                   0;
     const auto runtime = virtualhid::create_runtime();
     if (!runtime) {
       return caps;
