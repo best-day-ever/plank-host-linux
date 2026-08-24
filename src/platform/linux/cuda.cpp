@@ -1322,24 +1322,37 @@ namespace cuda {
        *
        * @param handle Native library or object handle used by the operation.
        */
-      ctx_t(NVFBC_SESSION_HANDLE handle) {
+      ctx_t(NVFBC_SESSION_HANDLE handle):
+          handle {handle} {
         NVFBC_BIND_CONTEXT_PARAMS params {NVFBC_BIND_CONTEXT_PARAMS_VER};
 
         if (func.nvFBCBindContext(handle, &params)) {
           BOOST_LOG(error) << "Couldn't bind NvFBC context to current thread: " << func.nvFBCGetLastErrorStr(handle);
+        } else {
+          bound = true;
         }
-
-        this->handle = handle;
       }
 
       ~ctx_t() {
+        if (!bound) {
+          return;
+        }
+
         NVFBC_RELEASE_CONTEXT_PARAMS params {NVFBC_RELEASE_CONTEXT_PARAMS_VER};
         if (func.nvFBCReleaseContext(handle, &params)) {
           BOOST_LOG(error) << "Couldn't release NvFBC context from current thread: " << func.nvFBCGetLastErrorStr(handle);
         }
       }
 
+      /**
+       * @brief Mark the context as released by an operation that invalidated the handle.
+       */
+      void disarm() {
+        bound = false;
+      }
+
       NVFBC_SESSION_HANDLE handle;  ///< NVIDIA FBC capture session handle.
+      bool bound {};  ///< Whether this object owns a context binding to release.
     };
 
     /**
@@ -1499,6 +1512,10 @@ namespace cuda {
         ctx_t ctx {handle};
         if (func.nvFBCDestroyHandle(handle, &params)) {
           BOOST_LOG(error) << "Couldn't destroy session handle: "sv << func.nvFBCGetLastErrorStr(handle);
+        } else {
+          // NvFBCDestroyHandle() implicitly releases the context and invalidates
+          // the handle, so ctx must not call NvFBCReleaseContext() afterward.
+          ctx.disarm();
         }
 
         handle_flags[SESSION_HANDLE] = false;
