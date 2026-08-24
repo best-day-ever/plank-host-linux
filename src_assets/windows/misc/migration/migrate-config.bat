@@ -21,13 +21,6 @@ if exist "%OLD_DIR%\sunshine.conf" (
         icacls "%NEW_DIR%\sunshine.conf" /reset
     )
 )
-if exist "%OLD_DIR%\sunshine_state.json" (
-    if not exist "%NEW_DIR%\stationconnect_state.json" (
-        move "%OLD_DIR%\sunshine_state.json" "%NEW_DIR%\stationconnect_state.json"
-        icacls "%NEW_DIR%\stationconnect_state.json" /reset
-    )
-)
-
 rem Migrate the credentials directory
 if exist "%OLD_DIR%\credentials\" (
     if not exist "%NEW_DIR%\credentials\" (
