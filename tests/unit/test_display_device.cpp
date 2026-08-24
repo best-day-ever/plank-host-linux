@@ -36,7 +36,6 @@ namespace {
   };
 
   using client_fps_t = int;
-  using sops_enabled_t = bool;
   using client_wants_hdr_t = bool;
 
   constexpr unsigned int max_uint {std::numeric_limits<unsigned int>::max()};
@@ -127,67 +126,54 @@ TEST_P(ParseHdrOption, IntegrationTest) {
   EXPECT_EQ(std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state, expected_value);
 }
 
-using ParseResolutionOption = DisplayDeviceConfigTest<std::pair<std::tuple<resolution_option_e, sops_enabled_t, std::variant<client_resolution_t, std::string>>, std::variant<failed_to_parse_resolution_tag_t, no_resolution_tag_t, resolution_t>>>;
+using ParseResolutionOption = DisplayDeviceConfigTest<std::pair<std::tuple<resolution_option_e, std::variant<client_resolution_t, std::string>>, std::variant<failed_to_parse_resolution_tag_t, no_resolution_tag_t, resolution_t>>>;
 INSTANTIATE_TEST_SUITE_P(
   DisplayDeviceConfigTest,
   ParseResolutionOption,
   testing::Values(
     //---- Disabled cases ----
-    std::make_pair(std::make_tuple(resolution_option_e::disabled, sops_enabled_t {true}, client_resolution_t {1920, 1080}), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::disabled, sops_enabled_t {true}, "1920x1080"s), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::disabled, sops_enabled_t {true}, client_resolution_t {-1, -1}), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::disabled, sops_enabled_t {true}, "invalid_res"s), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::disabled, sops_enabled_t {false}, client_resolution_t {1920, 1080}), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::disabled, sops_enabled_t {false}, "1920x1080"s), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::disabled, sops_enabled_t {false}, client_resolution_t {-1, -1}), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::disabled, sops_enabled_t {false}, "invalid_res"s), no_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::disabled, client_resolution_t {1920, 1080}), no_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::disabled, "1920x1080"s), no_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::disabled, client_resolution_t {-1, -1}), no_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::disabled, "invalid_res"s), no_resolution_tag_t {}),
     //---- Automatic cases ----
-    std::make_pair(std::make_tuple(resolution_option_e::automatic, sops_enabled_t {true}, client_resolution_t {1920, 1080}), resolution_t {1920, 1080}),
-    std::make_pair(std::make_tuple(resolution_option_e::automatic, sops_enabled_t {true}, "1920x1080"s), resolution_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::automatic, sops_enabled_t {true}, client_resolution_t {-1, -1}), failed_to_parse_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::automatic, sops_enabled_t {true}, "invalid_res"s), resolution_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::automatic, sops_enabled_t {false}, client_resolution_t {1920, 1080}), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::automatic, sops_enabled_t {false}, "1920x1080"s), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::automatic, sops_enabled_t {false}, client_resolution_t {-1, -1}), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::automatic, sops_enabled_t {false}, "invalid_res"s), no_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::automatic, client_resolution_t {1920, 1080}), resolution_t {1920, 1080}),
+    std::make_pair(std::make_tuple(resolution_option_e::automatic, "1920x1080"s), resolution_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::automatic, client_resolution_t {-1, -1}), failed_to_parse_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::automatic, "invalid_res"s), resolution_t {}),
     //---- Manual cases ----
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, client_resolution_t {1920, 1080}), failed_to_parse_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "1920x1080"s), resolution_t {1920, 1080}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, client_resolution_t {-1, -1}), failed_to_parse_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "invalid_res"s), failed_to_parse_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {false}, client_resolution_t {1920, 1080}), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {false}, "1920x1080"s), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {false}, client_resolution_t {-1, -1}), no_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {false}, "invalid_res"s), no_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, client_resolution_t {1920, 1080}), failed_to_parse_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, "1920x1080"s), resolution_t {1920, 1080}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, client_resolution_t {-1, -1}), failed_to_parse_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, "invalid_res"s), failed_to_parse_resolution_tag_t {}),
     //---- Both negative values from client are checked ----
-    std::make_pair(std::make_tuple(resolution_option_e::automatic, sops_enabled_t {true}, client_resolution_t {0, 0}), resolution_t {0, 0}),
-    std::make_pair(std::make_tuple(resolution_option_e::automatic, sops_enabled_t {true}, client_resolution_t {-1, 0}), failed_to_parse_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::automatic, sops_enabled_t {true}, client_resolution_t {0, -1}), failed_to_parse_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::automatic, client_resolution_t {0, 0}), resolution_t {0, 0}),
+    std::make_pair(std::make_tuple(resolution_option_e::automatic, client_resolution_t {-1, 0}), failed_to_parse_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::automatic, client_resolution_t {0, -1}), failed_to_parse_resolution_tag_t {}),
     //---- Resolution string format validation ----
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "0x0"s), resolution_t {0, 0}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "0x"s), failed_to_parse_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "x0"s), failed_to_parse_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "-1x1"s), failed_to_parse_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "1x-1"s), failed_to_parse_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "x0x0"s), failed_to_parse_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, "0x0x"s), failed_to_parse_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, "0x0"s), resolution_t {0, 0}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, "0x"s), failed_to_parse_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, "x0"s), failed_to_parse_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, "-1x1"s), failed_to_parse_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, "1x-1"s), failed_to_parse_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, "x0x0"s), failed_to_parse_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, "0x0x"s), failed_to_parse_resolution_tag_t {}),
     //---- String number is out of bounds ----
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, max_uint_string + "x"s + max_uint_string), resolution_t {max_uint, max_uint}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, max_uint_string + "0"s + "x"s + max_uint_string), failed_to_parse_resolution_tag_t {}),
-    std::make_pair(std::make_tuple(resolution_option_e::manual, sops_enabled_t {true}, max_uint_string + "x"s + max_uint_string + "0"s), failed_to_parse_resolution_tag_t {})
+    std::make_pair(std::make_tuple(resolution_option_e::manual, max_uint_string + "x"s + max_uint_string), resolution_t {max_uint, max_uint}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, max_uint_string + "0"s + "x"s + max_uint_string), failed_to_parse_resolution_tag_t {}),
+    std::make_pair(std::make_tuple(resolution_option_e::manual, max_uint_string + "x"s + max_uint_string + "0"s), failed_to_parse_resolution_tag_t {})
   )
 );
 
 TEST_P(ParseResolutionOption, IntegrationTest) {
   const auto &[input_value, expected_value] = GetParam();
-  const auto &[input_resolution_option, input_enable_sops, input_resolution] = input_value;
+  const auto &[input_resolution_option, input_resolution] = input_value;
 
   config::video_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.resolution_option = input_resolution_option;
 
   rtsp_stream::launch_session_t session {};
-  session.enable_sops = input_enable_sops;
 
   if (const auto *client_res {std::get_if<client_resolution_t>(&input_resolution)}; client_res) {
     video_config.dd.manual_resolution = {};
@@ -366,103 +352,60 @@ namespace {
     .refresh_rate_only = {{"", "11", "", ""}}
   };
 
-  using DisplayModeRemapping = DisplayDeviceConfigTest<std::pair<std::tuple<resolution_variant_t, rational_variant_t, sops_enabled_t, remap_entries_t>, std::variant<failed_to_remap_t, final_values_t>>>;
+  using DisplayModeRemapping = DisplayDeviceConfigTest<std::pair<std::tuple<resolution_variant_t, rational_variant_t, remap_entries_t>, std::variant<failed_to_remap_t, final_values_t>>>;
   INSTANTIATE_TEST_SUITE_P(
     DisplayDeviceConfigTest,
     DisplayModeRemapping,
     testing::Values(
-      //---- Mixed (valid), SOPS enabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {{{1024, 720}}, {{111, 100}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {120}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {{{1024, 720}}, {{2, 1}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1, 1}, auto_value_t<fps_t> {33}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {{{1024, 720}}, {{3, 1}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 720}, auto_value_t<fps_t> {44}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {{{1024, 720}}, {{44, 1}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 720}, auto_value_t<fps_t> {55}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {{{1920, 720}}, {{5, 1}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 720}, auto_value_t<fps_t> {60}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {{{1024, 720}}, {{60, 1}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1, 1}, auto_value_t<fps_t> {123}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {{{1, 1}}, {{123, 1}}}),
-      //---- Mixed (valid), SOPS disabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, {{777, 100}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {120}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, {{120, 1}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1, 1}, auto_value_t<fps_t> {33}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, {{33, 1}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 720}, auto_value_t<fps_t> {44}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, {{44, 1}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 720}, auto_value_t<fps_t> {55}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, {{55, 1}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 720}, auto_value_t<fps_t> {60}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, {{60, 1}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1, 1}, auto_value_t<fps_t> {123}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, {{123, 1}}}),
-      //---- Resolution only (valid), SOPS enabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {{{720, 720}}, {{11, 1}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1024, 720}, no_value_t {}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {{{1920, 1920}}, std::nullopt}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {11, 11}, manual_value_t<fps_t> {33}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {{{11, 11}}, {{33, 1}}}),
-      //---- Resolution only (valid), SOPS disabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, {{11, 1}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1024, 720}, no_value_t {}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, std::nullopt}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {11, 11}, manual_value_t<fps_t> {33}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, {{33, 1}}}),
-      //---- Refresh rate only (valid), SOPS enabled ----
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {{{1920, 1080}}, {{123, 100}}}),
-      std::make_pair(std::make_tuple(no_value_t {}, auto_value_t<fps_t> {22}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {std::nullopt, {{234, 100}}}),
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {11, 11}, auto_value_t<fps_t> {33}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {{{11, 11}}, {{33, 1}}}),
-      //---- Refresh rate only (valid), SOPS disabled ----
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, {{123, 100}}}),
-      std::make_pair(std::make_tuple(no_value_t {}, auto_value_t<fps_t> {22}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, {{234, 100}}}),
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {11, 11}, auto_value_t<fps_t> {33}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, {{33, 1}}}),
-      //---- No mapping (valid), SOPS enabled ----
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {{{1920, 1080}}, {{11, 1}}}),
-      std::make_pair(std::make_tuple(no_value_t {}, no_value_t {}, sops_enabled_t {true}, VALID_ENTRIES), final_values_t {std::nullopt, std::nullopt}),
-      //---- No mapping (valid), SOPS disabled ----
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, {{11, 1}}}),
-      std::make_pair(std::make_tuple(no_value_t {}, no_value_t {}, sops_enabled_t {false}, VALID_ENTRIES), final_values_t {std::nullopt, std::nullopt}),
-      // ---- Invalid requested resolution, SOPS enabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {true}, INVALID_REQ_RES), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {true}, INVALID_REQ_RES), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {true}, INVALID_REQ_RES), final_values_t {{{1920, 1080}}, {{123, 100}}}),
-      // ---- Invalid requested resolution, SOPS disabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {false}, INVALID_REQ_RES), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {false}, INVALID_REQ_RES), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {false}, INVALID_REQ_RES), final_values_t {std::nullopt, {{123, 100}}}),
-      // ---- Invalid requested FPS, SOPS enabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {true}, INVALID_REQ_FPS), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {true}, INVALID_REQ_FPS), final_values_t {{{720, 720}}, {{11, 1}}}),
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {true}, INVALID_REQ_FPS), failed_to_remap_t {}),
-      // ---- Invalid requested FPS, SOPS disabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {false}, INVALID_REQ_FPS), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {false}, INVALID_REQ_FPS), final_values_t {std::nullopt, {{11, 1}}}),
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {false}, INVALID_REQ_FPS), failed_to_remap_t {}),
-      // ---- Invalid final resolution, SOPS enabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {true}, INVALID_FINAL_RES), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {true}, INVALID_FINAL_RES), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {true}, INVALID_FINAL_RES), final_values_t {{{1920, 1080}}, {{123, 100}}}),
-      // ---- Invalid final resolution, SOPS disabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {false}, INVALID_FINAL_RES), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {false}, INVALID_FINAL_RES), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {false}, INVALID_FINAL_RES), final_values_t {std::nullopt, {{123, 100}}}),
-      // ---- Invalid final refresh rate, SOPS enabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {true}, INVALID_FINAL_REFRESH_RATE), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {true}, INVALID_FINAL_REFRESH_RATE), final_values_t {{{720, 720}}, {{11, 1}}}),
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {true}, INVALID_FINAL_REFRESH_RATE), failed_to_remap_t {}),
-      // ---- Invalid final refresh rate, SOPS disabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {false}, INVALID_FINAL_REFRESH_RATE), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {false}, INVALID_FINAL_REFRESH_RATE), final_values_t {std::nullopt, {{11, 1}}}),
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {false}, INVALID_FINAL_REFRESH_RATE), failed_to_remap_t {}),
-      // ---- Empty req entries, SOPS enabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {true}, EMPTY_REQ_ENTRIES), final_values_t {{{1024, 720}}, {{111, 100}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {true}, EMPTY_REQ_ENTRIES), final_values_t {{{720, 720}}, {{11, 1}}}),
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {true}, EMPTY_REQ_ENTRIES), final_values_t {{{1920, 1080}}, {{123, 100}}}),
-      // ---- Empty req entries, SOPS disabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {false}, EMPTY_REQ_ENTRIES), final_values_t {std::nullopt, {{11, 1}}}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {false}, EMPTY_REQ_ENTRIES), final_values_t {std::nullopt, {{11, 1}}}),
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {false}, EMPTY_REQ_ENTRIES), final_values_t {std::nullopt, {{123, 100}}}),
-      // ---- Empty final entries, SOPS enabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {true}, EMPTY_FINAL_ENTRIES), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {true}, EMPTY_FINAL_ENTRIES), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {true}, EMPTY_FINAL_ENTRIES), failed_to_remap_t {}),
-      // ---- Empty final entries, SOPS disabled ----
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {false}, EMPTY_FINAL_ENTRIES), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, sops_enabled_t {false}, EMPTY_FINAL_ENTRIES), failed_to_remap_t {}),
-      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, sops_enabled_t {false}, EMPTY_FINAL_ENTRIES), failed_to_remap_t {})
+      //---- Mixed (valid) ----
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, VALID_ENTRIES), final_values_t {{{1024, 720}}, {{111, 100}}}),
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {120}, VALID_ENTRIES), final_values_t {{{1024, 720}}, {{2, 1}}}),
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1, 1}, auto_value_t<fps_t> {33}, VALID_ENTRIES), final_values_t {{{1024, 720}}, {{3, 1}}}),
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 720}, auto_value_t<fps_t> {44}, VALID_ENTRIES), final_values_t {{{1024, 720}}, {{44, 1}}}),
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 720}, auto_value_t<fps_t> {55}, VALID_ENTRIES), final_values_t {{{1920, 720}}, {{5, 1}}}),
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 720}, auto_value_t<fps_t> {60}, VALID_ENTRIES), final_values_t {{{1024, 720}}, {{60, 1}}}),
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1, 1}, auto_value_t<fps_t> {123}, VALID_ENTRIES), final_values_t {{{1, 1}}, {{123, 1}}}),
+      //---- Resolution only (valid) ----
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, VALID_ENTRIES), final_values_t {{{720, 720}}, {{11, 1}}}),
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1024, 720}, no_value_t {}, VALID_ENTRIES), final_values_t {{{1920, 1920}}, std::nullopt}),
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {11, 11}, manual_value_t<fps_t> {33}, VALID_ENTRIES), final_values_t {{{11, 11}}, {{33, 1}}}),
+      //---- Refresh rate only (valid) ----
+      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, VALID_ENTRIES), final_values_t {{{1920, 1080}}, {{123, 100}}}),
+      std::make_pair(std::make_tuple(no_value_t {}, auto_value_t<fps_t> {22}, VALID_ENTRIES), final_values_t {std::nullopt, {{234, 100}}}),
+      std::make_pair(std::make_tuple(manual_value_t<res_t> {11, 11}, auto_value_t<fps_t> {33}, VALID_ENTRIES), final_values_t {{{11, 11}}, {{33, 1}}}),
+      //---- No mapping (valid) ----
+      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, VALID_ENTRIES), final_values_t {{{1920, 1080}}, {{11, 1}}}),
+      std::make_pair(std::make_tuple(no_value_t {}, no_value_t {}, VALID_ENTRIES), final_values_t {std::nullopt, std::nullopt}),
+      // ---- Invalid requested resolution ----
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, INVALID_REQ_RES), failed_to_remap_t {}),
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, INVALID_REQ_RES), failed_to_remap_t {}),
+      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, INVALID_REQ_RES), final_values_t {{{1920, 1080}}, {{123, 100}}}),
+      // ---- Invalid requested FPS ----
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, INVALID_REQ_FPS), failed_to_remap_t {}),
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, INVALID_REQ_FPS), final_values_t {{{720, 720}}, {{11, 1}}}),
+      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, INVALID_REQ_FPS), failed_to_remap_t {}),
+      // ---- Invalid final resolution ----
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, INVALID_FINAL_RES), failed_to_remap_t {}),
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, INVALID_FINAL_RES), failed_to_remap_t {}),
+      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, INVALID_FINAL_RES), final_values_t {{{1920, 1080}}, {{123, 100}}}),
+      // ---- Invalid final refresh rate ----
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, INVALID_FINAL_REFRESH_RATE), failed_to_remap_t {}),
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, INVALID_FINAL_REFRESH_RATE), final_values_t {{{720, 720}}, {{11, 1}}}),
+      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, INVALID_FINAL_REFRESH_RATE), failed_to_remap_t {}),
+      // ---- Empty req entries ----
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, EMPTY_REQ_ENTRIES), final_values_t {{{1024, 720}}, {{111, 100}}}),
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, EMPTY_REQ_ENTRIES), final_values_t {{{720, 720}}, {{11, 1}}}),
+      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, EMPTY_REQ_ENTRIES), final_values_t {{{1920, 1080}}, {{123, 100}}}),
+      // ---- Empty final entries ----
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, EMPTY_FINAL_ENTRIES), failed_to_remap_t {}),
+      std::make_pair(std::make_tuple(auto_value_t<res_t> {1920, 1080}, manual_value_t<fps_t> {11}, EMPTY_FINAL_ENTRIES), failed_to_remap_t {}),
+      std::make_pair(std::make_tuple(manual_value_t<res_t> {1920, 1080}, auto_value_t<fps_t> {11}, EMPTY_FINAL_ENTRIES), failed_to_remap_t {})
     )
   );
 
   TEST_P(DisplayModeRemapping, IntegrationTest) {
     const auto &[input_value, expected_value] = GetParam();
-    const auto &[input_res, input_fps, input_enable_sops, input_entries] = input_value;
+    const auto &[input_res, input_fps, input_entries] = input_value;
 
     config::video_t video_config {};
     rtsp_stream::launch_session_t session {};
@@ -500,7 +443,6 @@ namespace {
 
     video_config.dd.configuration_option = config_option_e::verify_only;
     video_config.dd.mode_remapping = input_entries;
-    session.enable_sops = input_enable_sops;
 
     const auto result {display_device::parse_configuration(video_config, session)};
     if (const auto *failed_option {std::get_if<failed_to_remap_t>(&expected_value)}; failed_option) {

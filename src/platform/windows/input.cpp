@@ -1238,16 +1238,14 @@ namespace platf {
       caps |= platform_caps::controller_touch;
     }
 
-    if (config::input.native_pen_touch) {
-      const auto runtime = virtualhid::create_runtime();
-      if (runtime) {
-        const auto &capabilities = runtime->capabilities();
-        if (capabilities.supports_touchscreen || capabilities.supports_pen_tablet) {
-          caps |= platform_caps::pen_touch;
-        }
-      } else {
-        BOOST_LOG(warning) << "Unable to create libvirtualhid runtime for touch/pen capability detection"sv;
+    const auto runtime = virtualhid::create_runtime();
+    if (runtime) {
+      const auto &capabilities = runtime->capabilities();
+      if (capabilities.supports_pen_tablet) {
+        caps |= platform_caps::pen_touch;
       }
+    } else {
+      BOOST_LOG(warning) << "Unable to create libvirtualhid runtime for pen capability detection"sv;
     }
 
     return caps;

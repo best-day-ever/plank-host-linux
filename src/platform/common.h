@@ -465,18 +465,17 @@ namespace platf {
     std::uint8_t percentage;  ///< Battery charge percentage.
   };
 
-  /**
-   * @brief Absolute touchscreen event data from the client.
-   */
+  // Retained cross-platform ABI type. StationConnect's production input
+  // dispatcher does not accept touchscreen packets.
   struct touch_input_t {
-    std::uint8_t eventType;  ///< Moonlight event type for the input packet.
-    std::uint16_t rotation;  ///< Degrees (0..360) or LI_ROT_UNKNOWN.
-    std::uint32_t pointerId;  ///< Client-provided pointer identifier for a touch contact.
-    float x;  ///< Horizontal coordinate or vector component.
-    float y;  ///< Vertical coordinate or vector component.
-    float pressureOrDistance;  ///< Distance for hover and pressure for contact.
-    float contactAreaMajor;  ///< Major axis of the reported contact area.
-    float contactAreaMinor;  ///< Minor axis of the reported contact area.
+    std::uint8_t eventType;
+    std::uint16_t rotation;
+    std::uint32_t pointerId;
+    float x;
+    float y;
+    float pressureOrDistance;
+    float contactAreaMajor;
+    float contactAreaMinor;
   };
 
   /**
@@ -1236,12 +1235,8 @@ namespace platf {
    */
   std::unique_ptr<client_input_t> allocate_client_input_context(input_t &input);
 
-  /**
-   * @brief Send a touch event to the OS.
-   * @param input The client-specific input context.
-   * @param touch_port The current viewport for translating to screen coordinates.
-   * @param touch The touch event.
-   */
+  // Retained for dormant upstream platform backends. The StationConnect Linux
+  // build has no touchscreen device or packet route.
   void touch_update(client_input_t *input, const touch_port_t &touch_port, const touch_input_t &touch);
 
   /**

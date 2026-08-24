@@ -73,7 +73,6 @@ TEST(InputConfigDefaults, AdvertisesNativePenWithoutRemappingRightAlt) {
   EXPECT_TRUE(config::input.mouse);
   EXPECT_TRUE(config::input.always_send_scancodes);
   EXPECT_TRUE(config::input.high_resolution_scrolling);
-  EXPECT_TRUE(config::input.native_pen_touch);
 }
 
 TEST_F(InputRetainedSessionTest, DisconnectSuspendsRatherThanDiscardingResumableRawTablet) {

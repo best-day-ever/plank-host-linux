@@ -41,7 +41,7 @@ namespace platf::virtualhid {
   };
 
   /**
-   * @brief Per-client virtual touch and pen state.
+   * @brief Per-client virtual pen state.
    */
   struct client_context_t {
     /**
@@ -52,9 +52,7 @@ namespace platf::virtualhid {
     explicit client_context_t(input_context_t &input);
 
     input_context_t *global = nullptr;  ///< Shared global input context.
-    std::unique_ptr<lvh::Touchscreen> touch;  ///< Per-client touchscreen.
     std::unique_ptr<lvh::PenTablet> pen;  ///< Per-client pen tablet.
-    std::set<std::int32_t> active_touches;  ///< Active touchscreen contacts.
     std::set<lvh::PenButton> pressed_pen_buttons;  ///< Active pen tablet buttons.
   };
 
@@ -144,15 +142,6 @@ namespace platf::virtualhid {
    * @param size Text buffer size.
    */
   void unicode(input_context_t &context, const char *utf8, int size);
-
-  /**
-   * @brief Submit a touchscreen event.
-   *
-   * @param context Client context.
-   * @param touch_port Touch coordinate bounds used for scaling.
-   * @param touch Touch event.
-   */
-  void touch_update(client_context_t &context, const touch_port_t &touch_port, const touch_input_t &touch);
 
   /**
    * @brief Submit a pen event.

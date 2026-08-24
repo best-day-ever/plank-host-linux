@@ -771,7 +771,6 @@ namespace nvhttp {
     }
     launch_session->unique_id = (get_arg(args, "uniqueid", "unknown"));
     launch_session->appid = (int) util::from_view(get_arg(args, "appid", "unknown"));
-    launch_session->enable_sops = util::from_view(get_arg(args, "sops", "0"));
     launch_session->surround_info = (int) util::from_view(get_arg(args, "surroundAudioInfo", "196610"));
     launch_session->surround_params = (get_arg(args, "surroundParams", ""));
     launch_session->continuous_audio = util::from_view(get_arg(args, "continuousAudio", "0"));
@@ -1679,41 +1678,6 @@ namespace nvhttp {
   }
 
   /**
-   * @brief Check whether cel.
-   *
-   * @param response HTTP response object to populate.
-   * @param request HTTP request data from the client.
-   */
-  void cancel(resp_https_t response, req_https_t request) {
-    print_req<SunshineHTTPS>(request);
-
-    pt::ptree tree;
-    auto g = util::fail_guard([&]() {
-      std::ostringstream data;
-
-      pt::write_xml(data, tree);
-      response->write(data.str());
-      response->close_connection_after_response = true;
-    });
-
-    tree.put("root.cancel", 1);
-    tree.put("root.<xmlattr>.status_code", 200);
-
-    rtsp_stream::terminate_sessions();
-
-    if (proc::proc.running() > 0) {
-      proc::proc.terminate();
-    }
-
-    // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
-    display_device::revert_configuration();
-
-    if (stationconnect_authentication && web_auth) {
-      web_auth->cancel(bearer_token(request));
-    }
-  }
-
-  /**
    * @brief Return an application asset requested by the client.
    *
    * @param response HTTP response object to populate.
@@ -1891,11 +1855,6 @@ namespace nvhttp {
     https_server.resource["^/resume$"]["GET"] = [&host_audio](auto resp, auto req) {
       if (require_authentication(resp, req)) {
         resume(host_audio, resp, req);
-      }
-    };
-    https_server.resource["^/cancel$"]["GET"] = [](auto resp, auto req) {
-      if (require_authentication(resp, req)) {
-        cancel(resp, req);
       }
     };
 

@@ -37,7 +37,6 @@ namespace rtsp_stream {
     std::string surround_params;  ///< Client-provided surround-sound layout parameters.
     bool continuous_audio;  ///< Whether audio packets continue during silence.
     bool enable_hdr;  ///< Whether HDR streaming is requested.
-    bool enable_sops;  ///< Whether sequence output protection is requested.
     std::string output_id;  ///< Opaque StationConnect output selected by the client.
     std::string output_name;  ///< Capture backend name resolved from output_id.
     std::string display_mode;  ///< StationConnect presentation mode negotiated at launch.

@@ -1,6 +1,6 @@
 /**
  * @file src/input.cpp
- * @brief Definitions for keyboard, mouse, touch, pen, and raw-HID input handling.
+ * @brief Definitions for keyboard, mouse, pen, and raw-HID input handling.
  */
 #include <cstdint>
 extern "C" {
@@ -370,24 +370,6 @@ namespace input {
   }
 
   /**
-   * @brief Prints a touch packet.
-   * @param packet The touch packet.
-   */
-  void print(PSS_TOUCH_PACKET packet) {
-    BOOST_LOG(debug)
-      << "--begin touch packet--"sv << std::endl
-      << "eventType ["sv << util::hex(packet->eventType).to_string_view() << ']' << std::endl
-      << "pointerId ["sv << util::hex(packet->pointerId).to_string_view() << ']' << std::endl
-      << "x ["sv << from_netfloat(packet->x) << ']' << std::endl
-      << "y ["sv << from_netfloat(packet->y) << ']' << std::endl
-      << "pressureOrDistance ["sv << from_netfloat(packet->pressureOrDistance) << ']' << std::endl
-      << "contactAreaMajor ["sv << from_netfloat(packet->contactAreaMajor) << ']' << std::endl
-      << "contactAreaMinor ["sv << from_netfloat(packet->contactAreaMinor) << ']' << std::endl
-      << "rotation ["sv << (uint32_t) packet->rotation << ']' << std::endl
-      << "--end touch packet--"sv;
-  }
-
-  /**
    * @brief Prints a pen packet.
    * @param packet The pen packet.
    */
@@ -436,9 +418,6 @@ namespace input {
         break;
       case UTF8_TEXT_EVENT_MAGIC:
         print((PNV_UNICODE_PACKET) payload);
-        break;
-      case SS_TOUCH_MAGIC:
-        print((PSS_TOUCH_PACKET) payload);
         break;
       case SS_PEN_MAGIC:
         print((PSS_PEN_PACKET) payload);
@@ -952,7 +931,7 @@ namespace input {
     const float monitor_logical_w = (touch_port.width * touch_port.scalar_inv) / touch_port.scalar_tpcoords;
     const float monitor_logical_h = (touch_port.height * touch_port.scalar_inv) / touch_port.scalar_tpcoords;
     if (monitor_logical_w <= 0.0f || monitor_logical_h <= 0.0f) {
-      BOOST_LOG(warning) << "Ignoring touch/pen input due to invalid logical touch dimensions"sv;
+      BOOST_LOG(warning) << "Ignoring pen input due to invalid logical pointer dimensions"sv;
       return std::nullopt;
     }
 
@@ -968,7 +947,7 @@ namespace input {
   }
 
   /**
-   * @brief Shared normalized data prepared for a touch or pen event.
+   * @brief Shared normalized data prepared for a pen event.
    */
   struct absolute_pointer_data_t {
     platf::touch_port_t touch_port;  ///< Monitor-local touch port.
@@ -978,11 +957,11 @@ namespace input {
   };
 
   /**
-   * @brief Normalize the fields shared by touch and pen packets.
+   * @brief Normalize a pen packet into monitor-local coordinates.
    *
-   * @tparam Packet Pointer type for a Moonlight touch or pen packet.
-   * @param input Input context that supplies the current touch-port metadata.
-   * @param packet Touch or pen packet to normalize.
+   * @tparam Packet Pointer type for a Moonlight pen packet.
+   * @param input Input context that supplies the current pointer viewport metadata.
+   * @param packet Pen packet to normalize.
    * @return Normalized pointer data, or `std::nullopt` when input is disabled or dimensions are invalid.
    */
   template<typename Packet>
@@ -1018,31 +997,6 @@ namespace input {
     );
 
     return absolute_pointer_data_t {*touch_port, *coords, rotation, contact_area};
-  }
-
-  /**
-   * @brief Called to pass a touch message to the platform backend.
-   * @param input The input context pointer.
-   * @param packet The touch packet.
-   */
-  void passthrough(std::shared_ptr<input_t> &input, PSS_TOUCH_PACKET packet) {
-    const auto pointer_data = prepare_absolute_pointer_data(input, packet);
-    if (!pointer_data) {
-      return;
-    }
-
-    platf::touch_input_t touch {
-      packet->eventType,
-      pointer_data->rotation,
-      util::endian::little(packet->pointerId),
-      pointer_data->coords.first,
-      pointer_data->coords.second,
-      from_clamped_netfloat(packet->pressureOrDistance, 0.0f, 1.0f),
-      pointer_data->contact_area.first,
-      pointer_data->contact_area.second,
-    };
-
-    platf::touch_update(input->client_context.get(), pointer_data->touch_port, touch);
   }
 
   /**
@@ -1162,38 +1116,6 @@ namespace input {
   }
 
   /**
-   * @brief Batch two touch messages.
-   * @param dest The original packet to batch into.
-   * @param src A later packet to attempt to batch.
-   * @return The status of the batching operation.
-   */
-  batch_result_e batch(PSS_TOUCH_PACKET dest, PSS_TOUCH_PACKET src) {
-    // Only batch hover or move events
-    if (dest->eventType != LI_TOUCH_EVENT_MOVE && dest->eventType != LI_TOUCH_EVENT_HOVER) {
-      return batch_result_e::terminate_batch;
-    }
-
-    // Don't batch beyond state changing events
-    if (src->eventType != LI_TOUCH_EVENT_MOVE && src->eventType != LI_TOUCH_EVENT_HOVER) {
-      return batch_result_e::terminate_batch;
-    }
-
-    // Batched events must be the same pointer ID
-    if (dest->pointerId != src->pointerId) {
-      return batch_result_e::not_batchable;
-    }
-
-    // The pointer must be in the same state
-    if (dest->eventType != src->eventType) {
-      return batch_result_e::terminate_batch;
-    }
-
-    // Take the latest state
-    *dest = *src;
-    return batch_result_e::batched;
-  }
-
-  /**
    * @brief Batch two pen messages.
    * @param dest The original packet to batch into.
    * @param src A later packet to attempt to batch.
@@ -1247,8 +1169,6 @@ namespace input {
         return batch((PNV_SCROLL_PACKET) dest, (PNV_SCROLL_PACKET) src);
       case SS_HSCROLL_MAGIC:
         return batch((PSS_HSCROLL_PACKET) dest, (PSS_HSCROLL_PACKET) src);
-      case SS_TOUCH_MAGIC:
-        return batch((PSS_TOUCH_PACKET) dest, (PSS_TOUCH_PACKET) src);
       case SS_PEN_MAGIC:
         return batch((PSS_PEN_PACKET) dest, (PSS_PEN_PACKET) src);
       default:
@@ -1329,9 +1249,6 @@ namespace input {
         break;
       case UTF8_TEXT_EVENT_MAGIC:
         passthrough(static_cast<const NV_UNICODE_PACKET *>(static_cast<const void *>(payload)));
-        break;
-      case SS_TOUCH_MAGIC:
-        passthrough(input, (PSS_TOUCH_PACKET) payload);
         break;
       case SS_PEN_MAGIC:
         passthrough(input, (PSS_PEN_PACKET) payload);

@@ -72,14 +72,6 @@ const config = ref(props.config)
               default="true"
     ></Checkbox>
 
-    <!-- Native pen/touch support -->
-    <Checkbox v-if="config.mouse === 'enabled'"
-              class="mb-3"
-              id="native_pen_touch"
-              locale-prefix="config"
-              v-model="config.native_pen_touch"
-              default="true"
-    ></Checkbox>
   </div>
 </template>
 

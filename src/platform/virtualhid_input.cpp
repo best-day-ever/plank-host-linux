@@ -54,24 +54,6 @@ namespace platf::virtualhid {
       }
     }
 
-    std::int32_t touch_orientation(std::uint16_t rotation) {
-      if (rotation == LI_ROT_UNKNOWN) {
-        return 0;
-      }
-
-      auto adjusted = static_cast<int>(rotation);
-      if (adjusted > 90 && adjusted < 270) {
-        adjusted = 180 - adjusted;
-      }
-      if (adjusted > 90) {
-        adjusted -= 360;
-      } else if (adjusted < -90) {
-        adjusted += 360;
-      }
-
-      return adjusted;
-    }
-
     lvh::PointerViewport pointer_viewport(const touch_port_t &touch_port) {
       return {
         .offset_x = touch_port.offset_x,
@@ -108,17 +90,6 @@ namespace platf::virtualhid {
         default:
           return unchanged;
       }
-    }
-
-    void cancel_all_touches(client_context_t &context) {
-      if (!context.touch) {
-        return;
-      }
-
-      for (const auto id : context.active_touches) {
-        log_failure("cancel libvirtualhid touch contact"sv, context.touch->cancel_contact(id));
-      }
-      context.active_touches.clear();
     }
 
   }  // namespace
@@ -165,18 +136,7 @@ namespace platf::virtualhid {
     }
 
     const auto &capabilities = global->runtime->capabilities();
-    if (config::input.native_pen_touch && capabilities.supports_touchscreen) {
-      lvh::CreateTouchscreenOptions options;
-      options.profile = lvh::profiles::touchscreen();
-      options.stable_id = "sunshine-touchscreen";
-      auto created = global->runtime->create_touchscreen(options);
-      if (created) {
-        touch = std::move(created.touchscreen);
-      } else {
-        log_failure("create libvirtualhid touchscreen"sv, created.status);
-      }
-    }
-    if (config::input.native_pen_touch && capabilities.supports_pen_tablet) {
+    if (capabilities.supports_pen_tablet) {
       lvh::CreatePenTabletOptions options;
       options.profile = lvh::profiles::pen_tablet();
       // Flame's tablet preferences and edge gestures use the Xorg Wacom
@@ -252,50 +212,6 @@ namespace platf::virtualhid {
   void unicode(input_context_t &context, const char *utf8, int size) {
     if (context.keyboard && utf8 && size > 0) {
       log_failure("submit libvirtualhid text input"sv, context.keyboard->type_text({.text = std::string {utf8, static_cast<std::size_t>(size)}}));
-    }
-  }
-
-  void touch_update(client_context_t &context, const touch_port_t &touch_port, const touch_input_t &touch) {
-    if (!context.touch) {
-      return;
-    }
-
-    switch (touch.eventType) {
-      case LI_TOUCH_EVENT_CANCEL_ALL:
-        cancel_all_touches(context);
-        return;
-      case LI_TOUCH_EVENT_UP:
-        log_failure("release libvirtualhid touch contact"sv, context.touch->release_contact(static_cast<std::int32_t>(touch.pointerId)));
-        context.active_touches.erase(static_cast<std::int32_t>(touch.pointerId));
-        return;
-      case LI_TOUCH_EVENT_CANCEL:
-        log_failure("cancel libvirtualhid touch contact"sv, context.touch->cancel_contact(static_cast<std::int32_t>(touch.pointerId)));
-        context.active_touches.erase(static_cast<std::int32_t>(touch.pointerId));
-        return;
-      case LI_TOUCH_EVENT_HOVER_LEAVE:
-        log_failure("leave libvirtualhid touch contact"sv, context.touch->leave_contact(static_cast<std::int32_t>(touch.pointerId)));
-        context.active_touches.erase(static_cast<std::int32_t>(touch.pointerId));
-        return;
-      case LI_TOUCH_EVENT_HOVER:
-      case LI_TOUCH_EVENT_DOWN:
-      case LI_TOUCH_EVENT_MOVE:
-        {
-          lvh::TouchContact contact;
-          contact.id = static_cast<std::int32_t>(touch.pointerId);
-          contact.x = std::clamp(touch.x, 0.0F, 1.0F);
-          contact.y = std::clamp(touch.y, 0.0F, 1.0F);
-          contact.pressure = std::clamp(touch.pressureOrDistance, 0.0F, 1.0F);
-          contact.orientation = touch_orientation(touch.rotation);
-          contact.touching = touch.eventType != LI_TOUCH_EVENT_HOVER;
-          contact.viewport = pointer_viewport(touch_port);
-          contact.contact_major_axis = touch.contactAreaMajor;
-          contact.contact_minor_axis = touch.contactAreaMinor;
-          log_failure("submit libvirtualhid touch contact"sv, context.touch->place_contact(contact));
-          context.active_touches.insert(contact.id);
-          return;
-        }
-      default:
-        return;
     }
   }
 
@@ -458,10 +374,6 @@ namespace platf {
 
   void unicode(input_t &input, const char *utf8, int size) {
     virtualhid::unicode(virtualhid::get_input_context(input), utf8, size);
-  }
-
-  void touch_update(client_input_t *input, const touch_port_t &touch_port, const touch_input_t &touch) {
-    virtualhid::touch_update(virtualhid::get_client_context(input), touch_port, touch);
   }
 
   void pen_update(client_input_t *input, const touch_port_t &touch_port, const pen_input_t &pen) {

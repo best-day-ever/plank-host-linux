@@ -40,7 +40,7 @@ namespace platf {
     if (capabilities.supports_gamepad && virtualhid::configured_gamepad_supports_touchpad()) {
       caps |= platform_caps::controller_touch;
     }
-    if (config::input.native_pen_touch && (capabilities.supports_touchscreen || capabilities.supports_pen_tablet)) {
+    if (capabilities.supports_pen_tablet) {
       caps |= platform_caps::pen_touch;
     }
 

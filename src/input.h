@@ -1,6 +1,6 @@
 /**
  * @file src/input.h
- * @brief Declarations for keyboard, mouse, touch, pen, and raw-HID input handling.
+ * @brief Declarations for keyboard, mouse, pen, and raw-HID input handling.
  */
 #pragma once
 
@@ -116,7 +116,7 @@ namespace input {
   /**
    * @brief Scale the ellipse axes according to the provided size.
    * @param val The major and minor axis pair.
-   * @param rotation The rotation value from the touch/pen event.
+   * @param rotation The rotation value from the pen event.
    * @param scalar The scalar cartesian coordinate pair.
    * @return The major and minor axis pair.
    */
