@@ -22,9 +22,9 @@ if exist "%OLD_DIR%\sunshine.conf" (
     )
 )
 if exist "%OLD_DIR%\sunshine_state.json" (
-    if not exist "%NEW_DIR%\sunshine_state.json" (
-        move "%OLD_DIR%\sunshine_state.json" "%NEW_DIR%\sunshine_state.json"
-        icacls "%NEW_DIR%\sunshine_state.json" /reset
+    if not exist "%NEW_DIR%\stationconnect_state.json" (
+        move "%OLD_DIR%\sunshine_state.json" "%NEW_DIR%\stationconnect_state.json"
+        icacls "%NEW_DIR%\stationconnect_state.json" /reset
     )
 )
 

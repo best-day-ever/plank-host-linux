@@ -829,7 +829,7 @@ namespace config {
     CERTIFICATE_FILE,
 
     platf::get_host_name(),  // sunshine_name,
-    "sunshine_state.json"s,  // file_state
+    "stationconnect_state.json"s,  // file_state
     {},  // external_ip
   };
 

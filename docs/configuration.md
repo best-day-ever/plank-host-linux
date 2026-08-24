@@ -1601,13 +1601,13 @@ The packaged profile contains the settings StationConnect currently overrides. E
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            sunshine_state.json
+            stationconnect_state.json
             @endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            file_state = sunshine_state.json
+            file_state = stationconnect_state.json
             @endcode</td>
     </tr>
 </table>
