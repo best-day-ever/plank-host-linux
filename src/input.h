@@ -85,6 +85,11 @@ namespace input {
      * @brief Return the raw HID generation retained by a test input session.
      */
     std::uint16_t raw_hid_generation(const std::shared_ptr<input_t> &input);
+
+    /**
+     * @brief Return whether a test session currently exposes normalized pen fallback.
+     */
+    bool normalized_pen_enabled(const std::shared_ptr<input_t> &input);
   }  // namespace testing
 #endif
 

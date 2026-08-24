@@ -224,6 +224,14 @@ namespace raw_hid {
       replace_interfaces_ = false;
     }
 
+    /**
+     * @brief Return whether this session retains exact UHID endpoints.
+     */
+    bool has_endpoints() {
+      std::lock_guard lock {mutex_};
+      return !uhid_fds_.empty();
+    }
+
 #ifdef SUNSHINE_TESTS
     std::uint16_t active_generation() {
       std::lock_guard lock {mutex_};
@@ -580,6 +588,10 @@ namespace raw_hid {
 
   void tablet_t::reset() {
     impl_->reset();
+  }
+
+  bool tablet_t::has_endpoints() {
+    return impl_->has_endpoints();
   }
 
 #ifdef SUNSHINE_TESTS

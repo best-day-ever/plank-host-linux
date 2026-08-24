@@ -154,6 +154,7 @@ namespace input {
         client_context {platf::allocate_client_input_context(platf_input)},
         touch_port_event {std::move(touch_port_event)},
         raw_hid_tablet {std::make_unique<raw_hid::tablet_t>(std::move(raw_hid_feedback_queue))},
+        raw_hid_owns_tablet {false},
         connection_id {0},
         mouse_left_button_timeout {},
         touch_port {{0, 0, 0, 0}, 0, 0, 1.0f, 1.0f, 0, 0},
@@ -171,6 +172,7 @@ namespace input {
 
     safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event;  ///< Touch port event.
     std::unique_ptr<raw_hid::tablet_t> raw_hid_tablet;  ///< Exact client tablet owned by this stream session.
+    bool raw_hid_owns_tablet;  ///< Whether exact UHID endpoints suppress the normalized pen fallback.
     std::atomic<std::uint64_t> connection_id;  ///< Most recent stream lease bound to this retained state.
 
     std::list<std::vector<uint8_t>> input_queue;  ///< Pending raw input packets waiting for processing.
@@ -238,6 +240,41 @@ namespace input {
     } else {
       std::forward<Function>(function)();
     }
+  }
+
+  /**
+   * @brief Keep exact raw-HID and normalized tablet backends mutually exclusive.
+   *
+   * Flame applies its Tablet Margin controls to one XInput tablet. Leaving the
+   * normalized fallback present beside an exact raw Wacom device can make
+   * Flame configure the inactive fallback while pressure arrives from the raw
+   * device. Suspended raw endpoints still own tablet identity and therefore
+   * continue to suppress the fallback.
+   *
+   * @param input Retained per-client input state.
+   */
+  void sync_tablet_backend(const std::shared_ptr<input_t> &input) {
+    const bool raw_hid_owns_tablet = input->raw_hid_tablet->has_endpoints();
+    if (raw_hid_owns_tablet == input->raw_hid_owns_tablet) {
+      return;
+    }
+
+    platf::set_normalized_pen_enabled(input->client_context.get(), !raw_hid_owns_tablet);
+    input->raw_hid_owns_tablet = raw_hid_owns_tablet;
+    if (raw_hid_owns_tablet) {
+      BOOST_LOG(info) << "Exact raw HID tablet active; removed normalized pen fallback"sv;
+    } else {
+      BOOST_LOG(info) << "Exact raw HID tablet detached; restored normalized pen fallback"sv;
+    }
+  }
+
+  /**
+   * @brief Process one raw-HID frame and synchronize tablet backend ownership.
+   */
+  bool handle_raw_hid_frame(const std::shared_ptr<input_t> &input, const std::vector<std::uint8_t> &frame) {
+    const bool accepted = input->raw_hid_tablet->handle(frame);
+    sync_tablet_backend(input);
+    return accepted;
   }
 
   /**
@@ -1259,7 +1296,7 @@ namespace input {
           const auto *packet = reinterpret_cast<const SS_RAW_HID_PACKET *>(payload);
           const auto frame_size = packet_size - (sizeof(SS_RAW_HID_PACKET) - 1);
           std::vector<std::uint8_t> frame(packet->data, packet->data + frame_size);
-          if (!input->raw_hid_tablet->handle(frame)) {
+          if (!handle_raw_hid_frame(input, frame)) {
             BOOST_LOG(warning) << "Rejected malformed raw HID tablet frame"sv;
           }
         }
@@ -1447,11 +1484,15 @@ namespace input {
     }
 
     bool handle_raw_hid(const std::shared_ptr<input_t> &input, const std::vector<std::uint8_t> &frame) {
-      return input && input->raw_hid_tablet->handle(frame);
+      return input && handle_raw_hid_frame(input, frame);
     }
 
     std::uint16_t raw_hid_generation(const std::shared_ptr<input_t> &input) {
       return input ? input->raw_hid_tablet->active_generation() : 0;
+    }
+
+    bool normalized_pen_enabled(const std::shared_ptr<input_t> &input) {
+      return input && platf::normalized_pen_enabled(input->client_context.get());
     }
   }  // namespace testing
 #endif

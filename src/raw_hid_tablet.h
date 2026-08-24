@@ -68,6 +68,16 @@ namespace raw_hid {
      */
     void reset();
 
+    /**
+     * @brief Return whether exact raw-HID endpoints currently exist.
+     *
+     * Suspended endpoints remain present so their XInput identities survive a
+     * resumable focus or transport transition.
+     *
+     * @return True when one or more UHID endpoints are retained.
+     */
+    bool has_endpoints();
+
 #ifdef SUNSHINE_TESTS
     /**
      * @brief Return the active generation for lifecycle regression tests.

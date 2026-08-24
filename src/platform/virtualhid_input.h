@@ -57,6 +57,26 @@ namespace platf::virtualhid {
   };
 
   /**
+   * @brief Enable or remove the normalized pen-tablet fallback.
+   *
+   * Exact raw-HID tablet forwarding must be the only tablet exposed while it
+   * owns the physical device. The normalized device is recreated when raw
+   * forwarding is unavailable or explicitly detached.
+   *
+   * @param context Per-client virtual input context.
+   * @param enabled Whether the normalized fallback should exist.
+   */
+  void set_pen_tablet_enabled(client_context_t &context, bool enabled);
+
+  /**
+   * @brief Return whether the normalized pen-tablet fallback exists.
+   *
+   * @param context Per-client virtual input context.
+   * @return True when the normalized pen tablet is present.
+   */
+  bool pen_tablet_enabled(const client_context_t &context);
+
+  /**
    * @brief Return the shared libvirtualhid context from a platform input backend.
    *
    * @param input Platform input backend.

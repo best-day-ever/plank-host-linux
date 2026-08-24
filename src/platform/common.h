@@ -1236,6 +1236,22 @@ namespace platf {
    */
   std::unique_ptr<client_input_t> allocate_client_input_context(input_t &input);
 
+  /**
+   * @brief Enable or remove the normalized pen-tablet fallback for a client.
+   *
+   * @param input Client-specific input context.
+   * @param enabled Whether the normalized fallback should exist.
+   */
+  void set_normalized_pen_enabled(client_input_t *input, bool enabled);
+
+  /**
+   * @brief Return whether the normalized pen-tablet fallback exists.
+   *
+   * @param input Client-specific input context.
+   * @return True when the normalized pen tablet is present.
+   */
+  bool normalized_pen_enabled(client_input_t *input);
+
   // Retained for dormant upstream platform backends. The StationConnect Linux
   // build has no touchscreen device or packet route.
   void touch_update(client_input_t *input, const touch_port_t &touch_port, const touch_input_t &touch);

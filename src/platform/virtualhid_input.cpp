@@ -131,11 +131,21 @@ namespace platf::virtualhid {
 
   client_context_t::client_context_t(input_context_t &input):
       global {&input} {
-    if (!global->runtime) {
+    set_pen_tablet_enabled(*this, true);
+  }
+
+  void set_pen_tablet_enabled(client_context_t &context, const bool enabled) {
+    if (!enabled) {
+      context.pressed_pen_buttons.clear();
+      context.pen.reset();
       return;
     }
 
-    const auto &capabilities = global->runtime->capabilities();
+    if (context.pen || !context.global || !context.global->runtime) {
+      return;
+    }
+
+    const auto &capabilities = context.global->runtime->capabilities();
     if (capabilities.supports_pen_tablet) {
       lvh::CreatePenTabletOptions options;
       options.profile = lvh::profiles::pen_tablet();
@@ -145,13 +155,17 @@ namespace platf::virtualhid {
       // can select that driver without any host Xorg configuration changes.
       options.profile.name = "StationConnect Wacom Tablet";
       options.stable_id = "sunshine-pen-tablet";
-      auto created = global->runtime->create_pen_tablet(options);
+      auto created = context.global->runtime->create_pen_tablet(options);
       if (created) {
-        pen = std::move(created.pen_tablet);
+        context.pen = std::move(created.pen_tablet);
       } else {
         log_failure("create libvirtualhid pen tablet"sv, created.status);
       }
     }
+  }
+
+  bool pen_tablet_enabled(const client_context_t &context) {
+    return context.pen != nullptr;
   }
 
   std::unique_ptr<lvh::Runtime> create_runtime(lvh::BackendKind backend) {
@@ -374,6 +388,17 @@ namespace platf {
 
   void unicode(input_t &input, const char *utf8, int size) {
     virtualhid::unicode(virtualhid::get_input_context(input), utf8, size);
+  }
+
+  void set_normalized_pen_enabled(client_input_t *input, const bool enabled) {
+    if (!input) {
+      return;
+    }
+    virtualhid::set_pen_tablet_enabled(virtualhid::get_client_context(input), enabled);
+  }
+
+  bool normalized_pen_enabled(client_input_t *input) {
+    return input && virtualhid::pen_tablet_enabled(virtualhid::get_client_context(input));
   }
 
   void pen_update(client_input_t *input, const touch_port_t &touch_port, const pen_input_t &pen) {
