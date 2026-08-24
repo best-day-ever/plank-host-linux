@@ -3,9 +3,12 @@
  * @brief Definitions for logging related functions.
  */
 // standard includes
+#include <algorithm>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <streambuf>
+#include <utility>
 
 // lib includes
 #include <boost/core/null_deleter.hpp>
@@ -34,6 +37,100 @@ extern "C" {
 using namespace std::literals;
 
 namespace bl = boost::log;
+
+namespace {
+  /**
+   * @brief File stream buffer that rotates a bounded log before a record would
+   * exceed the configured size.
+   */
+  class rotating_file_streambuf: public std::streambuf {
+  public:
+    explicit rotating_file_streambuf(std::filesystem::path log_path):
+        log_path_ {std::move(log_path)} {
+      open_file();
+    }
+
+  protected:
+    std::streamsize xsputn(const char *data, std::streamsize count) override {
+      if (count <= 0) {
+        return 0;
+      }
+
+      const auto byte_count = static_cast<std::uintmax_t>(count);
+      const auto remaining_size = logging::max_log_file_size - std::min(current_size_, logging::max_log_file_size);
+      if (current_size_ != 0 && byte_count > remaining_size) {
+        rotate();
+      }
+
+      file_.write(data, count);
+      if (!file_) {
+        return 0;
+      }
+
+      current_size_ += byte_count;
+      return count;
+    }
+
+    int_type overflow(int_type character) override {
+      if (traits_type::eq_int_type(character, traits_type::eof())) {
+        return traits_type::not_eof(character);
+      }
+
+      const auto value = traits_type::to_char_type(character);
+      return xsputn(&value, 1) == 1 ? character : traits_type::eof();
+    }
+
+    int sync() override {
+      file_.flush();
+      return file_ ? 0 : -1;
+    }
+
+  private:
+    void open_file() {
+      std::error_code file_size_error;
+      current_size_ = std::filesystem::file_size(log_path_, file_size_error);
+      if (file_size_error) {
+        current_size_ = 0;
+      }
+
+      file_.open(log_path_, std::ios::out | std::ios::app | std::ios::binary);
+      if (!file_) {
+        std::cerr << "Failed to open log file '" << log_path_.string() << "'\n";
+      }
+    }
+
+    void rotate() {
+      file_.flush();
+      file_.close();
+
+      if (const auto rotation_error = logging::rotate_log_file(log_path_)) {
+        std::cerr << "Failed to rotate log file '" << log_path_.string() << "': " << rotation_error.message() << '\n';
+      }
+
+      file_.clear();
+      open_file();
+    }
+
+    std::filesystem::path log_path_;
+    std::ofstream file_;
+    std::uintmax_t current_size_ {0};
+  };
+
+  /**
+   * @brief Ostream wrapper that owns a rotating file buffer.
+   */
+  class rotating_file_stream: public std::ostream {
+  public:
+    explicit rotating_file_stream(const std::filesystem::path &log_path):
+        std::ostream {nullptr},
+        buffer_ {log_path} {
+      rdbuf(&buffer_);
+    }
+
+  private:
+    rotating_file_streambuf buffer_;
+  };
+}  // namespace
 
 boost::shared_ptr<boost::log::sinks::asynchronous_sink<boost::log::sinks::text_ostream_backend>> sink;  ///< Sink.
 
@@ -107,6 +204,10 @@ namespace logging {
     os << "["sv << std::put_time(&lt, "%Y-%m-%d %H:%M:%S.") << boost::format("%03u") % ms.count() << "]: "sv
        << log_type << view.attribute_values()[message].extract<std::string>();
   }
+
+  [[nodiscard]] boost::shared_ptr<std::ostream> make_rotating_file_stream(const std::filesystem::path &log_path) {
+    return boost::make_shared<rotating_file_stream>(log_path);
+  }
 #ifdef __ANDROID__
   namespace sinks = boost::log::sinks;
   namespace expr = boost::log::expressions;
@@ -157,9 +258,6 @@ namespace logging {
     }
 
     const auto log_path = std::filesystem::path {std::u8string {log_file.begin(), log_file.end()}};
-    if (const auto rotation_error = rotate_log_file(log_path)) {
-      std::cerr << "Failed to rotate log file '" << log_file << "': " << rotation_error.message() << '\n';
-    }
 
 #ifndef __ANDROID__
     setup_av_logging(min_log_level);
@@ -173,7 +271,7 @@ namespace logging {
     sink->locked_backend()->add_stream(stream);
 #endif
 
-    sink->locked_backend()->add_stream(boost::make_shared<std::ofstream>(log_file));
+    sink->locked_backend()->add_stream(make_rotating_file_stream(log_path));
     sink->set_filter(severity >= min_log_level);
     sink->set_formatter(&formatter);
 

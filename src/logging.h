@@ -8,6 +8,8 @@
 #include <cstddef>
 #include <filesystem>
 #include <format>
+#include <iosfwd>
+#include <memory>
 #include <string>
 #include <system_error>
 
@@ -40,13 +42,18 @@ namespace logging {
   /**
    * @brief The number of previous log files retained during rotation.
    */
-  inline constexpr std::size_t retained_log_file_count {5};
+  inline constexpr std::size_t retained_log_file_count {10};
 
   /**
-   * @brief Rotate a log file while retaining up to five previous logs.
+   * @brief Maximum size of the active log file before it is rotated.
+   */
+  inline constexpr std::uintmax_t max_log_file_size {10U * 1024U * 1024U};
+
+  /**
+   * @brief Rotate a log file while retaining up to ten previous logs.
    *
    * The current log is renamed with a `.1` suffix, existing rotated logs are
-   * advanced by one generation, and the previous `.5` log is removed.
+   * advanced by one generation, and the previous `.10` log is removed.
    *
    * @param log_file Path to the current log file.
    * @return An error code when rotation fails, or a clear error code on success.
@@ -106,7 +113,15 @@ namespace logging {
   void formatter(const boost::log::record_view &view, boost::log::formatting_ostream &os);
 
   /**
-   * @brief Rotate the current log file and initialize the logging system.
+   * @brief Create an append-only stream that rotates at the bounded log size.
+   *
+   * @param log_path Path to the active log file.
+   * @return Stream owning the rotating file buffer.
+   */
+  [[nodiscard]] boost::shared_ptr<std::ostream> make_rotating_file_stream(const std::filesystem::path &log_path);
+
+  /**
+   * @brief Initialize the logging system with bounded file rotation.
    * @param min_log_level The minimum log level to output.
    * @param log_file The log file to write to.
    * @return An object that will deinitialize the logging system when it goes out of scope.

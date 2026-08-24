@@ -50,7 +50,7 @@ namespace {
 }  // namespace
 
 /**
- * @brief Test fixture for startup log rotation.
+ * @brief Test fixture for bounded log rotation.
  */
 class LogRotationTest: public BaseTest {
 protected:
@@ -87,7 +87,7 @@ protected:
   const std::filesystem::path log_path {test_directory / "custom.log"};  ///< Path to the current test log.
 };
 
-TEST_F(LogRotationTest, RotatesCurrentLogAndRetainsFivePreviousLogs) {
+TEST_F(LogRotationTest, RotatesCurrentLogAndRetainsTenPreviousLogs) {
   write_log_file(log_path, "current");
   for (std::size_t generation = 1; generation <= logging::retained_log_file_count; ++generation) {
     write_log_file(rotated_log_path(generation), std::to_string(generation));
@@ -96,11 +96,12 @@ TEST_F(LogRotationTest, RotatesCurrentLogAndRetainsFivePreviousLogs) {
   EXPECT_FALSE(logging::rotate_log_file(log_path));
 
   EXPECT_FALSE(std::filesystem::exists(log_path));
-  EXPECT_EQ(read_log_file(rotated_log_path(1)), "current");
-  EXPECT_EQ(read_log_file(rotated_log_path(2)), "1");
-  EXPECT_EQ(read_log_file(rotated_log_path(3)), "2");
-  EXPECT_EQ(read_log_file(rotated_log_path(4)), "3");
-  EXPECT_EQ(read_log_file(rotated_log_path(5)), "4");
+  for (std::size_t generation = 1; generation <= logging::retained_log_file_count; ++generation) {
+    EXPECT_EQ(
+      read_log_file(rotated_log_path(generation)),
+      generation == 1 ? "current" : std::to_string(generation - 1)
+    );
+  }
 }
 
 TEST_F(LogRotationTest, SupportsMissingLogGenerations) {
@@ -112,6 +113,29 @@ TEST_F(LogRotationTest, SupportsMissingLogGenerations) {
   EXPECT_FALSE(std::filesystem::exists(rotated_log_path(1)));
   EXPECT_FALSE(std::filesystem::exists(rotated_log_path(2)));
   EXPECT_EQ(read_log_file(rotated_log_path(3)), "second");
+}
+
+TEST_F(LogRotationTest, RotatesBeforeTheNextWriteExceedsTheSizeLimit) {
+  write_log_file(log_path, "old");
+  std::filesystem::resize_file(log_path, logging::max_log_file_size - 1);
+
+  auto stream = logging::make_rotating_file_stream(log_path);
+  *stream << "new";
+  stream->flush();
+
+  EXPECT_EQ(std::filesystem::file_size(rotated_log_path(1)), logging::max_log_file_size - 1);
+  EXPECT_EQ(read_log_file(log_path), "new");
+}
+
+TEST_F(LogRotationTest, AppendsAcrossStreamRestartsBelowTheSizeLimit) {
+  write_log_file(log_path, "old");
+
+  auto stream = logging::make_rotating_file_stream(log_path);
+  *stream << "-new";
+  stream->flush();
+
+  EXPECT_FALSE(std::filesystem::exists(rotated_log_path(1)));
+  EXPECT_EQ(read_log_file(log_path), "old-new");
 }
 
 TEST_F(LogRotationTest, ReportsFilesystemErrors) {

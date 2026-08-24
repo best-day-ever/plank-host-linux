@@ -1523,8 +1523,8 @@ The packaged profile contains the settings StationConnect currently overrides. E
     <tr>
         <td>Description</td>
         <td colspan="2">
-            The path where the current Sunshine log is stored. Each time Sunshine starts, up to five previous
-            logs are retained by appending <code>.1</code> through <code>.5</code> to this path.
+            The path where the current host log is stored. The active file rotates at 10 MiB and up to ten
+            previous logs are retained by appending <code>.1</code> through <code>.10</code> to this path.
         </td>
     </tr>
     <tr>
