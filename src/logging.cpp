@@ -269,13 +269,11 @@ namespace logging {
       << "    Note: The configuration will be created if it doesn't exist."sv << std::endl
       << std::endl
       << "    --help                    | print help"sv << std::endl
-      << "    --creds username password | set user credentials for the Web manager"sv << std::endl
-      << "    --version                 | print the version of sunshine"sv << std::endl
+      << "    --version                 | print the StationConnect host version"sv << std::endl
       << std::endl
       << "    flags"sv << std::endl
-      << "        -0 | Read PIN from stdin"sv << std::endl
       << "        -1 | Do not load previously saved state and do retain any state after shutdown"sv << std::endl
-      << "           | Effectively starting as if for the first time without overwriting any pairings with your devices"sv << std::endl
+      << "           | Effectively start with a temporary workstation identity"sv << std::endl
       << "        -2 | Force replacement of headers in video stream"sv << std::endl
       << "        -p | Enable/Disable UPnP"sv << std::endl
       << std::endl;

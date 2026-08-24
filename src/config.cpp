@@ -825,8 +825,6 @@ namespace config {
    * @brief Default NVHTTP server configuration values used before file and CLI overrides.
    */
   nvhttp_t nvhttp {
-    "lan",  // origin web manager
-
     PRIVATE_KEY_FILE,
     CERTIFICATE_FILE,
 
@@ -869,10 +867,6 @@ namespace config {
     "en",  // locale
     2,  // min_log_level
     0,  // flags
-    {},  // User file
-    {},  // Username
-    {},  // Password
-    {},  // Password Salt
     platf::appdata().string() + "/sunshine.conf",  // config file
     {},  // cmd args
     47989,  // Base port number
@@ -880,7 +874,7 @@ namespace config {
     {},  // Bind address
     platf::appdata().string() + "/sunshine.log",  // log file
     false,  // notify_pre_releases
-    true,  // system_tray
+    false,  // StationConnect mDNS advertisement
     {},  // prep commands
   };
 
@@ -912,6 +906,24 @@ namespace config {
    */
   bool whitespace(char ch) {
     return space_tab(ch) || endline(ch);
+  }
+
+  /**
+   * @brief Return whether a non-empty configuration line is an INI section header.
+   *
+   * Sections are organizational only. Option names remain globally scoped so the
+   * existing runtime option names and command-line overrides stay unchanged.
+   */
+  bool section_header(std::string_view line) {
+    const auto comment = line.find('#');
+    line = line.substr(0, comment);
+
+    const auto first = line.find_first_not_of(" \t");
+    if (first == std::string_view::npos) {
+      return false;
+    }
+    const auto last = line.find_last_not_of(" \t");
+    return line[first] == '[' && line[last] == ']' && last > first + 1;
   }
 
   /**
@@ -973,6 +985,9 @@ namespace config {
     parse_option(std::string_view::const_iterator begin, std::string_view::const_iterator end) {
     begin = std::find_if_not(begin, end, whitespace);
     auto endl = std::find_if(begin, end, endline);
+    if (section_header(std::string_view(begin, endl))) {
+      return std::make_pair(endl, std::nullopt);
+    }
     auto endc = std::find(begin, endl, '#');
     endc = std::find_if(std::make_reverse_iterator(endc), std::make_reverse_iterator(begin), std::not_fn(whitespace)).base();
 
@@ -1009,7 +1024,9 @@ namespace config {
   }
 
   /**
-   * @brief Parse Sunshine configuration text into key-value entries.
+   * @brief Parse INI-style StationConnect configuration text into key-value entries.
+   *
+   * Section headers organize the file but do not namespace option names.
    */
   std::unordered_map<std::string, std::string> parse_config(const std::string_view &file_content) {
     std::unordered_map<std::string, std::string> vars;
@@ -1507,9 +1524,6 @@ namespace config {
     int ret = 0;
     while (*line != '\0') {
       switch (*line) {
-        case '0':
-          config::sunshine.flags[config::flag::PIN_STDIN].flip();
-          break;
         case '1':
           config::sunshine.flags[config::flag::FRESH_STATE].flip();
           break;
@@ -1674,10 +1688,6 @@ namespace config {
     path_f(vars, "log_path", config::sunshine.log_file);
     path_f(vars, "file_state", nvhttp.file_state);
 
-    // Must be run after "file_state"
-    config::sunshine.credentials_file = config::nvhttp.file_state;
-    path_f(vars, "credentials_file", config::sunshine.credentials_file);
-
     string_f(vars, "external_ip", nvhttp.external_ip);
     list_prep_cmd_f(vars, "global_prep_cmd", config::sunshine.prep_cmds);
 
@@ -1685,33 +1695,6 @@ namespace config {
     string_f(vars, "virtual_sink", audio.virtual_sink);
     bool_f(vars, "stream_audio", audio.stream);
     bool_f(vars, "install_steam_audio_drivers", audio.install_steam_drivers);
-
-    string_restricted_f(vars, "origin_web_ui_allowed", nvhttp.origin_web_ui_allowed, {"pc"sv, "lan"sv, "wan"sv});
-
-    // Parse CSRF allowed origins - always include defaults, then append user-configured origins
-    std::vector<std::string> user_csrf_origins;
-    string_list_f(vars, "csrf_allowed_origins", user_csrf_origins);
-
-    // Start with default localhost variants
-    sunshine.csrf_allowed_origins = {
-      "https://localhost",
-      "https://127.0.0.1",
-      "https://[::1]"
-    };
-
-    // Validate and append user-configured origins
-    bool csrf_invalid_config = false;
-    for (const auto &origin : user_csrf_origins) {
-      if (origin.size() > 8 && origin.starts_with("https://")) {
-        sunshine.csrf_allowed_origins.push_back(origin);
-      } else {
-        csrf_invalid_config = true;
-        BOOST_LOG(warning) << "Invalid 'csrf_allowed_origins' entry rejected: "sv << origin;
-      }
-    }
-    if (csrf_invalid_config) {
-      BOOST_LOG(warning) << "Please refer to: https://docs.lizardbyte.dev/projects/sunshine/latest/md_docs_2configuration.html#csrf_allowed_origins"sv;
-    }
 
     int to = -1;
     int_between_f(vars, "ping_timeout", to, {-1, std::numeric_limits<int>::max()});
@@ -1770,18 +1753,11 @@ namespace config {
     bool_f(vars, "high_resolution_scrolling", input.high_resolution_scrolling);
 
     bool_f(vars, "notify_pre_releases", sunshine.notify_pre_releases);
-    bool_f(vars, "system_tray", sunshine.system_tray);
+    bool_f(vars, "stationconnect_mdns_discovery", sunshine.stationconnect_mdns_discovery);
 
     int port = sunshine.port;
     int_between_f(vars, "port"s, port, {1024 + nvhttp::PORT_HTTPS, 65535 - rtsp_stream::RTSP_SETUP_PORT});
     sunshine.port = (std::uint16_t) port;
-
-    // Now that we have the port, add web UI port-specific origins to CSRF allowed list
-    // Web UI runs on port + 1 (PORT_HTTPS offset is 1 for confighttp)
-    const unsigned short web_ui_port = sunshine.port + 1;
-    sunshine.csrf_allowed_origins.push_back(std::format("https://localhost:{}", web_ui_port));
-    sunshine.csrf_allowed_origins.push_back(std::format("https://127.0.0.1:{}", web_ui_port));
-    sunshine.csrf_allowed_origins.push_back(std::format("https://[::1]:{}", web_ui_port));
 
     string_restricted_f(vars, "address_family", sunshine.address_family, {"ipv4"sv, "both"sv});
     string_f(vars, "bind_address", sunshine.bind_address);
@@ -1997,8 +1973,6 @@ namespace config {
         WaitForSingleObject(shell_exec_info.hProcess, INFINITE);
         CloseHandle(shell_exec_info.hProcess);
 
-        // Wait for the UI to be ready for connections
-        service_ctrl::wait_for_ui_ready();
       }
 
       // Always return 1 to ensure Sunshine doesn't start normally

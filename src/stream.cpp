@@ -32,7 +32,6 @@ extern "C" {
 #include "stream.h"
 #include "stationconnect_bitrate.h"
 #include "sync.h"
-#include "system_tray.h"
 #include "thread_safe.h"
 #include "utility.h"
 
@@ -489,7 +488,6 @@ namespace stream {
     } control;  ///< Runtime state for the encrypted GameStream control channel.
 
     std::uint32_t launch_session_id;  ///< RTSP launch-session ID associated with this stream.
-    std::string client_cert;  ///< PEM certificate for the paired client owning the stream.
     std::string input_session_id;  ///< Stable client identity used to retain input devices across resume.
     std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained until this stream is destroyed.
 
@@ -2060,13 +2058,6 @@ namespace stream {
     }
 
     /**
-     * @brief Return the paired client certificate for this session.
-     */
-    const std::string &client_cert(session_t &session) {
-      return session.client_cert;
-    }
-
-    /**
      * @brief Stop the active streaming session and prevent new packets from being queued.
      */
     void stop(session_t &session) {
@@ -2112,9 +2103,6 @@ namespace stream {
       if (--running_sessions == 0) {
         bool revert_display_config {config::video.dd.config_revert_on_disconnect};
         if (proc::proc.running()) {
-#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-          system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
-#endif
         } else {
           // We have no app running and also no clients anymore.
           revert_display_config = true;
@@ -2168,9 +2156,6 @@ namespace stream {
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
         platf::streaming_will_start();
-#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-        system_tray::update_tray_playing(proc::proc.get_last_run_app_name());
-#endif
       }
 
       return 0;
@@ -2186,8 +2171,7 @@ namespace stream {
 
       session->shutdown_event = mail->event<bool>(mail::shutdown);
       session->launch_session_id = launch_session.id;
-      session->client_cert = launch_session.client_cert;
-      session->input_session_id = launch_session.client_cert.empty() ? launch_session.unique_id : launch_session.client_cert;
+      session->input_session_id = launch_session.unique_id;
       session->authentication_session = launch_session.authentication_session;
 
       session->config = config;

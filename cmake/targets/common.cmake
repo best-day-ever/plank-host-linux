@@ -65,33 +65,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             COMPONENT sunshine)
 endif()
 
-# Homebrew build fails the vite build if we set these environment variables
-if(${SUNSHINE_BUILD_HOMEBREW})
-    set(NPM_SOURCE_ASSETS_DIR "")
-    set(NPM_ASSETS_DIR "")
-    set(NPM_BUILD_HOMEBREW "true")
-else()
-    set(NPM_SOURCE_ASSETS_DIR ${SUNSHINE_SOURCE_ASSETS_DIR})
-    set(NPM_ASSETS_DIR ${CMAKE_BINARY_DIR})
-    set(NPM_BUILD_HOMEBREW "")
-endif()
-
-#WebUI build
-find_program(NPM npm REQUIRED)
-
-set(NPM_INSTALL_FLAGS "--ignore-scripts")
-if (NPM_OFFLINE)
-    set(NPM_INSTALL_FLAGS "${NPM_INSTALL_FLAGS} --offline")
-endif()
-
-add_custom_target(web-ui ALL
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        COMMENT "Installing NPM Dependencies and Building the Web UI"
-        COMMAND "$<$<BOOL:${WIN32}>:cmd;/C>" "${NPM}" ci ${NPM_INSTALL_FLAGS}
-        COMMAND "${CMAKE_COMMAND}" -E env "SUNSHINE_BUILD_HOMEBREW=${NPM_BUILD_HOMEBREW}" "SUNSHINE_SOURCE_ASSETS_DIR=${NPM_SOURCE_ASSETS_DIR}" "SUNSHINE_ASSETS_DIR=${NPM_ASSETS_DIR}" "$<$<BOOL:${WIN32}>:cmd;/C>" "${NPM}" run build  # cmake-lint: disable=C0301
-        COMMAND_EXPAND_LISTS
-        VERBATIM)
-
 # docs
 if(BUILD_DOCS)
     add_subdirectory(third-party/doxyconfig docs)

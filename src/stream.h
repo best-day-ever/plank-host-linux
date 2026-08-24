@@ -86,12 +86,5 @@ namespace stream {
      * @return Current lifecycle state for the stream session.
      */
     state_e state(session_t &session);
-    /**
-     * @brief Return the paired client certificate for a stream session.
-     *
-     * @param session Active streaming or pairing session for the request.
-     * @return PEM certificate associated with the session's client.
-     */
-    const std::string &client_cert(session_t &session);
   }  // namespace session
 }  // namespace stream

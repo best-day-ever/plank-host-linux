@@ -29,9 +29,7 @@ namespace config {
   /**
    * @brief Configuration keys whose values must be hidden in logs.
    */
-  inline constexpr std::array redacted_config = {
-    "csrf_allowed_origins"
-  };
+  inline constexpr std::array<std::string_view, 0> redacted_config {};
 
   /**
    * @brief Log configuration entries and optionally mark them for persistence.
@@ -250,13 +248,9 @@ namespace config {
   };
 
   /**
-   * @brief HTTP and HTTPS settings used by the GameStream pairing server.
+   * @brief HTTP and HTTPS settings used by StationConnect negotiation.
    */
   struct nvhttp_t {
-    // Could be any of the following values:
-    // pc|lan|wan
-    std::string origin_web_ui_allowed;  ///< Origin policy used for Web UI access checks.
-
     std::string pkey;  ///< Private key PEM string or path.
     std::string cert;  ///< Certificate PEM string or path.
 
@@ -297,11 +291,9 @@ namespace config {
      * @brief Enumerates supported flag options.
      */
     enum flag_e : std::size_t {
-      PIN_STDIN = 0,  ///< Read PIN from stdin instead of http
-      FRESH_STATE,  ///< Do not load or save state
+      FRESH_STATE = 0,  ///< Do not load or save state
       FORCE_VIDEO_HEADER_REPLACE,  ///< force replacing headers inside video data
       UPNP,  ///< Try Universal Plug 'n Play
-      CONST_PIN,  ///< Use "universal" pin
       FLAG_SIZE  ///< Number of flags
     };
   }  // namespace flag
@@ -346,12 +338,6 @@ namespace config {
     std::string locale;  ///< Locale selected for Sunshine UI and log messages.
     int min_log_level;  ///< Minimum severity level written to the configured log sink.
     std::bitset<flag::FLAG_SIZE> flags;  ///< Runtime flags parsed from command-line options.
-    std::string credentials_file;  ///< Path to the stored pairing credentials file.
-
-    std::string username;  ///< Username for the local Web UI account.
-    std::string password;  ///< Password hash or secret for the local Web UI account.
-    std::string salt;  ///< Salt used when hashing the Web UI password.
-
     std::string config_file;  ///< Path to the active Sunshine configuration file.
 
     /**
@@ -369,12 +355,8 @@ namespace config {
 
     std::string log_file;  ///< Path to the configured log file.
     bool notify_pre_releases;  ///< Notify users about pre-release updates.
-    bool system_tray;  ///< Enable the system tray integration.
+    bool stationconnect_mdns_discovery;  ///< Advertise this StationConnect host with mDNS.
     std::vector<prep_cmd_t> prep_cmds;  ///< Preparation commands executed around application launch.
-
-    // List of allowed origins for CSRF protection (e.g., "https://example.com,https://app.example.com")
-    // Comma-separated list of additional origins. Default includes localhost variants and web UI port.
-    std::vector<std::string> csrf_allowed_origins;  ///< Additional origins allowed by CSRF validation.
   };
 
   extern video_t video;
@@ -393,10 +375,10 @@ namespace config {
    */
   int parse(int argc, char *argv[]);
   /**
-   * @brief Parse Sunshine configuration text into key-value entries.
+   * @brief Parse INI-style StationConnect configuration text into key-value entries.
    *
    * @param file_content Raw configuration file contents to parse.
-   * @return Parsed configuration key-value entries.
+   * @return Parsed globally scoped key-value entries; section headers are organizational.
    */
   std::unordered_map<std::string, std::string> parse_config(const std::string_view &file_content);
 }  // namespace config

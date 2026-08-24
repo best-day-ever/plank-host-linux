@@ -180,8 +180,6 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/nvhttp.h"
         "${CMAKE_SOURCE_DIR}/src/httpcommon.cpp"
         "${CMAKE_SOURCE_DIR}/src/httpcommon.h"
-        "${CMAKE_SOURCE_DIR}/src/confighttp.cpp"
-        "${CMAKE_SOURCE_DIR}/src/confighttp.h"
         "${CMAKE_SOURCE_DIR}/src/rtsp.cpp"
         "${CMAKE_SOURCE_DIR}/src/rtsp.h"
         "${CMAKE_SOURCE_DIR}/src/stream.cpp"
@@ -202,8 +200,6 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/network.cpp"
         "${CMAKE_SOURCE_DIR}/src/network.h"
         "${CMAKE_SOURCE_DIR}/src/move_by_copy.h"
-        "${CMAKE_SOURCE_DIR}/src/system_tray.cpp"
-        "${CMAKE_SOURCE_DIR}/src/system_tray.h"
         "${CMAKE_SOURCE_DIR}/src/task_pool.h"
         "${CMAKE_SOURCE_DIR}/src/thread_pool.h"
         "${CMAKE_SOURCE_DIR}/src/thread_safe.h"
@@ -259,12 +255,3 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         ${Boost_LIBRARIES}
         ${OPENSSL_LIBRARIES}
         ${PLATFORM_LIBRARIES})
-
-# tray icon
-if(SUNSHINE_ENABLE_TRAY)
-    list(APPEND SUNSHINE_EXTERNAL_LIBRARIES tray::tray)
-else()
-    set(SUNSHINE_TRAY 0)
-    message(STATUS "Tray icon disabled")
-endif()
-list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_TRAY=${SUNSHINE_TRAY})

@@ -6,8 +6,8 @@ cmake_minimum_required(VERSION 3.24)
 # todo - set this conditionally
 
 project(Sunshine VERSION 0.0.0
-        DESCRIPTION "Self-hosted game stream host for Moonlight"
-        HOMEPAGE_URL "https://app.lizardbyte.dev/Sunshine")
+        DESCRIPTION "StationConnect remote workstation host"
+        HOMEPAGE_URL "https://instinctual.la")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,12 +20,10 @@ set(PROJECT_LICENSE "GPL-3.0-only")
 
 set(PROJECT_FQDN "dev.lizardbyte.app.Sunshine")
 
-set(PROJECT_BRIEF_DESCRIPTION "GameStream host for Moonlight")  # must be <= 35 characters
+set(PROJECT_BRIEF_DESCRIPTION "StationConnect workstation host")  # must be <= 35 characters
 
-set(PROJECT_LONG_DESCRIPTION "Offering low latency, cloud gaming server capabilities with support for AMD, Intel, \
-and Nvidia GPUs for hardware encoding. Software encoding is also available. You can connect to Sunshine from any \
-Moonlight client on a variety of devices. A web UI is provided to allow configuration, and client pairing, from \
-your favorite web browser. Pair from the local server or any mobile device.")
+set(PROJECT_LONG_DESCRIPTION "StationConnect provides low-latency remote workstation capture, encoding, input, \
+authentication, and session management for the StationConnect client.")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     message(STATUS "Setting build type to 'Release' as none was specified.")
@@ -51,7 +49,6 @@ include(${CMAKE_MODULE_PATH}/prep/build_version.cmake)
 
 # cmake build flags
 include(${CMAKE_MODULE_PATH}/prep/options.cmake)
-include(${CMAKE_MODULE_PATH}/prep/static_qt.cmake)
 
 # initial prep
 include(${CMAKE_MODULE_PATH}/prep/init.cmake)

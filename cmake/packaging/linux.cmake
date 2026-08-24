@@ -146,44 +146,6 @@ install(FILES "${CMAKE_SOURCE_DIR}/sunshine.svg"
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps"
         RENAME "${PROJECT_FQDN}.svg")
 
-# tray icon
-if(${SUNSHINE_TRAY} STREQUAL 1)
-    # Icons used by the Qt tray backend are no longer installed to the hicolor icon theme,
-    # because Qt6 will not allow icons not part of the theme... so we will use icons from our web directory instead
-
-    if(TRAY_QT_VERSION EQUAL 6)
-        set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
-                    ${CPACK_DEBIAN_PACKAGE_DEPENDS}, \
-                    libqt6widgets6, \
-                    libqt6svg6"
-        )
-        set(CPACK_RPM_PACKAGE_REQUIRES "\
-                    ${CPACK_RPM_PACKAGE_REQUIRES}, \
-                    qt6-qtbase, \
-                    qt6-qtsvg"
-        )
-        list(APPEND CPACK_FREEBSD_PACKAGE_DEPS
-                devel/qt6-base
-                graphics/qt6-svg
-        )
-    else()
-        set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
-                    ${CPACK_DEBIAN_PACKAGE_DEPENDS}, \
-                    libqt5widgets5, \
-                    libqt5svg5"
-        )
-        set(CPACK_RPM_PACKAGE_REQUIRES "\
-                    ${CPACK_RPM_PACKAGE_REQUIRES}, \
-                    qt5-qtbase, \
-                    qt5-qtsvg"
-        )
-        list(APPEND CPACK_FREEBSD_PACKAGE_DEPS
-                x11-toolkits/qt5-widgets
-                graphics/qt5-svg
-        )
-    endif()
-endif()
-
 # desktop file
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_FQDN}.desktop"
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications")

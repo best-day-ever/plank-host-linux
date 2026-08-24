@@ -667,25 +667,6 @@ namespace rtsp_stream {
     }
 
     /**
-     * @brief Clear by cert state.
-     *
-     * @param cert Certificate data or object used by the operation.
-     */
-    void clear_by_cert(std::string_view cert) {
-      auto lg = _session_slots.lock();
-      for (auto i = _session_slots->begin(); i != _session_slots->end();) {
-        auto &slot = *(*i);
-        if (stream::session::client_cert(slot) == cert) {
-          stream::session::stop(slot);
-          stream::session::join(slot);
-          i = _session_slots->erase(i);
-        } else {
-          i++;
-        }
-      }
-    }
-
-    /**
      * @brief Removes the provided session from the set of sessions.
      * @param session The session to remove.
      */
@@ -761,14 +742,6 @@ namespace rtsp_stream {
   void terminate_sessions() {
     server.clear(true);
     input::terminate_retained_input();
-  }
-
-  /**
-   * @brief Terminate active sessions associated with a client certificate.
-   */
-  void terminate_sessions_by_cert(std::string_view cert) {
-    server.clear_by_cert(cert);
-    input::terminate_retained_input(cert);
   }
 
   /**

@@ -6,7 +6,6 @@
 #include <codecvt>
 #include <csignal>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -19,7 +18,6 @@
 #include <rs.h>
 
 // local includes
-#include "confighttp.h"
 #include "display_device.h"
 #include "entry_handler.h"
 #include "globals.h"
@@ -31,28 +29,12 @@
 #ifdef __linux__
   #include "session/session_context.h"
 #endif
-#include "system_tray.h"
 #include "upnp.h"
 #include "video.h"
 
 using namespace std::literals;
 
 std::map<int, std::function<void()>> signal_handlers;  ///< Signal handlers.
-
-namespace {
-  bool stationconnect_mdns_discovery_enabled() {
-    const char *value = std::getenv("STATIONCONNECT_MDNS_DISCOVERY");
-    if (value == nullptr || std::strcmp(value, "0") == 0) {
-      return false;
-    }
-    if (std::strcmp(value, "1") == 0) {
-      return true;
-    }
-
-    BOOST_LOG(warning) << "Invalid STATIONCONNECT_MDNS_DISCOVERY value; disabling mDNS advertisement"sv;
-    return false;
-  }
-}
 
 /**
  * @brief Forward a POSIX signal to the registered Sunshine handler.
@@ -80,9 +62,6 @@ void on_signal(int sig, FN &&fn) {
  * @brief Cmd to func.
  */
 std::map<std::string_view, std::function<int(const char *name, int argc, char **argv)>> cmd_to_func {
-  {"creds"sv, [](const char *name, int argc, char **argv) {
-     return args::creds(name, argc, argv);
-   }},
   {"help"sv, [](const char *name, int argc, char **argv) {
      return args::help(name);
    }},
@@ -141,38 +120,13 @@ WINAPI BOOL ConsoleCtrlHandler(DWORD type) {
 }
 #endif
 
-#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-constexpr bool tray_is_enabled = true;  ///< Compile-time flag indicating tray support is enabled.
-#else
-constexpr bool tray_is_enabled = false;
-#endif
-
 /**
  * @brief Run the main event loop until Sunshine is asked to exit.
  *
  * @param shutdown_event Shutdown event.
  */
 void mainThreadLoop(const std::shared_ptr<safe::event_t<bool>> &shutdown_event) {
-  bool run_loop = false;
-
-  // Conditions that would require the main thread event loop
-#ifndef _WIN32
-  run_loop = tray_is_enabled && config::sunshine.system_tray;  // On Windows, tray runs in separate thread, so no main loop needed for tray
-#endif
-
-  if (!run_loop) {
-    BOOST_LOG(info) << "No main thread features enabled, skipping event loop"sv;
-    // Wait for shutdown
-    shutdown_event->view();
-    return;
-  }
-
-  // Main thread event loop
-  BOOST_LOG(info) << "Starting main loop"sv;
-#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-  while (system_tray::process_tray_events() == 0);
-#endif
-  BOOST_LOG(info) << "Main loop has exited"sv;
+  shutdown_event->view();
 }
 
 /**
@@ -386,10 +340,6 @@ int main(int argc, char *argv[]) {
     // Break out of the main loop
     shutdown_event->raise(true);
 
-    if (tray_is_enabled && config::sunshine.system_tray) {
-      system_tray::end_tray();
-    }
-
     display_device_deinit_guard = nullptr;
   });
 
@@ -406,10 +356,6 @@ int main(int argc, char *argv[]) {
     // Break out of the main loop
     shutdown_event->raise(true);
 
-    if (tray_is_enabled && config::sunshine.system_tray) {
-      system_tray::end_tray();
-    }
-
     display_device_deinit_guard = nullptr;
   });
 
@@ -420,8 +366,7 @@ int main(int argc, char *argv[]) {
 
   proc::refresh(config::stream.file_apps);
 
-  // If any of the following fail, we log an error and continue event though sunshine will not function correctly.
-  // This allows access to the UI to fix configuration problems or view the logs.
+  // If any of the following fail, log an error and continue so the failure is diagnosable.
 
   auto platf_deinit_guard = platf::init();
   if (!platf_deinit_guard) {
@@ -452,7 +397,7 @@ int main(int argc, char *argv[]) {
   }
 
   std::unique_ptr<platf::deinit_t> mDNS;
-  const bool mdns_discovery_enabled = stationconnect_mdns_discovery_enabled();
+  const bool mdns_discovery_enabled = config::sunshine.stationconnect_mdns_discovery;
   if (!mdns_discovery_enabled) {
     BOOST_LOG(info) << "StationConnect mDNS advertisement is disabled"sv;
   }
@@ -473,36 +418,19 @@ int main(int argc, char *argv[]) {
   }
 
   std::jthread httpThread {nvhttp::start};
-  std::jthread configThread {confighttp::start};
   std::jthread rtspThread {rtsp_stream::start};
 
 #ifdef _WIN32
   // If we're using the default port and GameStream is enabled, warn the user
   if (config::sunshine.port == 47989 && is_gamestream_enabled()) {
-    BOOST_LOG(fatal) << "GameStream is still enabled in GeForce Experience! This *will* cause streaming problems with Sunshine!"sv;
-    BOOST_LOG(fatal) << "Disable GameStream on the SHIELD tab in GeForce Experience or change the Port setting on the Advanced tab in the Sunshine Web UI."sv;
+    BOOST_LOG(fatal) << "GameStream is still enabled in GeForce Experience and conflicts with the StationConnect streaming ports."sv;
+    BOOST_LOG(fatal) << "Disable GameStream on the SHIELD tab in GeForce Experience or change the StationConnect port in stationconnect.conf."sv;
   }
 #endif
-
-  if (tray_is_enabled && config::sunshine.system_tray) {
-    BOOST_LOG(info) << "Starting system tray"sv;
-#ifdef _WIN32
-    system_tray::prepare_tray_virtualhid_license();
-    // TODO: Windows has a weird bug where when running as a service and on the first Windows boot,
-    // the tray icon would not appear even though Sunshine is running correctly otherwise.
-    // Restarting the service would allow the icon to appear normally.
-    // For now we will keep the Windows tray icon on a separate thread.
-    // Ideally, we would run the system tray on the main thread for all platforms.
-    system_tray::init_tray_threaded();
-#else
-    system_tray::init_tray();
-#endif
-  }
 
   mainThreadLoop(shutdown_event);
 
   httpThread.join();
-  configThread.join();
   rtspThread.join();
 
   task_pool.stop();

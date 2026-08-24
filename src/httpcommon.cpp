@@ -11,8 +11,6 @@
 // lib includes
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/context_base.hpp>
-#include <boost/property_tree/json_parser.hpp>
-#include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/xml_parser.hpp>
 #include <curl/curl.h>
 #include <Simple-Web-Server/server_http.hpp>
@@ -35,26 +33,14 @@
 namespace http {
   using namespace std::literals;
   namespace fs = std::filesystem;
-  namespace pt = boost::property_tree;
-
-  int reload_user_creds(const std::string &file);
-  /**
-   * @brief Check whether the Web UI credentials file exists and is readable.
-   *
-   * @param file Path to the credentials file.
-   * @return True when the credentials file is present.
-   */
-  bool user_creds_exist(const std::string &file);
 
   std::string unique_id;  ///< Unique ID.
-  net::net_e origin_web_ui_allowed;  ///< Origin web ui allowed.
 
   /**
    * @brief Load persisted HTTP credentials and initialize shared request state.
    */
   int init() {
     bool clean_slate = config::sunshine.flags[config::flag::FRESH_STATE];
-    origin_web_ui_allowed = net::from_enum_string(config::nvhttp.origin_web_ui_allowed);
 
     if (clean_slate) {
       unique_id = uuid_util::uuid_t::generate().string();
@@ -64,85 +50,6 @@ namespace http {
     }
 
     if ((!fs::exists(config::nvhttp.pkey) || !fs::exists(config::nvhttp.cert)) && create_creds(config::nvhttp.pkey, config::nvhttp.cert)) {
-      return -1;
-    }
-    if (!user_creds_exist(config::sunshine.credentials_file)) {
-      BOOST_LOG(info) << "Open the Web UI to set your new username and password and getting started";
-    } else if (reload_user_creds(config::sunshine.credentials_file)) {
-      return -1;
-    }
-    return 0;
-  }
-
-  /**
-   * @brief Save user creds.
-   *
-   * @param file Credentials file path.
-   * @param username Username to save.
-   * @param password Password to save.
-   * @param run_our_mouth Whether to log user-facing status messages.
-   * @return 0 on success, non-zero on failure.
-   */
-  int save_user_creds(const std::string &file, const std::string &username, const std::string &password, bool run_our_mouth) {
-    pt::ptree outputTree;
-
-    if (fs::exists(file)) {
-      try {
-        pt::read_json(file, outputTree);
-      } catch (std::exception &e) {
-        BOOST_LOG(error) << "Couldn't read user credentials: "sv << e.what();
-        return -1;
-      }
-    }
-
-    auto salt = crypto::rand_alphabet(16);
-    outputTree.put("username", username);
-    outputTree.put("salt", salt);
-    outputTree.put("password", util::hex(crypto::hash(password + salt)).to_string());
-    try {
-      pt::write_json(file, outputTree);
-    } catch (std::exception &e) {
-      BOOST_LOG(error) << "error writing to the credentials file, perhaps try this again as an administrator? Details: "sv << e.what();
-      return -1;
-    }
-
-    BOOST_LOG(info) << "New credentials have been created"sv;
-    return 0;
-  }
-
-  /**
-   * @brief Check whether the Web UI credentials file exists and is readable.
-   */
-  bool user_creds_exist(const std::string &file) {
-    if (!fs::exists(file)) {
-      return false;
-    }
-
-    pt::ptree inputTree;
-    try {
-      pt::read_json(file, inputTree);
-      return inputTree.find("username") != inputTree.not_found() &&
-             inputTree.find("password") != inputTree.not_found() &&
-             inputTree.find("salt") != inputTree.not_found();
-    } catch (std::exception &e) {
-      BOOST_LOG(error) << "validating user credentials: "sv << e.what();
-    }
-
-    return false;
-  }
-
-  /**
-   * @brief Reload the Web UI credentials from disk.
-   */
-  int reload_user_creds(const std::string &file) {
-    pt::ptree inputTree;
-    try {
-      pt::read_json(file, inputTree);
-      config::sunshine.username = inputTree.get<std::string>("username");
-      config::sunshine.password = inputTree.get<std::string>("password");
-      config::sunshine.salt = inputTree.get<std::string>("salt");
-    } catch (std::exception &e) {
-      BOOST_LOG(error) << "loading user credentials: "sv << e.what();
       return -1;
     }
     return 0;
@@ -155,7 +62,7 @@ namespace http {
     fs::path pkey_path = pkey;
     fs::path cert_path = cert;
 
-    auto creds = crypto::gen_creds("Sunshine Gamestream Host"sv, 2048);
+    auto creds = crypto::gen_creds("StationConnect Host"sv, 3072);
 
     auto pkey_dir = pkey_path;
     auto cert_dir = cert_path;
@@ -203,7 +110,7 @@ namespace http {
   }
 
   /**
-   * @brief Send a static file response for a Web UI request.
+   * @brief Download a remote file.
    */
   bool download_file(const std::string &url, const std::string &file, long ssl_version) {
     CURL *curl = curl_easy_init();

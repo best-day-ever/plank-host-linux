@@ -1,38 +1,8 @@
-# Configuration
+# StationConnect host configuration
 
-@admonition{ Host authority | @htmlonly
-By providing the host authority (URI + port), you can easily open each configuration option in the config UI.
-<br>
-<script src="configuration.js"></script>
-<strong>Host authority: </strong> <input type="text" id="host-authority" value="localhost:47990">
-@endhtmlonly
-}
+The workstation host reads `/etc/stationconnect/stationconnect.conf`. The file uses INI-style section headers and `key = value` entries. Section names organize the file but do not namespace keys; every key is globally scoped. Blank lines and lines beginning with `#` are ignored, and `#` also starts an inline comment.
 
-Sunshine will work with the default settings for most users. In some cases you may want to configure Sunshine further.
-
-The default location for the configuration file is listed below. You can use another location if you
-choose, by passing in the full configuration file path as the first argument when you start Sunshine.
-
-**Example**
-```bash
-sunshine ~/sunshine_config.conf
-```
-
-The default location of the `apps.json` is the same as the configuration file. You can use a custom
-location by modifying the configuration file.
-
-**Default Config Directory**
-
-| OS      | Location                                        |
-|---------|-------------------------------------------------|
-| Docker  | @code{}/config@endcode                          |
-| FreeBSD | @code{}~/.config/sunshine@endcode               |
-| Linux   | @code{}~/.config/sunshine@endcode               |
-| macOS   | @code{}~/.config/sunshine@endcode               |
-| Windows | @code{}%ProgramFiles%\\Sunshine\\config@endcode |
-
-Although it is recommended to use the configuration UI, it is possible manually configure Sunshine by
-editing the `conf` file in a text editor. Use the examples as reference.
+The packaged profile contains the settings StationConnect currently overrides. Every accepted runtime option is documented below. Options omitted from the file retain their documented default. The WebUI, system tray, controller emulation, and legacy PIN/certificate pairing have been removed, so their former settings are not accepted.
 
 ## General
 
@@ -262,235 +232,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
-### system_tray
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Show icon in system tray and display desktop notifications
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            enabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            system_tray = enabled
-            @endcode</td>
-    </tr>
-</table>
-
 ## Input
-
-### controller
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Whether to allow controller input from the client.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            enabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            controller = enabled
-            @endcode</td>
-    </tr>
-</table>
-
-### gamepad
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            The type of gamepad to emulate on the host.
-            @note{This option applies to FreeBSD, Linux, and Windows.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            auto
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            gamepad = auto
-            @endcode</td>
-    </tr>
-    <tr>
-        <td rowspan="7">Choices</td>
-        <td>generic</td>
-        <td>Generic HID gamepad</td>
-    </tr>
-    <tr>
-        <td>ds4</td>
-        <td>DualShock 4 controller (PS4)</td>
-    </tr>
-    <tr>
-        <td>ds5</td>
-        <td>DualShock 5 controller (PS5)</td>
-    </tr>
-    <tr>
-        <td>switch</td>
-        <td>Switch Pro controller</td>
-    </tr>
-    <tr>
-        <td>x360</td>
-        <td>Xbox 360 controller</td>
-    </tr>
-    <tr>
-        <td>xone</td>
-        <td>Xbox One controller</td>
-    </tr>
-    <tr>
-        <td>xseries</td>
-        <td>Xbox Series controller</td>
-    </tr>
-</table>
-
-### ds4_back_as_touchpad_click
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Allow Select/Back inputs to also trigger a PlayStation-style gamepad touchpad click. Useful
-            for clients looking to emulate touchpad click on XInput devices.
-            @hint{Applies to ds4, ds5, and automatically selected PlayStation-style gamepads.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            enabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            ds4_back_as_touchpad_click = enabled
-            @endcode</td>
-    </tr>
-</table>
-
-### motion_as_ds4
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            If a client reports that a connected gamepad has motion sensor support, emulate it on the
-            host as a PlayStation-style controller.
-            <br>
-            <br>
-            When disabled, motion sensors will not be taken into account during gamepad type selection.
-            @hint{Only applies when gamepad is set to auto.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            enabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            motion_as_ds4 = enabled
-            @endcode</td>
-    </tr>
-</table>
-
-### touchpad_as_ds4
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            If a client reports that a connected gamepad has a touchpad, emulate it on the host as a
-            PlayStation-style controller.
-            <br>
-            <br>
-            When disabled, touchpad presence will not be taken into account during gamepad type selection.
-            @hint{Only applies when gamepad is set to auto.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            enabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            touchpad_as_ds4 = enabled
-            @endcode</td>
-    </tr>
-</table>
-
-### virtualhid_randomize_mac
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Randomize the MAC address for PlayStation-style virtual controllers created by libvirtualhid.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            enabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            virtualhid_randomize_mac = enabled
-            @endcode</td>
-    </tr>
-</table>
-
-### back_button_timeout
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            If the Back/Select button is held down for the specified number of milliseconds,
-            a Home/Guide button press is emulated.
-            @tip{If back_button_timeout < 0, then the Home/Guide button will not be emulated.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            -1
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            back_button_timeout = 2000
-            @endcode</td>
-    </tr>
-</table>
 
 ### keyboard
 
@@ -1549,67 +1291,23 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
-### origin_web_ui_allowed
+### stationconnect_mdns_discovery
 
 <table>
     <tr>
         <td>Description</td>
-        <td colspan="2">
-            The origin of the remote endpoint address that is not denied for HTTPS Web UI.
-        </td>
+        <td colspan="2">Advertise the StationConnect host through mDNS/Avahi discovery. Keep this disabled when clients use explicit bookmarks.</td>
     </tr>
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            lan
+            disabled
             @endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            origin_web_ui_allowed = lan
-            @endcode</td>
-    </tr>
-    <tr>
-        <td rowspan="3">Choices</td>
-        <td>pc</td>
-        <td>Only localhost may access the web ui</td>
-    </tr>
-    <tr>
-        <td>lan</td>
-        <td>Only LAN devices may access the web ui</td>
-    </tr>
-    <tr>
-        <td>wan</td>
-        <td>Anyone may access the web ui</td>
-    </tr>
-</table>
-
-### csrf_allowed_origins
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Comma-separated list of additional allowed origins for CSRF protection. These origins will be
-            appended to the default allowed origins (localhost variants and the configured web UI port).
-            Requests from allowed origins can access state-changing API endpoints without CSRF tokens.
-            <br><br>
-            @attention{Only add origins you trust. Each origin must be a complete URL prefix
-            including protocol and host (e.g., https://example.com). Port numbers are optional.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            (empty - uses built-in defaults: https://localhost, https://127.0.0.1, https://[::1],
-            with configured UI port variants)
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            csrf_allowed_origins = https://myapp.local,https://custom.domain.com
+            stationconnect_mdns_discovery = false
             @endcode</td>
     </tr>
 </table>
@@ -1819,29 +1517,6 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
-### credentials_file
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            The file where user credentials for the UI are stored.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            sunshine_state.json
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            credentials_file = sunshine_state.json
-            @endcode</td>
-    </tr>
-</table>
-
 ### log_path
 
 <table>
@@ -1872,9 +1547,8 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            The private key used for the web UI and Moonlight client pairing. For best compatibility,
-            this should be an RSA-2048 private key.
-            @warning{Not all Moonlight clients support ECDSA keys or RSA key lengths other than 2048 bits.}
+            The private key used by the StationConnect TLS service. The packaged certificate helper
+            creates the required RSA key under `/etc/stationconnect/tls`.
         </td>
     </tr>
     <tr>
@@ -1897,9 +1571,8 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            The certificate used for the web UI and Moonlight client pairing. For best compatibility,
-            this should have an RSA-2048 public key.
-            @warning{Not all Moonlight clients support ECDSA keys or RSA key lengths other than 2048 bits.}
+            The certificate used by the StationConnect TLS service. The client validates the
+            StationConnect certificate profile over the approved VPN route.
         </td>
     </tr>
     <tr>

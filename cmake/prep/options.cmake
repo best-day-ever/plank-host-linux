@@ -9,19 +9,10 @@ set(SUNSHINE_PUBLISHER_ISSUE_URL "https://app.lizardbyte.dev/support"
 
 option(BUILD_DOCS "Build documentation" ON)
 option(BUILD_TESTS "Build tests" ON)
-option(NPM_OFFLINE "Use offline npm packages. You must ensure packages are in your npm cache." OFF)
-
 option(BUILD_WERROR "Enable -Werror flag." OFF)
 
 # if this option is set, the build will exit after configuring special package configuration files
 option(SUNSHINE_CONFIGURE_ONLY "Configure special files only, then exit." OFF)
-
-option(SUNSHINE_ENABLE_TRAY "Enable system tray icon." ON)
-
-if(WIN32)
-    option(SUNSHINE_USE_STATIC_QT
-            "Require static Qt libraries and their static third-party dependencies." ON)
-endif()
 
 option(SUNSHINE_SYSTEM_VULKAN_HEADERS "Use system installation of vulkan-headers rather than the submodule." OFF)
 option(SUNSHINE_SYSTEM_WAYLAND_PROTOCOLS "Use system installation of wayland-protocols rather than the submodule." OFF)

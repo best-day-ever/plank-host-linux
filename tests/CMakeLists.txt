@@ -110,65 +110,6 @@ endif()
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
         ${CMAKE_SOURCE_DIR}/tests/*.h
         ${CMAKE_SOURCE_DIR}/tests/*.cpp)
-if(SUNSHINE_ENABLE_TRAY AND (WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
-    set(SUNSHINE_TRAY_TEST_ICON_SOURCE_DIR
-            "${CMAKE_SOURCE_DIR}/src_assets/common/assets/web/public/images")
-    set(SUNSHINE_TRAY_TEST_ICON_DESTINATION_DIR
-            "${CMAKE_CURRENT_BINARY_DIR}/test_assets/web/images")
-    file(MAKE_DIRECTORY "${SUNSHINE_TRAY_TEST_ICON_DESTINATION_DIR}")
-
-    configure_file(
-            "${CMAKE_SOURCE_DIR}/sunshine.svg"
-            "${SUNSHINE_TRAY_TEST_ICON_DESTINATION_DIR}/logo-sunshine.svg"
-            COPYONLY)
-
-    if(WIN32)
-        configure_file(
-                "${CMAKE_SOURCE_DIR}/third-party/libvirtualhid/libvirtualhid.svg"
-                "${SUNSHINE_TRAY_TEST_ICON_DESTINATION_DIR}/logo-libvirtualhid.svg"
-                COPYONLY)
-    endif()
-
-    set(SUNSHINE_TRAY_TEST_ICONS
-            sunshine-locked.svg
-            sunshine-playing.svg
-            sunshine-pausing.svg)
-
-    foreach(icon IN LISTS SUNSHINE_TRAY_TEST_ICONS)
-        configure_file(
-                "${SUNSHINE_TRAY_TEST_ICON_SOURCE_DIR}/${icon}"
-                "${SUNSHINE_TRAY_TEST_ICON_DESTINATION_DIR}/${icon}"
-                COPYONLY)
-    endforeach()
-
-    add_library(sunshine_tray_test_helpers STATIC
-            ${CMAKE_SOURCE_DIR}/third-party/tray/tests/notification_utils.cpp
-            ${CMAKE_SOURCE_DIR}/third-party/tray/tests/screenshot_utils.cpp)
-    set_target_properties(sunshine_tray_test_helpers PROPERTIES
-            CXX_STANDARD 17
-            CXX_STANDARD_REQUIRED ON)
-    target_include_directories(sunshine_tray_test_helpers PRIVATE
-            ${CMAKE_SOURCE_DIR}/third-party/tray)
-    target_link_libraries(sunshine_tray_test_helpers PRIVATE
-            lizardbyte::common)
-
-    if(WIN32)
-        target_link_libraries(sunshine_tray_test_helpers PRIVATE
-                gdi32
-                gdiplus)
-    else()
-        find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Gui)
-        find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Gui)
-        set(SUNSHINE_TRAY_TEST_QT_GUI_TARGET Qt${QT_VERSION_MAJOR}::Gui)
-
-        target_link_libraries(sunshine_tray_test_helpers PRIVATE
-                ${SUNSHINE_TRAY_TEST_QT_GUI_TARGET})
-        if(APPLE)
-            target_link_libraries(sunshine_tray_test_helpers PRIVATE
-                    "-framework Cocoa")
-        endif()
-    endif()
-endif()
 # Add macOS-specific test files only when building tests for macOS
 if (APPLE)
     file(GLOB_RECURSE MACOS_TEST_SOURCES CONFIGURE_DEPENDS
@@ -191,10 +132,7 @@ add_executable(${PROJECT_NAME}
 # Using configure_file ensures files are copied when they change between builds
 set(INTEGRATION_TEST_FILES
     "src/config.cpp"
-    "src_assets/common/assets/web/config.html"
     "docs/configuration.md"
-    "src_assets/common/assets/web/public/assets/locale/en.json"
-    "src_assets/common/assets/web/configs/tabs/General.vue"
     "src_assets/linux/misc/60-sunshine.rules"
 )
 
@@ -206,24 +144,9 @@ foreach(file ${INTEGRATION_TEST_FILES})
     )
 endforeach()
 
-# Copy all locale files for locale consistency tests
-# Use a custom command to properly handle both adding and removing files
-set(LOCALE_SRC_DIR "${CMAKE_SOURCE_DIR}/src_assets/common/assets/web/public/assets/locale")
-set(LOCALE_DST_DIR "${CMAKE_CURRENT_BINARY_DIR}/src_assets/common/assets/web/public/assets/locale")
-add_custom_target(sync_locale_files ALL
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${LOCALE_DST_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${LOCALE_DST_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${LOCALE_SRC_DIR}" "${LOCALE_DST_DIR}"
-    COMMENT "Synchronizing locale files for tests"
-    VERBATIM
-)
-
 foreach(dep ${SUNSHINE_TARGET_DEPENDENCIES})
     add_dependencies(${PROJECT_NAME} ${dep})  # compile these before sunshine
 endforeach()
-
-# Ensure locale files are synchronized before building the test executable
-add_dependencies(${PROJECT_NAME} sync_locale_files)
 
 # Build the list of libraries to link
 set(TEST_LINK_LIBRARIES
@@ -231,15 +154,6 @@ set(TEST_LINK_LIBRARIES
     lizardbyte::test_support
     ${PLATFORM_LIBRARIES}
 )
-
-if(SUNSHINE_ENABLE_TRAY AND (WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
-    list(APPEND TEST_LINK_LIBRARIES
-            sunshine_tray_test_helpers)
-    if(SUNSHINE_TRAY_TEST_QT_GUI_TARGET)
-        list(APPEND TEST_LINK_LIBRARIES
-                ${SUNSHINE_TRAY_TEST_QT_GUI_TARGET})
-    endif()
-endif()
 
 # Add the specific libgcov library if found
 if(GCOV_LINK_LIBRARY)

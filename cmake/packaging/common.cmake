@@ -18,35 +18,14 @@ set(CPACK_STRIP_FILES YES)
 
 # install common assets
 install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/"
-        DESTINATION "${SUNSHINE_ASSETS_DIR}"
-        PATTERN "web" EXCLUDE)
+        DESTINATION "${SUNSHINE_ASSETS_DIR}")
 # copy assets to build directory, for running without install
 file(GLOB_RECURSE ALL_ASSETS
         RELATIVE "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/" "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/*")
-list(FILTER ALL_ASSETS EXCLUDE REGEX "^web/.*$")  # Filter out the web directory
-foreach(asset ${ALL_ASSETS})  # Copy assets to build directory, excluding the web directory
+foreach(asset ${ALL_ASSETS})
     file(COPY "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/${asset}"
             DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/assets")
 endforeach()
-
-# Copy the primary application icon into the built web assets for the system tray.
-file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/assets/web/images")
-configure_file(
-        "${CMAKE_SOURCE_DIR}/sunshine.svg"
-        "${CMAKE_CURRENT_BINARY_DIR}/assets/web/images/logo-sunshine.svg"
-        COPYONLY)
-
-# Copy the Virtual HID Driver icon for Windows tray notifications.
-if(WIN32)
-    configure_file(
-            "${CMAKE_SOURCE_DIR}/third-party/libvirtualhid/libvirtualhid.svg"
-            "${CMAKE_CURRENT_BINARY_DIR}/assets/web/images/logo-libvirtualhid.svg"
-            COPYONLY)
-endif()
-
-# install built vite assets
-install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/assets/web"
-        DESTINATION "${SUNSHINE_ASSETS_DIR}")
 
 # platform specific packaging
 if(WIN32)

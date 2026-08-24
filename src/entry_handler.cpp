@@ -10,7 +10,6 @@
 
 // local includes
 #include "config.h"
-#include "confighttp.h"
 #include "entry_handler.h"
 #include "globals.h"
 #include "httpcommon.h"
@@ -26,25 +25,7 @@ extern "C" {
 
 using namespace std::literals;
 
-void launch_ui(const std::optional<std::string> &path) {
-  std::string url = std::format("https://localhost:{}", static_cast<int>(net::map_port(confighttp::PORT_HTTPS)));
-  if (path) {
-    url += *path;
-  }
-  platf::open_url(url);
-}
-
 namespace args {
-  int creds(const char *name, int argc, char *argv[]) {
-    if (argc < 2 || argv[0] == "help"sv || argv[1] == "help"sv) {
-      help(name);
-    }
-
-    http::save_user_creds(config::sunshine.credentials_file, argv[0], argv[1]);
-
-    return 0;
-  }
-
   int help(const char *name) {
     logging::print_help(name);
     return 0;
@@ -239,50 +220,5 @@ namespace service_ctrl {
     return true;
   }
 
-  bool wait_for_ui_ready() {
-    std::cout << "Waiting for Web UI to be ready...";
-
-    // Wait up to 30 seconds for the web UI to start
-    for (int i = 0; i < 30; i++) {
-      PMIB_TCPTABLE tcp_table = nullptr;
-      ULONG table_size = 0;
-      ULONG err;
-
-      auto fg = util::fail_guard([&tcp_table]() {
-        free(tcp_table);
-      });
-
-      do {
-        // Query all open TCP sockets to look for our web UI port
-        err = GetTcpTable(tcp_table, &table_size, false);
-        if (err == ERROR_INSUFFICIENT_BUFFER) {
-          free(tcp_table);
-          tcp_table = (PMIB_TCPTABLE) malloc(table_size);
-        }
-      } while (err == ERROR_INSUFFICIENT_BUFFER);
-
-      if (err != NO_ERROR) {
-        BOOST_LOG(error) << "Failed to query TCP table: "sv << err;
-        return false;
-      }
-
-      uint16_t port_nbo = htons(net::map_port(confighttp::PORT_HTTPS));
-      for (DWORD i = 0; i < tcp_table->dwNumEntries; i++) {
-        auto &entry = tcp_table->table[i];
-
-        // Look for our port in the listening state
-        if (entry.dwLocalPort == port_nbo && entry.dwState == MIB_TCP_STATE_LISTEN) {
-          std::cout << std::endl;
-          return true;
-        }
-      }
-
-      Sleep(1000);
-      std::cout << '.';
-    }
-
-    std::cout << "timed out"sv << std::endl;
-    return false;
-  }
 }  // namespace service_ctrl
 #endif

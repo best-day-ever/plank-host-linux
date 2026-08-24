@@ -48,7 +48,6 @@ namespace rtsp_stream {
     std::optional<crypto::cipher::gcm_t> rtsp_cipher;  ///< AES-GCM cipher used once encrypted RTSP is negotiated.
     std::string rtsp_url_scheme;  ///< URL scheme selected by the RTSP SETUP flow.
     uint32_t rtsp_iv_counter;  ///< Counter value mixed into encrypted RTSP IVs.
-    std::string client_cert;  ///< PEM certificate for the paired Moonlight client.
     std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained by StationConnect streams.
   };
 
@@ -80,7 +79,6 @@ namespace rtsp_stream {
    *
    * @param cert Certificate data or object used by the operation.
    */
-  void terminate_sessions_by_cert(std::string_view cert);
 
   /**
    * @brief Runs the RTSP server loop.

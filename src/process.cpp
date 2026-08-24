@@ -29,7 +29,6 @@
 #include "logging.h"
 #include "platform/common.h"
 #include "process.h"
-#include "system_tray.h"
 #include "utility.h"
 
 #ifdef _WIN32
@@ -356,10 +355,6 @@ namespace proc {
     // Only show the Stopped notification if we actually have an app to stop
     // Since terminate() is always run when a new app has started
     if (proc::proc.get_last_run_app_name().length() > 0 && has_run) {
-#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-      system_tray::update_tray_stopped(proc::proc.get_last_run_app_name());
-#endif
-
       display_device::revert_configuration();
     }
 

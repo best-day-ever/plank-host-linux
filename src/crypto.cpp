@@ -329,7 +329,7 @@ namespace crypto {
   }  // namespace cipher
 
   /**
-   * @brief Derive the AES key used by the pairing protocol.
+   * @brief Derive an AES key for legacy-compatible encrypted transport fields.
    */
   aes_t gen_aes_key(const std::array<uint8_t, 16> &salt, const std::string_view &pin) {
     aes_t key(16);
@@ -467,7 +467,7 @@ namespace crypto {
   }
 
   /**
-   * @brief Generate a self-signed certificate and private key for Sunshine pairing.
+   * @brief Generate a self-signed certificate and private key for TLS.
    */
   creds_t gen_creds(const std::string_view &cn, std::uint32_t key_bits) {
     x509_t x509 {X509_new()};

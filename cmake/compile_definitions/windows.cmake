@@ -15,12 +15,6 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64")
     list(APPEND SUNSHINE_COMPILE_OPTIONS -Wno-unknown-warning-option)  # ViGEmClient
     list(APPEND SUNSHINE_COMPILE_OPTIONS -Wno-unused-variable)  # Boost
 
-    # Qt's static qwindows plugin and MinGW's Windowsapp import library both provide the
-    # UiaRaiseNotificationEvent import thunk on ARM64. Keep both required libraries while
-    # permitting lld to coalesce their identical definitions.
-    if(SUNSHINE_USE_STATIC_QT AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        list(APPEND SUNSHINE_LINK_OPTIONS -Wl,--allow-multiple-definition)
-    endif()
 endif()
 
 # see gcc bug 98723

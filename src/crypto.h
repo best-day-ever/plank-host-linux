@@ -86,10 +86,10 @@ namespace crypto {
   sha256_t hash(const std::string_view &plaintext);
 
   /**
-   * @brief Derive the AES key used by the pairing protocol.
+   * @brief Derive an AES key for legacy-compatible encrypted transport fields.
    *
-   * @param salt Random salt used when deriving the pairing secret.
-   * @param pin PIN supplied by the client during pairing.
+   * @param salt Random salt used when deriving the secret.
+   * @param pin Secret input retained by the upstream helper signature.
    * @return Parsed or generated OpenSSL object or PEM data.
    */
   aes_t gen_aes_key(const std::array<uint8_t, 16> &salt, const std::string_view &pin);
@@ -141,7 +141,7 @@ namespace crypto {
   bool verify256(const x509_t &x509, const std::string_view &data, const std::string_view &signature);
 
   /**
-   * @brief Generate a self-signed certificate and private key for Sunshine pairing.
+   * @brief Generate a self-signed certificate and private key for TLS.
    *
    * @param cn Common name to place in the generated certificate.
    * @param key_bits Size in bits of the generated RSA key.

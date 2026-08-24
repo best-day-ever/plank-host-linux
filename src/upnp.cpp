@@ -11,7 +11,6 @@
 
 // local includes
 #include "config.h"
-#include "confighttp.h"
 #include "globals.h"
 #include "logging.h"
 #include "network.h"
@@ -77,7 +76,6 @@ namespace upnp {
       auto control = std::to_string(net::map_port(stream::CONTROL_PORT));
       auto gs_http = std::to_string(net::map_port(nvhttp::PORT_HTTP));
       auto gs_https = std::to_string(net::map_port(nvhttp::PORT_HTTPS));
-      auto wm_http = std::to_string(net::map_port(confighttp::PORT_HTTPS));
 
       mappings.assign({
         {{rtsp, rtsp, "TCP"s}, "Sunshine - RTSP"s},
@@ -87,11 +85,6 @@ namespace upnp {
         {{gs_http, gs_http, "TCP"s}, "Sunshine - Client HTTP"s},
         {{gs_https, gs_https, "TCP"s}, "Sunshine - Client HTTPS"s},
       });
-
-      // Only map port for the Web Manager if it is configured to accept connection from WAN
-      if (net::from_enum_string(config::nvhttp.origin_web_ui_allowed) > net::LAN) {
-        mappings.emplace_back(mapping_t {{wm_http, wm_http, "TCP"s}, "Sunshine - Web UI"s});
-      }
 
       // Start the mapping thread
       upnp_thread = std::jthread {&deinit_t::upnp_thread_proc, this};
