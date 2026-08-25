@@ -42,6 +42,10 @@ target_compile_options(sunshine PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COM
 target_link_options(sunshine PRIVATE ${SUNSHINE_LINK_OPTIONS})
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Retain the upstream CMake target name to minimize divergence while
+    # exposing the StationConnect product identity to procfs and operators.
+    set_target_properties(sunshine PROPERTIES OUTPUT_NAME "stationconnect-host")
+
     find_library(STATIONCONNECT_PAM_LIBRARY NAMES pam REQUIRED)
     add_executable(stationconnect-pam-broker
             "${CMAKE_SOURCE_DIR}/src/auth/pam_broker.cpp"
