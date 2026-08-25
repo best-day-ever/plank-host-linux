@@ -1572,7 +1572,7 @@ The packaged profile contains the settings StationConnect currently overrides. E
         <td>Description</td>
         <td colspan="2">
             The certificate used by the StationConnect TLS service. The client validates the
-            StationConnect certificate profile over the approved VPN route.
+            StationConnect certificate profile and requires TLS 1.3.
         </td>
     </tr>
     <tr>
