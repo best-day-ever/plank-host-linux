@@ -418,12 +418,12 @@ namespace {
     const auto layout_arguments = [&](const std::string &mode_1,
                                       const std::string &mode_2) {
       std::vector<std::string> arguments {
-        "--output", "DP-0", "--mode", mode_1,
+        "--output", "DP-0", "--mode", mode_1, "--rate", "60",
         "--pos", "0x0", "--primary"
       };
       if (request.layout == "dual-horizontal") {
         arguments.insert(arguments.end(), {
-          "--output", "DP-2", "--mode", mode_2,
+          "--output", "DP-2", "--mode", mode_2, "--rate", "60",
           "--pos", std::to_string(first.width) + "x0"
         });
       } else {
