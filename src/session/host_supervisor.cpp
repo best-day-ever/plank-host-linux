@@ -468,29 +468,54 @@ namespace {
   ) {
     const auto account = account_for_uid(session.uid);
     const auto first = stationconnect::topology::virtual_mode_size(request.mode_1);
+    const auto second = stationconnect::topology::virtual_mode_size(request.mode_2);
     if (!account || first.width <= 0 || first.height <= 0 ||
-        !ensure_live_mode("DP-0", request.mode_1, *account, environment)) {
+        (request.layout == "dual-horizontal" &&
+         (second.width <= 0 || second.height <= 0))) {
       return false;
     }
-    std::vector<std::string> arguments {
-      "--output", "DP-0", "--mode", "StationConnect-" + request.mode_1,
-      "--pos", "0x0", "--primary"
-    };
-    if (request.layout == "dual-horizontal") {
-      const auto second = stationconnect::topology::virtual_mode_size(request.mode_2);
-      if (second.width <= 0 || second.height <= 0 ||
-          !ensure_live_mode("DP-2", request.mode_2, *account, environment)) {
-        return false;
+
+    const auto layout_arguments = [&](const std::string &mode_1,
+                                      const std::string &mode_2) {
+      std::vector<std::string> arguments {
+        "--output", "DP-0", "--mode", mode_1,
+        "--pos", "0x0", "--primary"
+      };
+      if (request.layout == "dual-horizontal") {
+        arguments.insert(arguments.end(), {
+          "--output", "DP-2", "--mode", mode_2,
+          "--pos", std::to_string(first.width) + "x0"
+        });
+      } else {
+        arguments.insert(arguments.end(), {"--output", "DP-2", "--off"});
       }
-      arguments.insert(arguments.end(), {
-        "--output", "DP-2", "--mode", "StationConnect-" + request.mode_2,
-        "--pos", std::to_string(first.width) + "x0"
-      });
-    } else {
-      arguments.insert(arguments.end(), {"--output", "DP-2", "--off"});
+      return arguments;
+    };
+
+    // NVIDIA already publishes every EDID and built-in mode through RandR.
+    // Prefer those exact names. Trying to add an identical renamed timing can
+    // fail with RRAddOutputMode BadMatch even though the requested mode itself
+    // is valid and usable.
+    if (run_bounded_user_command(
+          xrandr_path,
+          layout_arguments(request.mode_1, request.mode_2),
+          std::chrono::seconds {10}, *account, environment
+        )) {
+      return true;
+    }
+
+    if (!ensure_live_mode("DP-0", request.mode_1, *account, environment) ||
+        (request.layout == "dual-horizontal" &&
+         !ensure_live_mode("DP-2", request.mode_2, *account, environment))) {
+      return false;
     }
     return run_bounded_user_command(
-      xrandr_path, arguments, std::chrono::seconds {10}, *account, environment
+      xrandr_path,
+      layout_arguments(
+        "StationConnect-" + request.mode_1,
+        request.mode_2.empty() ? "" : "StationConnect-" + request.mode_2
+      ),
+      std::chrono::seconds {10}, *account, environment
     );
   }
 
