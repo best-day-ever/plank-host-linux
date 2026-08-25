@@ -357,7 +357,8 @@ namespace config {
     bool notify_pre_releases;  ///< Notify users about pre-release updates.
     bool stationconnect_mdns_discovery;  ///< Advertise this StationConnect host with mDNS.
     std::string virtual_outputs;  ///< Pre-GDM StationConnect virtual-output layout selected by the administrator.
-    std::string virtual_mode;  ///< Pre-GDM StationConnect virtual-output resolution selected by the administrator.
+    std::string virtual_mode_1;  ///< Qualified resolution of StationConnect virtual output 1.
+    std::string virtual_mode_2;  ///< Qualified resolution of StationConnect virtual output 2.
     std::vector<prep_cmd_t> prep_cmds;  ///< Preparation commands executed around application launch.
   };
 

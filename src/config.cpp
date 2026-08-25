@@ -876,7 +876,8 @@ namespace config {
     false,  // notify_pre_releases
     false,  // StationConnect mDNS advertisement
     "off",  // StationConnect virtual outputs
-    "3840x2160",  // StationConnect virtual output mode
+    "3840x2160",  // StationConnect virtual output 1 mode
+    "3840x2160",  // StationConnect virtual output 2 mode
     {},  // prep commands
   };
 
@@ -1757,7 +1758,8 @@ namespace config {
     bool_f(vars, "notify_pre_releases", sunshine.notify_pre_releases);
     bool_f(vars, "stationconnect_mdns_discovery", sunshine.stationconnect_mdns_discovery);
     string_f(vars, "virtual_outputs", sunshine.virtual_outputs);
-    string_f(vars, "virtual_mode", sunshine.virtual_mode);
+    string_f(vars, "virtual_mode_1", sunshine.virtual_mode_1);
+    string_f(vars, "virtual_mode_2", sunshine.virtual_mode_2);
 
     int port = sunshine.port;
     int_between_f(vars, "port"s, port, {1024 + nvhttp::PORT_HTTPS, 65535 - rtsp_stream::RTSP_SETUP_PORT});
