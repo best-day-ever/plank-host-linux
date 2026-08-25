@@ -85,6 +85,9 @@ namespace stationconnect::session {
   std::string display_request_message(const display_request_t &request);
   std::optional<display_request_t> parse_display_request(std::string_view message);
 
+  /** Read the intended secondary-monitor visibility from an owned Xorg overlay. */
+  std::optional<bool> secondary_output_visible_from_overlay(std::string_view overlay);
+
   /** Request a display transition from GDM or the authenticated user's desktop. */
   display_request_status request_display_transition(const display_request_t &request);
 
