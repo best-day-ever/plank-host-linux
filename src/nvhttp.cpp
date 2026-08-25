@@ -39,6 +39,7 @@
 #include "platform/common.h"
 #include "process.h"
 #include "rtsp.h"
+#include "stationconnect_topology.h"
 #include "utility.h"
 #include "uuid.h"
 #include "video.h"
@@ -54,18 +55,18 @@ namespace nvhttp {
 
   constexpr std::string_view pam_broker_socket = "/run/stationconnect/pam/auth.sock"sv;  ///< Privileged broker activation path.
   std::unique_ptr<stationconnect::auth::web_auth_manager_t> web_auth;  ///< PAM conversations and ephemeral tokens.
-  constexpr std::uint32_t stationconnect_topology_version = 1;
-  constexpr std::uint32_t stationconnect_feature_output_topology = 0x1;
-  constexpr std::uint32_t stationconnect_feature_selected_output = 0x2;
-  constexpr std::uint32_t stationconnect_feature_unified_absolute_input = 0x4;
-  constexpr std::uint32_t stationconnect_feature_scaled_span = 0x8;
-  constexpr std::uint32_t stationconnect_feature_topology_generation = 0x10;
-  constexpr std::uint32_t stationconnect_topology_features =
-    stationconnect_feature_output_topology |
-    stationconnect_feature_selected_output |
-    stationconnect_feature_unified_absolute_input |
-    stationconnect_feature_scaled_span |
-    stationconnect_feature_topology_generation;
+  constexpr auto stationconnect_topology_version = stationconnect::topology::protocol_version;
+  constexpr auto stationconnect_feature_selected_output =
+    stationconnect::topology::feature_selected_output;
+  constexpr auto stationconnect_feature_scaled_span =
+    stationconnect::topology::feature_scaled_span;
+  constexpr auto stationconnect_feature_topology_generation =
+    stationconnect::topology::feature_topology_generation;
+  constexpr auto stationconnect_feature_composite_source_regions =
+    stationconnect::topology::feature_composite_source_regions;
+  constexpr auto stationconnect_feature_host_layout_binding =
+    stationconnect::topology::feature_host_layout_binding;
+  constexpr auto stationconnect_topology_features = stationconnect::topology::feature_flags;
 
   /**
    * @brief HTTPS server backend that requires TLS 1.3.
@@ -395,29 +396,12 @@ namespace nvhttp {
 
   nlohmann::json output_topology_json() {
     const auto outputs = video::output_topology();
-    nlohmann::json body {
-      {"schema_version", stationconnect_topology_version},
-      {"feature_flags", stationconnect_topology_features},
-      {"outputs", nlohmann::json::array()},
-    };
-
     int min_x = 0;
     int min_y = 0;
     int max_x = 0;
     int max_y = 0;
     bool first = true;
     for (const auto &output : outputs) {
-      body["outputs"].push_back({
-        {"id", output.id},
-        {"name", output.name},
-        {"x", output.x},
-        {"y", output.y},
-        {"width", output.width},
-        {"height", output.height},
-        {"rotation", output.rotation},
-        {"refresh_millihz", output.refresh_millihz},
-        {"primary", output.primary},
-      });
       if (first) {
         min_x = output.x;
         min_y = output.y;
@@ -431,11 +415,100 @@ namespace nvhttp {
         max_y = std::max(max_y, output.y + output.height);
       }
     }
+
+    const bool virtual_layout = config::sunshine.virtual_outputs != "off";
+    const auto layout_kind = virtual_layout ?
+                               config::sunshine.virtual_outputs :
+                               "physical"s;
+    const auto virtual_mode = virtual_layout ?
+                                config::sunshine.virtual_mode :
+                                std::string {};
+    nlohmann::json body {
+      {"schema_version", stationconnect_topology_version},
+      {"feature_flags", stationconnect_topology_features},
+      {"layout", {
+        {"kind", layout_kind},
+        {"virtual", virtual_layout},
+        {"virtual_mode", virtual_mode},
+        {"output_count", outputs.size()},
+      }},
+      {"outputs", nlohmann::json::array()},
+    };
+    for (const auto &output : outputs) {
+      body["outputs"].push_back({
+        {"id", output.id},
+        {"name", output.name},
+        {"x", output.x},
+        {"y", output.y},
+        {"width", output.width},
+        {"height", output.height},
+        {"rotation", output.rotation},
+        {"refresh_millihz", output.refresh_millihz},
+        {"primary", output.primary},
+        {"virtual", virtual_layout},
+        {"source_rect", {
+          {"x", output.x - min_x},
+          {"y", output.y - min_y},
+          {"width", output.width},
+          {"height", output.height},
+        }},
+      });
+    }
     body["desktop"] = {
       {"x", min_x}, {"y", min_y}, {"width", max_x - min_x}, {"height", max_y - min_y},
     };
     body["generation"] = video::output_topology_generation(outputs);
     return body;
+  }
+
+  bool bind_host_layout(const rtsp_stream::launch_session_t &session,
+                        const std::vector<platf::display_info_t> &outputs,
+                        pt::ptree &tree) {
+    if (session.stationconnect_protocol_version != stationconnect_topology_version ||
+        (session.stationconnect_feature_flags & stationconnect_feature_host_layout_binding) == 0 ||
+        session.host_layout.empty()) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Missing StationConnect host-layout binding");
+      return false;
+    }
+
+    const bool virtual_layout = config::sunshine.virtual_outputs != "off";
+    const auto actual_layout = virtual_layout ?
+                                 config::sunshine.virtual_outputs :
+                                 "physical"s;
+    const auto actual_mode = virtual_layout ?
+                               config::sunshine.virtual_mode :
+                               std::string {};
+    const auto validation = stationconnect::topology::validate_layout_binding(
+      session.host_layout,
+      session.virtual_mode,
+      actual_layout,
+      actual_mode,
+      outputs.size()
+    );
+    if (validation == stationconnect::topology::layout_error::invalid_request) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Invalid StationConnect host-layout binding");
+      return false;
+    }
+    if (validation == stationconnect::topology::layout_error::mismatch) {
+      tree.put("root.<xmlattr>.status_code", 409);
+      tree.put(
+        "root.<xmlattr>.status_message",
+        std::format(
+          "Requested host display layout is not active; configured layout is {}{}",
+          actual_layout,
+          actual_mode.empty() ? "" : std::format(" {}", actual_mode)
+        )
+      );
+      return false;
+    }
+    if (validation == stationconnect::topology::layout_error::unhealthy) {
+      tree.put("root.<xmlattr>.status_code", 409);
+      tree.put("root.<xmlattr>.status_message", "Configured host display layout is not healthy");
+      return false;
+    }
+    return true;
   }
 
   void output_topology(const resp_https_t &response, const req_https_t &) {
@@ -468,15 +541,20 @@ namespace nvhttp {
   }
 
   bool resolve_selected_output(rtsp_stream::launch_session_t &session, pt::ptree &tree) {
-    if (session.display_mode == "scaled-span") {
+    const auto outputs = video::output_topology();
+    if (!bind_host_layout(session, outputs, tree)) {
+      return false;
+    }
+    if (session.display_mode == "scaled-span" || session.display_mode == "separate-displays") {
       if (session.stationconnect_protocol_version != stationconnect_topology_version ||
           (session.stationconnect_feature_flags & stationconnect_feature_scaled_span) == 0 ||
+          (session.display_mode == "separate-displays" &&
+           (session.stationconnect_feature_flags & stationconnect_feature_composite_source_regions) == 0) ||
           !session.output_id.empty()) {
         tree.put("root.<xmlattr>.status_code", 400);
-        tree.put("root.<xmlattr>.status_message", "Invalid StationConnect scaled-span negotiation");
+        tree.put("root.<xmlattr>.status_message", "Invalid StationConnect composite-display negotiation");
         return false;
       }
-      const auto outputs = video::output_topology();
       if (outputs.empty()) {
         tree.put("root.<xmlattr>.status_code", 409);
         tree.put("root.<xmlattr>.status_message", "Host desktop topology is unavailable");
@@ -487,7 +565,8 @@ namespace nvhttp {
       }
       session.output_name.clear();
       session.span_desktop = true;
-      BOOST_LOG(info) << "StationConnect selected scaled virtual-desktop span"sv;
+      BOOST_LOG(info) << "StationConnect selected "sv << session.display_mode
+                      << " virtual-desktop span"sv;
       return true;
     }
     if (!session.display_mode.empty() && session.display_mode != "single-output") {
@@ -505,7 +584,6 @@ namespace nvhttp {
       tree.put("root.<xmlattr>.status_message", "Invalid StationConnect output negotiation");
       return false;
     }
-    const auto outputs = video::output_topology();
     if (!bind_topology_generation(session, outputs, tree)) {
       return false;
     }
@@ -626,6 +704,8 @@ namespace nvhttp {
     launch_session->output_id = get_arg(args, "scOutputId", "");
     launch_session->display_mode = get_arg(args, "scDisplayMode", "");
     launch_session->topology_generation = get_arg(args, "scTopologyGeneration", "");
+    launch_session->host_layout = get_arg(args, "scHostLayout", "");
+    launch_session->virtual_mode = get_arg(args, "scVirtualMode", "");
     launch_session->stationconnect_protocol_version =
       static_cast<std::uint32_t>(util::from_view(get_arg(args, "scProtocolVersion", "0")));
     launch_session->stationconnect_feature_flags =
