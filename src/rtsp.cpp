@@ -739,6 +739,10 @@ namespace rtsp_stream {
     return server.session_count();
   }
 
+  bool launch_session_pending() {
+    return server.launch_event.view(0s) != nullptr;
+  }
+
   void terminate_sessions() {
     server.clear(true);
     input::terminate_retained_input();

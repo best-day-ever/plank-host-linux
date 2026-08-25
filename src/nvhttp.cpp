@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <format>
 #include <functional>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -148,6 +149,7 @@ namespace nvhttp {
   using http_server_t = SimpleWeb::Server<SimpleWeb::HTTP>;
 
   std::atomic<uint32_t> session_id_counter;  ///< Monotonic counter used to allocate GameStream session IDs.
+  std::mutex session_start_mutex;  ///< Serializes launch/resume state transitions.
 
   /**
    * @brief Case-insensitive map used for HTTP headers and query parameters.
@@ -890,6 +892,8 @@ namespace nvhttp {
   void launch(bool &host_audio, resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
+    std::scoped_lock session_start_lock {session_start_mutex};
+
     pt::ptree tree;
     bool revert_display_configuration {false};
     auto g = util::fail_guard([&]() {
@@ -944,6 +948,19 @@ namespace nvhttp {
     }
 
     auto current_appid = proc::proc.running();
+    if (current_appid > 0 &&
+        rtsp_stream::session_count() == 0 &&
+        !rtsp_stream::launch_session_pending()) {
+      // The Desktop application is a process-less reservation. A normal
+      // disconnect stops and joins the media session, but the reservation can
+      // outlive it and make a rapid reconnect look like a competing launch.
+      // session_count() above synchronously removes STOPPING sessions. Once no
+      // active or pending RTSP session owns this reservation, clear it before
+      // admitting the replacement launch.
+      BOOST_LOG(info) << "Clearing orphaned StationConnect Desktop reservation before launch"sv;
+      proc::proc.terminate();
+      current_appid = 0;
+    }
     if (current_appid > 0) {
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 400);
@@ -1029,6 +1046,8 @@ namespace nvhttp {
    */
   void resume(bool &host_audio, resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
+
+    std::scoped_lock session_start_lock {session_start_mutex};
 
     pt::ptree tree;
     auto g = util::fail_guard([&]() {
