@@ -317,6 +317,8 @@ namespace platf {
   enum class pix_fmt_e {
     yuv420p,  ///< YUV 4:2:0
     yuv420p10,  ///< YUV 4:2:0 10-bit
+    yuv422p,  ///< Planar 8-bit YUV 4:2:2
+    yuv422p10,  ///< Planar 10-bit YUV 4:2:2
     nv12,  ///< NV12
     p010,  ///< P010
     ayuv,  ///< AYUV
@@ -342,6 +344,8 @@ namespace platf {
     switch (pix_fmt) {
       _CONVERT(yuv420p);
       _CONVERT(yuv420p10);
+      _CONVERT(yuv422p);
+      _CONVERT(yuv422p10);
       _CONVERT(nv12);
       _CONVERT(p010);
       _CONVERT(ayuv);

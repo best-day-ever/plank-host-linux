@@ -1196,6 +1196,12 @@ namespace rtsp_stream {
       return;
     }
 
+    if (config.monitor.chromaSamplingType < 0 || config.monitor.chromaSamplingType > 2) {
+      BOOST_LOG(warning) << "Rejecting unsupported chroma sampling type: "sv << config.monitor.chromaSamplingType;
+      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+      return;
+    }
+
     const bool identity_gbr_requested = (config.monitor.encoderCscMode >> 1) == COLORSPACE_IDENTITY_GBR;
     const bool identity_gbr_flagged = (config.mlFeatureFlags & ML_FF_IDENTITY_GBR_444) != 0;
     const bool identity_gbr_valid =

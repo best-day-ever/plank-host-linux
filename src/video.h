@@ -63,7 +63,7 @@ namespace video {
     int encoderCscMode;  ///< Requested color range and SDR colorspace; HDR always uses BT.2020 and ST2084.
     int videoFormat;  ///< Video codec format: 0 = H.264, 1 = HEVC, 2 = AV1.
     int dynamicRange;  ///< Encoding color depth: 0 = 8-bit, 1 = 10-bit.
-    int chromaSamplingType;  ///< Chroma sampling type: 0 = 4:2:0, 1 = 4:4:4.
+    int chromaSamplingType;  ///< Chroma sampling type: 0 = 4:2:0, 1 = 4:4:4, 2 = 4:2:2.
     int enableIntraRefresh;  ///< Intra refresh setting: 0 = disabled, 1 = enabled.
     bool span_desktop {};  ///< Capture and scale the complete virtual desktop rather than one output.
   };
@@ -166,6 +166,8 @@ namespace video {
     platf::pix_fmt_e pix_fmt_10bit;  ///< 10-bit 4:2:0 input format accepted by this encoder.
     platf::pix_fmt_e pix_fmt_yuv444_8bit;  ///< 8-bit 4:4:4 input format accepted by this encoder.
     platf::pix_fmt_e pix_fmt_yuv444_10bit;  ///< 10-bit 4:4:4 input format accepted by this encoder.
+    platf::pix_fmt_e pix_fmt_yuv422_8bit;  ///< 8-bit 4:2:2 input format accepted by this encoder.
+    platf::pix_fmt_e pix_fmt_yuv422_10bit;  ///< 10-bit 4:2:2 input format accepted by this encoder.
   };
 
   /**
@@ -199,7 +201,9 @@ namespace video {
       const AVPixelFormat &avcodec_pix_fmt_yuv444_8bit,
       const AVPixelFormat &avcodec_pix_fmt_yuv444_10bit,
       const init_buffer_function_t &init_avcodec_hardware_input_buffer_function,
-      const platf::mem_type_e capture_dev_type = platf::mem_type_e::unknown
+      const platf::mem_type_e capture_dev_type = platf::mem_type_e::unknown,
+      const AVPixelFormat &avcodec_pix_fmt_yuv422_8bit = AV_PIX_FMT_NONE,
+      const AVPixelFormat &avcodec_pix_fmt_yuv422_10bit = AV_PIX_FMT_NONE
     ):
         avcodec_base_dev_type {avcodec_base_dev_type},
         avcodec_derived_dev_type {avcodec_derived_dev_type},
@@ -208,6 +212,8 @@ namespace video {
         avcodec_pix_fmt_10bit {avcodec_pix_fmt_10bit},
         avcodec_pix_fmt_yuv444_8bit {avcodec_pix_fmt_yuv444_8bit},
         avcodec_pix_fmt_yuv444_10bit {avcodec_pix_fmt_yuv444_10bit},
+        avcodec_pix_fmt_yuv422_8bit {avcodec_pix_fmt_yuv422_8bit},
+        avcodec_pix_fmt_yuv422_10bit {avcodec_pix_fmt_yuv422_10bit},
         init_avcodec_hardware_input_buffer {init_avcodec_hardware_input_buffer_function} {
       dev_type = capture_dev_type == platf::mem_type_e::unknown ?
                    map_base_dev_type(avcodec_base_dev_type) :
@@ -216,6 +222,8 @@ namespace video {
       pix_fmt_10bit = map_pix_fmt(avcodec_pix_fmt_10bit);
       pix_fmt_yuv444_8bit = map_pix_fmt(avcodec_pix_fmt_yuv444_8bit);
       pix_fmt_yuv444_10bit = map_pix_fmt(avcodec_pix_fmt_yuv444_10bit);
+      pix_fmt_yuv422_8bit = map_pix_fmt(avcodec_pix_fmt_yuv422_8bit);
+      pix_fmt_yuv422_10bit = map_pix_fmt(avcodec_pix_fmt_yuv422_10bit);
     }
 
     AVHWDeviceType avcodec_base_dev_type;  ///< FFmpeg device type used to create the primary hardware context.
@@ -225,6 +233,8 @@ namespace video {
     AVPixelFormat avcodec_pix_fmt_10bit;  ///< FFmpeg 10-bit 4:2:0 software pixel format for this encoder.
     AVPixelFormat avcodec_pix_fmt_yuv444_8bit;  ///< FFmpeg 8-bit 4:4:4 software pixel format for this encoder.
     AVPixelFormat avcodec_pix_fmt_yuv444_10bit;  ///< FFmpeg 10-bit 4:4:4 software pixel format for this encoder.
+    AVPixelFormat avcodec_pix_fmt_yuv422_8bit;  ///< FFmpeg 8-bit 4:2:2 software pixel format for this encoder.
+    AVPixelFormat avcodec_pix_fmt_yuv422_10bit;  ///< FFmpeg 10-bit 4:2:2 software pixel format for this encoder.
 
     init_buffer_function_t init_avcodec_hardware_input_buffer;  ///< Backend hook that allocates or imports hardware frames for FFmpeg.
   };
@@ -254,6 +264,8 @@ namespace video {
       encoder_platform_formats_t::pix_fmt_10bit = pix_fmt_10bit;
       encoder_platform_formats_t::pix_fmt_yuv444_8bit = pix_fmt_yuv444_8bit;
       encoder_platform_formats_t::pix_fmt_yuv444_10bit = pix_fmt_yuv444_10bit;
+      encoder_platform_formats_t::pix_fmt_yuv422_8bit = platf::pix_fmt_e::unknown;
+      encoder_platform_formats_t::pix_fmt_yuv422_10bit = platf::pix_fmt_e::unknown;
     }
   };
 
@@ -272,6 +284,8 @@ namespace video {
       DYNAMIC_RANGE,  ///< HDR support.
       YUV444,  ///< YUV 4:4:4 support.
       DYNAMIC_RANGE_YUV444,  ///< YUV 4:4:4 HDR support.
+      YUV422,  ///< YUV 4:2:2 support.
+      DYNAMIC_RANGE_YUV422,  ///< 10-bit YUV 4:2:2 support.
       VUI_PARAMETERS,  ///< AMD encoder with VAAPI doesn't add VUI parameters to SPS.
       MAX_FLAGS  ///< Maximum number of flags.
     };
@@ -294,6 +308,8 @@ namespace video {
         _CONVERT(DYNAMIC_RANGE);
         _CONVERT(YUV444);
         _CONVERT(DYNAMIC_RANGE_YUV444);
+        _CONVERT(YUV422);
+        _CONVERT(DYNAMIC_RANGE_YUV422);
         _CONVERT(VUI_PARAMETERS);
         _CONVERT(MAX_FLAGS);
       }
@@ -660,6 +676,8 @@ namespace video {
   extern bool last_encoder_probe_supported_ref_frames_invalidation;
   extern std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec;  // 0 - H.264, 1 - HEVC, 2 - AV1
   extern bool last_encoder_probe_supported_h264_10bit_444;  ///< Whether the selected encoder accepts H.264 10-bit 4:4:4 input.
+  extern bool last_encoder_probe_supported_h264_8bit_422;  ///< Whether the selected encoder accepts H.264 8-bit 4:2:2 input.
+  extern bool last_encoder_probe_supported_h264_10bit_422;  ///< Whether the selected encoder accepts H.264 10-bit 4:2:2 input.
 
   void capture(
     safe::mail_t mail,

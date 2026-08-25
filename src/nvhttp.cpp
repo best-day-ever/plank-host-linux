@@ -741,6 +741,12 @@ namespace nvhttp {
       codec_mode_flags |= SCM_IDENTITY_GBR_444;
 #endif
     }
+    if (video::last_encoder_probe_supported_h264_8bit_422) {
+      codec_mode_flags |= SCM_H264_HIGH8_422;
+    }
+    if (video::last_encoder_probe_supported_h264_10bit_422) {
+      codec_mode_flags |= SCM_H264_HIGH10_422;
+    }
     if (video::active_hevc_mode >= 2) {
       codec_mode_flags |= SCM_HEVC;
       if (video::last_encoder_probe_supported_yuv444_for_codec[1]) {

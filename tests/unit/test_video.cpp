@@ -90,6 +90,19 @@ TEST(VideoColorspaceTest, IdentityGbrRequiresFullRange444) {
   EXPECT_EQ(video::colorspace_from_client_config(config, false).colorspace, video::colorspace_e::identity_gbr);
 }
 
+TEST(VideoColorspaceTest, H264TenBit422RemainsSdrRec709OnHdrDisplay) {
+  video::config_t config {};
+  config.videoFormat = 0;
+  config.encoderCscMode = (1 << 1) | 1;
+  config.dynamicRange = 1;
+  config.chromaSamplingType = 2;
+
+  const auto colorspace = video::colorspace_from_client_config(config, true);
+  EXPECT_EQ(colorspace.colorspace, video::colorspace_e::rec709);
+  EXPECT_TRUE(colorspace.full_range);
+  EXPECT_EQ(colorspace.bit_depth, 10);
+}
+
 TEST(VideoEncoderTest, NativeX264RgbRequiresEightBitIdentity444) {
   video::config_t config {};
   config.videoFormat = 0;
@@ -247,6 +260,7 @@ INSTANTIATE_TEST_SUITE_P(
     std::make_tuple("h264_amf"sv, video::amf::coder_e::cabac, 0, AV_PROFILE_H264_HIGH),
     std::make_tuple("h264_amf"sv, video::amf::coder_e::cavlc, 0, AV_PROFILE_H264_CONSTRAINED_BASELINE),
     std::make_tuple("h264_amf"sv, video::amf::coder_e::cavlc, 1, AV_PROFILE_H264_HIGH_444_PREDICTIVE),
+    std::make_tuple("libx264"sv, video::amf::coder_e::auto_, 2, AV_PROFILE_H264_HIGH_422),
     std::make_tuple("h264_nvenc"sv, video::amf::coder_e::cavlc, 0, AV_PROFILE_H264_HIGH)
   )
 );

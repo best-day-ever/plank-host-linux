@@ -281,6 +281,9 @@ namespace video {
     if (config.chromaSamplingType == 1) {
       return AV_PROFILE_H264_HIGH_444_PREDICTIVE;
     }
+    if (config.chromaSamplingType == 2) {
+      return AV_PROFILE_H264_HIGH_422;
+    }
 
     if (encoder_name == "h264_amf"sv && amd_coder == std::to_underlying(amf::coder_e::cavlc)) {
       return AV_PROFILE_H264_CONSTRAINED_BASELINE;
@@ -560,6 +563,7 @@ namespace video {
     YUV444_SUPPORT = 1 << 10,  ///< Encoder may support 4:4:4 chroma sampling depending on hardware
     ASYNC_TEARDOWN = 1 << 11,  ///< Encoder supports async teardown on a different thread
     FIXED_GOP_SIZE = 1 << 12,  ///< Use fixed small GOP size (encoder doesn't support on-demand IDR frames)
+    YUV422_SUPPORT = 1 << 13,  ///< Encoder may support 4:2:2 chroma sampling depending on hardware
   };
 
   /**
@@ -1409,7 +1413,9 @@ namespace video {
       AV_PIX_FMT_YUV444P,
       AV_PIX_FMT_YUV444P10,
       nullptr,
-      platf::mem_type_e::cuda
+      platf::mem_type_e::cuda,
+      AV_PIX_FMT_YUV422P,
+      AV_PIX_FMT_YUV422P10
     ),
     {},
     {},
@@ -1426,7 +1432,7 @@ namespace video {
       {},
       "libx264"s,
     },
-    H264_ONLY | PARALLEL_ENCODING | ALWAYS_REPROBE | YUV444_SUPPORT
+    H264_ONLY | PARALLEL_ENCODING | ALWAYS_REPROBE | YUV444_SUPPORT | YUV422_SUPPORT
   };
 #endif
 
@@ -1674,6 +1680,8 @@ namespace video {
   bool last_encoder_probe_supported_ref_frames_invalidation = false;  ///< Whether the last probe found reference-frame invalidation support.
   std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {};  ///< YUV444 support discovered for each probed codec.
   bool last_encoder_probe_supported_h264_10bit_444 = false;  ///< H.264 10-bit 4:4:4 support discovered for the selected encoder.
+  bool last_encoder_probe_supported_h264_8bit_422 = false;  ///< H.264 8-bit 4:2:2 support discovered for the selected encoder.
+  bool last_encoder_probe_supported_h264_10bit_422 = false;  ///< H.264 10-bit 4:2:2 support discovered for the selected encoder.
 
   /**
    * @brief Recreate a display capture object after a capture failure.
@@ -2274,6 +2282,15 @@ namespace video {
         return nullptr;
       }
 
+    } else if (config.chromaSamplingType == 2) {
+      if (!(encoder.flags & YUV422_SUPPORT) || !video_format[encoder_t::YUV422]) {
+        BOOST_LOG(error) << video_format.name << ": YUV 4:2:2 not supported"sv;
+        return nullptr;
+      }
+      if (config.dynamicRange && !video_format[encoder_t::DYNAMIC_RANGE_YUV422]) {
+        BOOST_LOG(error) << video_format.name << ": 10-bit YUV 4:2:2 not supported"sv;
+        return nullptr;
+      }
     } else {
       if (config.dynamicRange && !video_format[encoder_t::DYNAMIC_RANGE]) {
         BOOST_LOG(error) << video_format.name << ": dynamic range not supported"sv;
@@ -2303,6 +2320,8 @@ namespace video {
                   (colorspace.bit_depth == 8 && config.chromaSamplingType == 1)  ? platform_formats->avcodec_pix_fmt_yuv444_8bit :
                   (colorspace.bit_depth == 10 && config.chromaSamplingType == 0) ? platform_formats->avcodec_pix_fmt_10bit :
                   (colorspace.bit_depth == 10 && config.chromaSamplingType == 1) ? platform_formats->avcodec_pix_fmt_yuv444_10bit :
+                  (colorspace.bit_depth == 8 && config.chromaSamplingType == 2)  ? platform_formats->avcodec_pix_fmt_yuv422_8bit :
+                  (colorspace.bit_depth == 10 && config.chromaSamplingType == 2) ? platform_formats->avcodec_pix_fmt_yuv422_10bit :
                                                                                    AV_PIX_FMT_NONE;
 
     // Allow up to 1 retry to apply the set of fallback options.
@@ -2956,6 +2975,13 @@ namespace video {
       pix_fmt = (colorspace.bit_depth == 10) ?
                   encoder.platform_formats->pix_fmt_yuv444_10bit :
                   encoder.platform_formats->pix_fmt_yuv444_8bit;
+    } else if (config.chromaSamplingType == 2) {
+      if (!(encoder.flags & YUV422_SUPPORT)) {
+        return {};
+      }
+      pix_fmt = (colorspace.bit_depth == 10) ?
+                  encoder.platform_formats->pix_fmt_yuv422_10bit :
+                  encoder.platform_formats->pix_fmt_yuv422_8bit;
     } else {
       // YUV 4:2:0
       pix_fmt = (colorspace.bit_depth == 10) ?
@@ -3710,11 +3736,30 @@ namespace video {
         }
       };
 
+      auto test_h264_yuv422 = [&](bool ten_bit) {
+        config_t config = {"", 1920, 1080, 60, 6000, 1000, 1, 0, 3, 0, ten_bit ? 1 : 0, 2};
+        reset_display(disp, encoder.platform_formats->dev_type, output_name, config);
+        if (!disp || !encoder.h264[encoder_t::PASSED]) {
+          return false;
+        }
+
+        const auto encoder_codec_name = encoder.codec_from_config(config).name;
+        return (encoder.flags & YUV422_SUPPORT) &&
+               disp->is_codec_supported(encoder_codec_name, config) &&
+               validate_config(disp, encoder, config) >= 0;
+      };
+
       test_yuv444(encoder.h264, 0);
       // H.264 dynamic range denotes the StationConnect 10-bit 4:4:4 mode.
       // It remains SDR identity GBR rather than HDR.
       encoder.h264[encoder_t::DYNAMIC_RANGE] = false;
       test_yuv444_hdr(encoder.h264, 0);
+      encoder.h264[encoder_t::YUV422] = test_h264_yuv422(false);
+      encoder.h264[encoder_t::DYNAMIC_RANGE_YUV422] = test_h264_yuv422(true);
+      encoder.hevc[encoder_t::YUV422] = false;
+      encoder.hevc[encoder_t::DYNAMIC_RANGE_YUV422] = false;
+      encoder.av1[encoder_t::YUV422] = false;
+      encoder.av1[encoder_t::DYNAMIC_RANGE_YUV422] = false;
 
       test_yuv444(encoder.hevc, 1);
       test_yuv420_hdr(encoder.hevc, 1);
@@ -3757,6 +3802,8 @@ namespace video {
     active_hevc_mode = config::video.hevc_mode;
     active_av1_mode = config::video.av1_mode;
     last_encoder_probe_supported_ref_frames_invalidation = false;
+    last_encoder_probe_supported_h264_8bit_422 = false;
+    last_encoder_probe_supported_h264_10bit_422 = false;
 
     auto adjust_encoder_constraints_hevc = [&](encoder_t *encoder) {
       // If we can't satisfy both the encoder and codec requirement, prefer the encoder over codec support
@@ -3911,6 +3958,10 @@ namespace video {
                                                        encoder.h264[encoder_t::YUV444];
     last_encoder_probe_supported_h264_10bit_444 =
       encoder.h264[encoder_t::PASSED] && encoder.h264[encoder_t::DYNAMIC_RANGE_YUV444];
+    last_encoder_probe_supported_h264_8bit_422 =
+      encoder.h264[encoder_t::PASSED] && encoder.h264[encoder_t::YUV422];
+    last_encoder_probe_supported_h264_10bit_422 =
+      encoder.h264[encoder_t::PASSED] && encoder.h264[encoder_t::DYNAMIC_RANGE_YUV422];
     last_encoder_probe_supported_yuv444_for_codec[1] = encoder.hevc[encoder_t::PASSED] &&
                                                        encoder.hevc[encoder_t::YUV444];
     last_encoder_probe_supported_yuv444_for_codec[2] = encoder.av1[encoder_t::PASSED] &&
@@ -4206,6 +4257,10 @@ namespace video {
         return platf::pix_fmt_e::yuv420p10;
       case AV_PIX_FMT_YUV420P:
         return platf::pix_fmt_e::yuv420p;
+      case AV_PIX_FMT_YUV422P:
+        return platf::pix_fmt_e::yuv422p;
+      case AV_PIX_FMT_YUV422P10:
+        return platf::pix_fmt_e::yuv422p10;
       case AV_PIX_FMT_NV12:
         return platf::pix_fmt_e::nv12;
       case AV_PIX_FMT_P010:
