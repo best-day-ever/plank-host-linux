@@ -361,21 +361,25 @@ namespace nvhttp {
    * @param request Authorized HTTPS request.
    * @return True when the authenticated account UID matches the active desktop.
    */
-  bool authentication_matches_effective_user(const req_https_t &request) {
+  std::optional<uid_t> authenticated_account_uid_for_desktop(
+    const req_https_t &request
+  ) {
     if (!web_auth) {
-      return false;
+      return std::nullopt;
     }
     const auto token = bearer_token(request);
     const auto identity = web_auth->identity(token, authentication_peer(request));
     if (!identity) {
-      return false;
+      return std::nullopt;
     }
-    if (!stationconnect::auth::account_authorized_for_desktop(*identity)) {
+    const auto uid = stationconnect::auth::account_uid(*identity);
+    if (!uid ||
+        !stationconnect::session::supervisor_attests_account_for_active_seat0(*uid)) {
       web_auth->cancel(token);
       BOOST_LOG(warning) << "Rejecting StationConnect stream for an account that is not authorized for the active desktop"sv;
-      return false;
+      return std::nullopt;
     }
-    return true;
+    return uid;
   }
 
   /**
@@ -480,6 +484,7 @@ namespace nvhttp {
 
   bool bind_host_layout(const rtsp_stream::launch_session_t &session,
                         const std::vector<platf::display_info_t> &outputs,
+                        uid_t authenticated_uid,
                         pt::ptree &tree) {
     if (session.stationconnect_protocol_version != stationconnect_topology_version ||
         (session.stationconnect_feature_flags & stationconnect_feature_host_layout_binding) == 0 ||
@@ -529,7 +534,8 @@ namespace nvhttp {
     }
     if (validation == stationconnect::topology::layout_error::mismatch) {
       const auto transition = stationconnect::session::request_display_transition({
-        session.host_layout, session.virtual_mode_1, session.virtual_mode_2
+        session.host_layout, session.virtual_mode_1, session.virtual_mode_2,
+        authenticated_uid
       });
       if (transition == stationconnect::session::display_request_status::submitted) {
         tree.put("root.<xmlattr>.status_code", 425);
@@ -537,10 +543,10 @@ namespace nvhttp {
                  "StationConnect host display transition started");
         return false;
       }
-      if (transition == stationconnect::session::display_request_status::active_user) {
+      if (transition == stationconnect::session::display_request_status::wrong_user) {
         tree.put("root.<xmlattr>.status_code", 423);
         tree.put("root.<xmlattr>.status_message",
-                 "Host display layout cannot change while a user desktop is active");
+                 "Only the active desktop user may change its display layout");
         return false;
       }
       tree.put("root.<xmlattr>.status_code", 503);
@@ -605,9 +611,11 @@ namespace nvhttp {
     return true;
   }
 
-  bool resolve_selected_output(rtsp_stream::launch_session_t &session, pt::ptree &tree) {
+  bool resolve_selected_output(rtsp_stream::launch_session_t &session,
+                               uid_t authenticated_uid,
+                               pt::ptree &tree) {
     const auto outputs = video::output_topology();
-    if (!bind_host_layout(session, outputs, tree)) {
+    if (!bind_host_layout(session, outputs, authenticated_uid, tree)) {
       return false;
     }
     if (session.display_mode == "scaled-span" || session.display_mode == "separate-displays") {
@@ -1074,7 +1082,8 @@ namespace nvhttp {
 
     auto appid = util::from_view(get_arg(args, "appid"));
 
-    if (!authentication_matches_effective_user(request)) {
+    const auto authenticated_uid = authenticated_account_uid_for_desktop(request);
+    if (!authenticated_uid) {
       tree.put("root.gamesession", 0);
       tree.put("root.<xmlattr>.status_code", 403);
       tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
@@ -1117,7 +1126,7 @@ namespace nvhttp {
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     auto launch_session = make_launch_session(host_audio, args);
-    if (!resolve_selected_output(*launch_session, tree)) {
+    if (!resolve_selected_output(*launch_session, *authenticated_uid, tree)) {
       tree.put("root.gamesession", 0);
       return;
     }
@@ -1208,7 +1217,8 @@ namespace nvhttp {
       response->close_connection_after_response = true;
     });
 
-    if (!authentication_matches_effective_user(request)) {
+    const auto authenticated_uid = authenticated_account_uid_for_desktop(request);
+    if (!authenticated_uid) {
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
       tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
@@ -1256,7 +1266,7 @@ namespace nvhttp {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
     const auto launch_session = make_launch_session(host_audio, args);
-    if (!resolve_selected_output(*launch_session, tree)) {
+    if (!resolve_selected_output(*launch_session, *authenticated_uid, tree)) {
       tree.put("root.resume", 0);
       return;
     }

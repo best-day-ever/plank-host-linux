@@ -101,16 +101,17 @@ TEST(SessionContext, RejectsMalformedOrIneligibleDesktopUpdates) {
 }
 
 TEST(SessionContext, RoundTripsBoundedDisplayRequests) {
-  const session::display_request_t single {"single", "2560x1600", {}};
+  const session::display_request_t single {"single", "2560x1600", {}, 1000};
   const auto singleMessage = session::display_request_message(single);
   const auto parsedSingle = session::parse_display_request(singleMessage);
   ASSERT_TRUE(parsedSingle);
   EXPECT_EQ(parsedSingle->layout, single.layout);
   EXPECT_EQ(parsedSingle->mode_1, single.mode_1);
   EXPECT_TRUE(parsedSingle->mode_2.empty());
+  EXPECT_EQ(parsedSingle->account_uid, single.account_uid);
 
   const session::display_request_t dual {
-    "dual-horizontal", "4096x2160", "1024x2160"
+    "dual-horizontal", "4096x2160", "1024x2160", 1000
   };
   const auto parsedDual = session::parse_display_request(
     session::display_request_message(dual)
@@ -121,16 +122,19 @@ TEST(SessionContext, RoundTripsBoundedDisplayRequests) {
 
 TEST(SessionContext, RejectsMalformedDisplayRequests) {
   EXPECT_TRUE(session::display_request_message(
-    {"single", "5120x2160", {}}
+    {"single", "5120x2160", {}, 1000}
   ).empty());
   EXPECT_TRUE(session::display_request_message(
-    {"single", "2560x1600", "1024x2160"}
+    {"single", "2560x1600", "1024x2160", 1000}
   ).empty());
   EXPECT_TRUE(session::display_request_message(
-    {"dual-horizontal", "4096x2160", {}}
+    {"dual-horizontal", "4096x2160", {}, 1000}
+  ).empty());
+  EXPECT_TRUE(session::display_request_message(
+    {"single", "2560x1600", {}, 0}
   ).empty());
   auto truncated = session::display_request_message(
-    {"single", "2560x1600", {}}
+    {"single", "2560x1600", {}, 1000}
   );
   ASSERT_FALSE(truncated.empty());
   truncated.pop_back();

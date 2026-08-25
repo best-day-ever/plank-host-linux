@@ -44,11 +44,12 @@ namespace stationconnect::session {
     std::string layout;
     std::string mode_1;
     std::string mode_2;
+    uid_t account_uid {};
   };
 
   enum class display_request_status {
     submitted,
-    active_user,
+    wrong_user,
     unavailable,
     invalid,
   };
@@ -84,7 +85,7 @@ namespace stationconnect::session {
   std::string display_request_message(const display_request_t &request);
   std::optional<display_request_t> parse_display_request(std::string_view message);
 
-  /** Request a display transition only while the active seat0 session is GDM. */
+  /** Request a display transition from GDM or the authenticated user's desktop. */
   display_request_status request_display_transition(const display_request_t &request);
 
   /** Begin monitoring the inherited, root-authenticated supervisor channel. */

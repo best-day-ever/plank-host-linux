@@ -8,10 +8,11 @@
 
 namespace topology = stationconnect::topology;
 
-TEST(StationConnectTopology, PublishesVersionThreeFeatureContract) {
-  EXPECT_EQ(topology::protocol_version, 3U);
-  EXPECT_EQ(topology::feature_flags, 0x1FFU);
+TEST(StationConnectTopology, PublishesVersionFourFeatureContract) {
+  EXPECT_EQ(topology::protocol_version, 4U);
+  EXPECT_EQ(topology::feature_flags, 0x3FFU);
   EXPECT_TRUE(topology::valid_virtual_mode("1024x2160"));
+  EXPECT_TRUE(topology::valid_virtual_mode("2560x2160"));
   EXPECT_TRUE(topology::valid_virtual_mode("4096x2160"));
   EXPECT_FALSE(topology::valid_virtual_mode("5120x2160"));
 }

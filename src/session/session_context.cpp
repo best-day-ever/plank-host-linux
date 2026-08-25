@@ -30,7 +30,7 @@
 namespace stationconnect::session {
   namespace {
     constexpr std::string_view update_prefix = "SC-SESSION-2";
-    constexpr std::string_view display_request_prefix = "SC-DISPLAY-1";
+    constexpr std::string_view display_request_prefix = "SC-DISPLAY-2";
     constexpr std::size_t maximum_update_size = 8192;
     using login_string_t = std::unique_ptr<char, decltype(&free)>;
 
@@ -386,11 +386,13 @@ namespace stationconnect::session {
         !stationconnect::topology::valid_virtual_mode(request.mode_1) ||
         (request.layout == "single" && !request.mode_2.empty()) ||
         (request.layout == "dual-horizontal" &&
-         !stationconnect::topology::valid_virtual_mode(request.mode_2))) {
+         !stationconnect::topology::valid_virtual_mode(request.mode_2)) ||
+        request.account_uid == 0) {
       return {};
     }
-    const std::array<std::string_view, 4> fields {
-      display_request_prefix, request.layout, request.mode_1, request.mode_2
+    const auto account_uid = std::to_string(request.account_uid);
+    const std::array<std::string_view, 5> fields {
+      display_request_prefix, request.layout, request.mode_1, request.mode_2, account_uid
     };
     std::string message;
     for (const auto field : fields) {
@@ -410,10 +412,14 @@ namespace stationconnect::session {
       fields.emplace_back(message.substr(offset, end - offset));
       offset = end + 1;
     }
-    if (message.size() > maximum_update_size || fields.size() != 4 ||
+    if (message.size() > maximum_update_size || fields.size() != 5 ||
         fields.front() != display_request_prefix) return std::nullopt;
+    const auto account_uid = parse_integer<unsigned long long>(fields[4]);
+    if (!account_uid || *account_uid == 0 ||
+        *account_uid > std::numeric_limits<uid_t>::max()) return std::nullopt;
     display_request_t request {
-      std::string {fields[1]}, std::string {fields[2]}, std::string {fields[3]}
+      std::string {fields[1]}, std::string {fields[2]}, std::string {fields[3]},
+      static_cast<uid_t>(*account_uid)
     };
     return display_request_message(request).empty() ?
              std::nullopt : std::optional<display_request_t> {std::move(request)};
@@ -434,8 +440,11 @@ namespace stationconnect::session {
         active->uid != attestation->session.uid) {
       return display_request_status::unavailable;
     }
-    if (active->session_class != "greeter") {
-      return display_request_status::active_user;
+    if (active->session_class == "user" && active->uid != request.account_uid) {
+      return display_request_status::wrong_user;
+    }
+    if (active->session_class != "greeter" && active->session_class != "user") {
+      return display_request_status::unavailable;
     }
 
     std::lock_guard lock {supervisor_descriptor_mutex};

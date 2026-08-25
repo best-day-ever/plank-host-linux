@@ -3,6 +3,7 @@
  * @brief Boot-time StationConnect graphical-session worker supervisor.
  */
 #include "session_context.h"
+#include "../stationconnect_topology.h"
 
 #include <algorithm>
 #include <array>
@@ -24,6 +25,7 @@
 #include <systemd/sd-login.h>
 #include <linux/capability.h>
 #include <sys/prctl.h>
+#include <grp.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -39,9 +41,12 @@ namespace {
   constexpr std::string_view systemctl_path = "/usr/bin/systemctl";
   constexpr std::string_view display_prepare_path =
     "/usr/libexec/stationconnect/stationconnect-display-prepare";
+  constexpr std::string_view xrandr_path = "/usr/bin/xrandr";
 
   struct account_t {
     uid_t uid {};
+    gid_t gid {};
+    std::string name;
     std::string home;
   };
 
@@ -63,6 +68,8 @@ namespace {
       if (status == 0 && result != nullptr) {
         return account_t {
           uid,
+          record.pw_gid,
+          record.pw_name == nullptr ? "" : record.pw_name,
           record.pw_dir == nullptr ? "" : record.pw_dir,
         };
       }
@@ -343,6 +350,150 @@ namespace {
     return false;
   }
 
+  bool run_bounded_user_command(
+    const std::filesystem::path &program,
+    const std::vector<std::string> &arguments,
+    std::chrono::seconds timeout,
+    const account_t &account,
+    const stationconnect::session::environment_t &environment
+  ) {
+    if (!program.is_absolute() || access(program.c_str(), X_OK) != 0 ||
+        account.uid == 0 || account.name.empty()) return false;
+    const pid_t child = fork();
+    if (child == 0) {
+      sigset_t empty_mask;
+      sigemptyset(&empty_mask);
+      if (sigprocmask(SIG_SETMASK, &empty_mask, nullptr) != 0 ||
+          setgroups(0, nullptr) != 0 || setgid(account.gid) != 0 ||
+          setuid(account.uid) != 0) {
+        std::_Exit(126);
+      }
+      clearenv();
+      set_environment_value("HOME", account.home);
+      set_environment_value("USER", account.name);
+      set_environment_value("LOGNAME", account.name);
+      set_environment_value("PATH", "/usr/local/bin:/usr/bin:/bin");
+      set_environment_value("DISPLAY", environment.display);
+      set_environment_value("XAUTHORITY", environment.xauthority);
+      set_environment_value("XDG_RUNTIME_DIR", environment.runtime_directory);
+      std::vector<char *> command;
+      command.reserve(arguments.size() + 2);
+      command.push_back(const_cast<char *>(program.c_str()));
+      for (const auto &argument : arguments) {
+        command.push_back(const_cast<char *>(argument.c_str()));
+      }
+      command.push_back(nullptr);
+      execv(program.c_str(), command.data());
+      std::_Exit(127);
+    }
+    if (child <= 0) return false;
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    int status {};
+    while (std::chrono::steady_clock::now() < deadline) {
+      const pid_t result = waitpid(child, &status, WNOHANG);
+      if (result == child) return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+      if (result < 0 && errno != EINTR) return false;
+      std::this_thread::sleep_for(std::chrono::milliseconds {50});
+    }
+    kill(child, SIGKILL);
+    waitpid(child, nullptr, 0);
+    return false;
+  }
+
+  struct mode_timing_t {
+    std::string_view clock;
+    int h_active;
+    int h_sync_start;
+    int h_sync_end;
+    int h_total;
+    int v_active;
+    int v_sync_start;
+    int v_sync_end;
+    int v_total;
+  };
+
+  std::optional<mode_timing_t> mode_timing(std::string_view mode) {
+    if (mode == "1024x2160") return mode_timing_t {"157.75", 1024, 1072, 1104, 1184, 2160, 2163, 2173, 2222};
+    if (mode == "1280x720") return mode_timing_t {"63.75", 1280, 1328, 1360, 1440, 720, 723, 728, 741};
+    if (mode == "1280x1024") return mode_timing_t {"90.75", 1280, 1328, 1360, 1440, 1024, 1027, 1034, 1054};
+    if (mode == "1280x2160") return mode_timing_t {"191.75", 1280, 1328, 1360, 1440, 2160, 2163, 2173, 2222};
+    if (mode == "1920x1080") return mode_timing_t {"138.50", 1920, 1968, 2000, 2080, 1080, 1083, 1088, 1111};
+    if (mode == "1920x1200") return mode_timing_t {"154.00", 1920, 1968, 2000, 2080, 1200, 1203, 1209, 1235};
+    if (mode == "2560x1440") return mode_timing_t {"241.50", 2560, 2608, 2640, 2720, 1440, 1443, 1448, 1481};
+    if (mode == "2560x1600") return mode_timing_t {"268.50", 2560, 2608, 2640, 2720, 1600, 1603, 1609, 1646};
+    if (mode == "2560x2160") return mode_timing_t {"362.50", 2560, 2608, 2640, 2720, 2160, 2163, 2173, 2222};
+    if (mode == "3440x1440") return mode_timing_t {"319.75", 3440, 3488, 3520, 3600, 1440, 1443, 1453, 1481};
+    if (mode == "3840x1600") return mode_timing_t {"394.75", 3840, 3888, 3920, 4000, 1600, 1603, 1613, 1646};
+    if (mode == "3840x2160") return mode_timing_t {"533.00", 3840, 3888, 3920, 4000, 2160, 2163, 2168, 2222};
+    if (mode == "4096x2160") return mode_timing_t {"594.00", 4096, 4184, 4272, 4400, 2160, 2168, 2178, 2250};
+    return std::nullopt;
+  }
+
+  bool ensure_live_mode(
+    std::string_view output,
+    std::string_view mode,
+    const account_t &account,
+    const stationconnect::session::environment_t &environment
+  ) {
+    const auto timing = mode_timing(mode);
+    if (!timing) return false;
+    const std::string name = "StationConnect-" + std::string {mode};
+    const std::vector<std::string> new_mode {
+      "--newmode", name, std::string {timing->clock},
+      std::to_string(timing->h_active), std::to_string(timing->h_sync_start),
+      std::to_string(timing->h_sync_end), std::to_string(timing->h_total),
+      std::to_string(timing->v_active), std::to_string(timing->v_sync_start),
+      std::to_string(timing->v_sync_end), std::to_string(timing->v_total),
+      "+HSync", "-VSync"
+    };
+    // Existing mode names make --newmode/--addmode return non-zero. The
+    // authoritative layout transaction below decides whether the mode is
+    // actually usable, so these idempotent setup calls are intentionally
+    // best-effort.
+    run_bounded_user_command(
+      xrandr_path, new_mode, std::chrono::seconds {5}, account, environment
+    );
+    run_bounded_user_command(
+      xrandr_path, {"--addmode", std::string {output}, name},
+      std::chrono::seconds {5}, account, environment
+    );
+    return true;
+  }
+
+  bool apply_live_display_transition(
+    const stationconnect::session::display_request_t &request,
+    const stationconnect::session::descriptor_t &session,
+    const stationconnect::session::environment_t &environment
+  ) {
+    const auto account = account_for_uid(session.uid);
+    const auto first = stationconnect::topology::virtual_mode_size(request.mode_1);
+    if (!account || first.width <= 0 || first.height <= 0 ||
+        !ensure_live_mode("DP-0", request.mode_1, *account, environment)) {
+      return false;
+    }
+    std::vector<std::string> arguments {
+      "--output", "DP-0", "--mode", "StationConnect-" + request.mode_1,
+      "--pos", "0x0", "--primary"
+    };
+    if (request.layout == "dual-horizontal") {
+      const auto second = stationconnect::topology::virtual_mode_size(request.mode_2);
+      if (second.width <= 0 || second.height <= 0 ||
+          !ensure_live_mode("DP-2", request.mode_2, *account, environment)) {
+        return false;
+      }
+      arguments.insert(arguments.end(), {
+        "--output", "DP-2", "--mode", "StationConnect-" + request.mode_2,
+        "--pos", std::to_string(first.width) + "x0"
+      });
+    } else {
+      arguments.insert(arguments.end(), {"--output", "DP-2", "--off"});
+    }
+    return run_bounded_user_command(
+      xrandr_path, arguments, std::chrono::seconds {10}, *account, environment
+    );
+  }
+
   bool apply_display_transition(const stationconnect::session::display_request_t &request) {
     const bool stopped = run_bounded_command(
       systemctl_path, {"stop", "display-manager.service"}, std::chrono::seconds {30}
@@ -430,10 +581,9 @@ int main(int argc, char **argv) {
     if (pending_display_request &&
         std::chrono::steady_clock::now() >= display_request_deadline) {
       const auto selected = stationconnect::session::active_seat0_graphical_session();
-      if (!selected || selected->id != worker.session_id ||
-          selected->session_class != "greeter") {
-        std::cerr << "Refusing StationConnect display transition because GDM no longer owns seat0\n";
-      } else {
+      if (!selected || selected->id != worker.session_id) {
+        std::cerr << "Refusing StationConnect display transition because the graphical session changed\n";
+      } else if (selected->session_class == "greeter") {
         const auto request = std::move(*pending_display_request);
         std::clog << "Applying StationConnect display transition: "
                   << request.layout << ' ' << request.mode_1;
@@ -443,6 +593,22 @@ int main(int argc, char **argv) {
         if (apply_display_transition(request)) {
           std::clog << "StationConnect display transition completed\n";
         }
+      } else if (selected->session_class == "user" &&
+                 selected->uid == pending_display_request->account_uid) {
+        const auto environment = stationconnect::session::discover_environment(*selected);
+        if (!environment) {
+          std::cerr << "Unable to discover the active user's X11 environment for a live display transition\n";
+        } else if (apply_live_display_transition(
+                     *pending_display_request, *selected, *environment
+                   )) {
+          std::clog << "StationConnect live display transition completed for UID "
+                    << selected->uid << '\n';
+        } else {
+          std::cerr << "StationConnect live display transition failed for UID "
+                    << selected->uid << '\n';
+        }
+      } else {
+        std::cerr << "Refusing StationConnect display transition for a user other than the active desktop owner\n";
       }
       pending_display_request.reset();
       display_request_deadline = std::chrono::steady_clock::time_point::max();
@@ -517,15 +683,20 @@ int main(int argc, char **argv) {
       if (!request) {
         std::cerr << "Rejected malformed StationConnect display transition request\n";
       } else if (!active || active->id != worker.session_id ||
-                 active->session_class != "greeter") {
-        std::cerr << "Refused StationConnect display transition outside the GDM greeter\n";
+                 (active->session_class == "user" &&
+                  active->uid != request->account_uid) ||
+                 (active->session_class != "greeter" &&
+                  active->session_class != "user")) {
+        std::cerr << "Refused StationConnect display transition outside an authorized graphical session\n";
       } else if (!pending_display_request) {
         pending_display_request = *request;
         // Allow the HTTPS worker to return its transition response before it
         // is stopped and GDM is restarted.
         display_request_deadline =
           std::chrono::steady_clock::now() + std::chrono::milliseconds {750};
-        std::clog << "Scheduled StationConnect display transition from GDM\n";
+        std::clog << "Scheduled StationConnect display transition from "
+                  << (active->session_class == "greeter" ? "GDM" : "the active user desktop")
+                  << '\n';
       }
     }
     if ((descriptors[0].revents & POLLIN) != 0) {

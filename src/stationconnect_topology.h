@@ -53,6 +53,7 @@ namespace stationconnect::topology {
     if (mode == "1920x1200") return {1920, 1200};
     if (mode == "2560x1440") return {2560, 1440};
     if (mode == "2560x1600") return {2560, 1600};
+    if (mode == "2560x2160") return {2560, 2160};
     if (mode == "3440x1440") return {3440, 1440};
     if (mode == "3840x1600") return {3840, 1600};
     if (mode == "3840x2160") return {3840, 2160};
