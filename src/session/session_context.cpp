@@ -4,6 +4,8 @@
  */
 #include "session_context.h"
 
+#include "stationconnect_topology.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -28,12 +30,15 @@
 namespace stationconnect::session {
   namespace {
     constexpr std::string_view update_prefix = "SC-SESSION-2";
+    constexpr std::string_view display_request_prefix = "SC-DISPLAY-1";
     constexpr std::size_t maximum_update_size = 8192;
     using login_string_t = std::unique_ptr<char, decltype(&free)>;
 
     std::mutex current_update_mutex;
     std::optional<update_t> current_update;
     std::atomic_uint64_t current_generation {};
+    std::mutex supervisor_descriptor_mutex;
+    int supervisor_descriptor {-1};
 
     std::optional<std::string> session_string(
       int (*getter)(const char *, char **),
@@ -229,6 +234,10 @@ namespace stationconnect::session {
       }
 
       ~supervisor_control_impl_t() override {
+        {
+          std::lock_guard lock {supervisor_descriptor_mutex};
+          supervisor_descriptor = -1;
+        }
         thread_.request_stop();
         shutdown(descriptor_, SHUT_RDWR);
         if (thread_.joinable()) thread_.join();
@@ -372,6 +381,72 @@ namespace stationconnect::session {
              std::optional<update_t> {std::move(result)} : std::nullopt;
   }
 
+  std::string display_request_message(const display_request_t &request) {
+    if ((request.layout != "single" && request.layout != "dual-horizontal") ||
+        !stationconnect::topology::valid_virtual_mode(request.mode_1) ||
+        (request.layout == "single" && !request.mode_2.empty()) ||
+        (request.layout == "dual-horizontal" &&
+         !stationconnect::topology::valid_virtual_mode(request.mode_2))) {
+      return {};
+    }
+    const std::array<std::string_view, 4> fields {
+      display_request_prefix, request.layout, request.mode_1, request.mode_2
+    };
+    std::string message;
+    for (const auto field : fields) {
+      if (field.find('\0') != std::string_view::npos) return {};
+      message.append(field);
+      message.push_back('\0');
+    }
+    return message.size() <= maximum_update_size ? message : std::string {};
+  }
+
+  std::optional<display_request_t> parse_display_request(std::string_view message) {
+    std::vector<std::string_view> fields;
+    std::size_t offset = 0;
+    while (offset < message.size()) {
+      const auto end = message.find('\0', offset);
+      if (end == std::string_view::npos) return std::nullopt;
+      fields.emplace_back(message.substr(offset, end - offset));
+      offset = end + 1;
+    }
+    if (message.size() > maximum_update_size || fields.size() != 4 ||
+        fields.front() != display_request_prefix) return std::nullopt;
+    display_request_t request {
+      std::string {fields[1]}, std::string {fields[2]}, std::string {fields[3]}
+    };
+    return display_request_message(request).empty() ?
+             std::nullopt : std::optional<display_request_t> {std::move(request)};
+  }
+
+  display_request_status request_display_transition(const display_request_t &request) {
+    const std::string message = display_request_message(request);
+    if (message.empty()) return display_request_status::invalid;
+
+    std::optional<update_t> attestation;
+    {
+      std::lock_guard lock {current_update_mutex};
+      attestation = current_update;
+    }
+    if (!attestation) return display_request_status::unavailable;
+    const auto active = active_seat0_graphical_session();
+    if (!active || active->id != attestation->session.id ||
+        active->uid != attestation->session.uid) {
+      return display_request_status::unavailable;
+    }
+    if (active->session_class != "greeter") {
+      return display_request_status::active_user;
+    }
+
+    std::lock_guard lock {supervisor_descriptor_mutex};
+    if (supervisor_descriptor < 0 ||
+        send(supervisor_descriptor, message.data(), message.size(), MSG_NOSIGNAL) !=
+          static_cast<ssize_t>(message.size())) {
+      return display_request_status::unavailable;
+    }
+    return display_request_status::submitted;
+  }
+
   std::unique_ptr<supervisor_control_t> start_supervisor_control(
     std::function<void(std::uint64_t)> on_reattach
   ) {
@@ -390,6 +465,10 @@ namespace stationconnect::session {
     if (!accepted) {
       close(*descriptor);
       return {};
+    }
+    {
+      std::lock_guard lock {supervisor_descriptor_mutex};
+      supervisor_descriptor = *descriptor;
     }
     return std::make_unique<supervisor_control_impl_t>(*descriptor, std::move(on_reattach));
   }

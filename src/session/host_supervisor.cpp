@@ -36,6 +36,9 @@ namespace {
   constexpr std::string_view machine_home = "/var/lib/stationconnect";
   constexpr std::string_view runtime_pulse_cookie =
     "/run/stationconnect/host/pulse-cookie";
+  constexpr std::string_view systemctl_path = "/usr/bin/systemctl";
+  constexpr std::string_view display_prepare_path =
+    "/usr/libexec/stationconnect/stationconnect-display-prepare";
 
   struct account_t {
     uid_t uid {};
@@ -307,6 +310,71 @@ namespace {
     worker = {};
   }
 
+  bool run_bounded_command(
+    const std::filesystem::path &program,
+    const std::vector<std::string> &arguments,
+    std::chrono::seconds timeout
+  ) {
+    if (!program.is_absolute() || access(program.c_str(), X_OK) != 0) return false;
+    const pid_t child = fork();
+    if (child == 0) {
+      std::vector<char *> command;
+      command.reserve(arguments.size() + 2);
+      command.push_back(const_cast<char *>(program.c_str()));
+      for (const auto &argument : arguments) {
+        command.push_back(const_cast<char *>(argument.c_str()));
+      }
+      command.push_back(nullptr);
+      execv(program.c_str(), command.data());
+      std::_Exit(127);
+    }
+    if (child <= 0) return false;
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    int status {};
+    while (std::chrono::steady_clock::now() < deadline) {
+      const pid_t result = waitpid(child, &status, WNOHANG);
+      if (result == child) return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+      if (result < 0 && errno != EINTR) return false;
+      std::this_thread::sleep_for(std::chrono::milliseconds {50});
+    }
+    kill(child, SIGKILL);
+    waitpid(child, nullptr, 0);
+    return false;
+  }
+
+  bool apply_display_transition(const stationconnect::session::display_request_t &request) {
+    const bool stopped = run_bounded_command(
+      systemctl_path, {"stop", "display-manager.service"}, std::chrono::seconds {30}
+    );
+    if (!stopped) {
+      std::cerr << "Unable to stop the display manager for StationConnect topology transition\n";
+      return false;
+    }
+
+    std::vector<std::string> prepare_arguments {
+      "--layout", request.layout, "--mode-1", request.mode_1
+    };
+    if (!request.mode_2.empty()) {
+      prepare_arguments.insert(
+        prepare_arguments.end(), {"--mode-2", request.mode_2}
+      );
+    }
+    const bool prepared = run_bounded_command(
+      display_prepare_path, prepare_arguments, std::chrono::seconds {15}
+    );
+    const bool started = run_bounded_command(
+      systemctl_path, {"start", "display-manager.service"}, std::chrono::seconds {30}
+    );
+    if (!prepared) {
+      std::cerr << "StationConnect display preparation failed; restored the prior GDM topology\n";
+    }
+    if (!started) {
+      std::cerr << "Unable to restart the display manager after StationConnect topology transition\n";
+    }
+    return prepared && started;
+  }
+
   void usage(const char *program) {
     std::cerr << "usage: " << program << " [--worker ABSOLUTE_PATH]\n";
   }
@@ -353,10 +421,35 @@ int main(int argc, char **argv) {
   };
 
   worker_t worker;
+  std::optional<stationconnect::session::display_request_t> pending_display_request;
+  auto display_request_deadline = std::chrono::steady_clock::time_point::max();
   std::string pending_session;
   auto next_launch = std::chrono::steady_clock::now();
   bool stopping = false;
   while (!stopping) {
+    if (pending_display_request &&
+        std::chrono::steady_clock::now() >= display_request_deadline) {
+      const auto selected = stationconnect::session::active_seat0_graphical_session();
+      if (!selected || selected->id != worker.session_id ||
+          selected->session_class != "greeter") {
+        std::cerr << "Refusing StationConnect display transition because GDM no longer owns seat0\n";
+      } else {
+        const auto request = std::move(*pending_display_request);
+        std::clog << "Applying StationConnect display transition: "
+                  << request.layout << ' ' << request.mode_1;
+        if (!request.mode_2.empty()) std::clog << ' ' << request.mode_2;
+        std::clog << '\n';
+        stop_worker(worker);
+        if (apply_display_transition(request)) {
+          std::clog << "StationConnect display transition completed\n";
+        }
+      }
+      pending_display_request.reset();
+      display_request_deadline = std::chrono::steady_clock::time_point::max();
+      next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {2};
+      continue;
+    }
+
     const auto selected = stationconnect::session::active_seat0_graphical_session();
     if (!selected) {
       pending_session.clear();
@@ -401,9 +494,10 @@ int main(int argc, char **argv) {
       }
     }
 
-    std::array<pollfd, 2> descriptors {{
+    std::array<pollfd, 3> descriptors {{
       {signal_fd, POLLIN, 0},
       {sd_login_monitor_get_fd(monitor.get()), POLLIN, 0},
+      {worker.control_descriptor, POLLIN, 0},
     }};
     const int status = poll(descriptors.data(), descriptors.size(), 1000);
     if (status < 0 && errno != EINTR) {
@@ -412,6 +506,27 @@ int main(int argc, char **argv) {
     }
     if ((descriptors[1].revents & POLLIN) != 0) {
       sd_login_monitor_flush(monitor.get());
+    }
+    if ((descriptors[2].revents & POLLIN) != 0 && worker.pid > 0) {
+      std::array<char, 8193> message {};
+      const ssize_t size = recv(worker.control_descriptor, message.data(), message.size(), 0);
+      const auto request = size > 0 ? stationconnect::session::parse_display_request(
+        std::string_view {message.data(), static_cast<std::size_t>(size)}
+      ) : std::nullopt;
+      const auto active = stationconnect::session::active_seat0_graphical_session();
+      if (!request) {
+        std::cerr << "Rejected malformed StationConnect display transition request\n";
+      } else if (!active || active->id != worker.session_id ||
+                 active->session_class != "greeter") {
+        std::cerr << "Refused StationConnect display transition outside the GDM greeter\n";
+      } else if (!pending_display_request) {
+        pending_display_request = *request;
+        // Allow the HTTPS worker to return its transition response before it
+        // is stopped and GDM is restarted.
+        display_request_deadline =
+          std::chrono::steady_clock::now() + std::chrono::milliseconds {750};
+        std::clog << "Scheduled StationConnect display transition from GDM\n";
+      }
     }
     if ((descriptors[0].revents & POLLIN) != 0) {
       signalfd_siginfo information {};

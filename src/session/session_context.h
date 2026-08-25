@@ -40,6 +40,19 @@ namespace stationconnect::session {
     environment_t environment;
   };
 
+  struct display_request_t {
+    std::string layout;
+    std::string mode_1;
+    std::string mode_2;
+  };
+
+  enum class display_request_status {
+    submitted,
+    active_user,
+    unavailable,
+    invalid,
+  };
+
   class supervisor_control_t {
   public:
     virtual ~supervisor_control_t() = default;
@@ -66,6 +79,13 @@ namespace stationconnect::session {
   /** Encode or decode one bounded supervisor desktop-attachment update. */
   std::string session_update_message(const update_t &update);
   std::optional<update_t> parse_session_update(std::string_view message);
+
+  /** Encode or decode one bounded worker-to-supervisor display request. */
+  std::string display_request_message(const display_request_t &request);
+  std::optional<display_request_t> parse_display_request(std::string_view message);
+
+  /** Request a display transition only while the active seat0 session is GDM. */
+  display_request_status request_display_transition(const display_request_t &request);
 
   /** Begin monitoring the inherited, root-authenticated supervisor channel. */
   std::unique_ptr<supervisor_control_t> start_supervisor_control(

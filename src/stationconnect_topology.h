@@ -9,7 +9,7 @@
 #include <string_view>
 
 namespace stationconnect::topology {
-  constexpr std::uint32_t protocol_version = 3;
+  constexpr std::uint32_t protocol_version = 4;
   constexpr std::uint32_t feature_output_topology = 0x1;
   constexpr std::uint32_t feature_selected_output = 0x2;
   constexpr std::uint32_t feature_unified_absolute_input = 0x4;
@@ -19,6 +19,7 @@ namespace stationconnect::topology {
   constexpr std::uint32_t feature_composite_source_regions = 0x40;
   constexpr std::uint32_t feature_host_layout_binding = 0x80;
   constexpr std::uint32_t feature_independent_virtual_modes = 0x100;
+  constexpr std::uint32_t feature_dynamic_host_layout = 0x200;
   constexpr std::uint32_t feature_flags =
     feature_output_topology |
     feature_selected_output |
@@ -28,7 +29,8 @@ namespace stationconnect::topology {
     feature_host_layout_metadata |
     feature_composite_source_regions |
     feature_host_layout_binding |
-    feature_independent_virtual_modes;
+    feature_independent_virtual_modes |
+    feature_dynamic_host_layout;
 
   enum class layout_error {
     none,
