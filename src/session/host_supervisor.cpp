@@ -401,66 +401,6 @@ namespace {
     return false;
   }
 
-  struct mode_timing_t {
-    std::string_view clock;
-    int h_active;
-    int h_sync_start;
-    int h_sync_end;
-    int h_total;
-    int v_active;
-    int v_sync_start;
-    int v_sync_end;
-    int v_total;
-  };
-
-  std::optional<mode_timing_t> mode_timing(std::string_view mode) {
-    if (mode == "1024x2160") return mode_timing_t {"157.75", 1024, 1072, 1104, 1184, 2160, 2163, 2173, 2222};
-    if (mode == "1280x720") return mode_timing_t {"63.75", 1280, 1328, 1360, 1440, 720, 723, 728, 741};
-    if (mode == "1280x1024") return mode_timing_t {"90.75", 1280, 1328, 1360, 1440, 1024, 1027, 1034, 1054};
-    if (mode == "1280x2160") return mode_timing_t {"191.75", 1280, 1328, 1360, 1440, 2160, 2163, 2173, 2222};
-    if (mode == "1920x1080") return mode_timing_t {"138.50", 1920, 1968, 2000, 2080, 1080, 1083, 1088, 1111};
-    if (mode == "1920x1200") return mode_timing_t {"154.00", 1920, 1968, 2000, 2080, 1200, 1203, 1209, 1235};
-    if (mode == "2560x1440") return mode_timing_t {"241.50", 2560, 2608, 2640, 2720, 1440, 1443, 1448, 1481};
-    if (mode == "2560x1600") return mode_timing_t {"268.50", 2560, 2608, 2640, 2720, 1600, 1603, 1609, 1646};
-    if (mode == "2560x2160") return mode_timing_t {"362.50", 2560, 2608, 2640, 2720, 2160, 2163, 2173, 2222};
-    if (mode == "3440x1440") return mode_timing_t {"319.75", 3440, 3488, 3520, 3600, 1440, 1443, 1453, 1481};
-    if (mode == "3840x1600") return mode_timing_t {"394.75", 3840, 3888, 3920, 4000, 1600, 1603, 1613, 1646};
-    if (mode == "3840x2160") return mode_timing_t {"533.00", 3840, 3888, 3920, 4000, 2160, 2163, 2168, 2222};
-    if (mode == "4096x2160") return mode_timing_t {"594.00", 4096, 4184, 4272, 4400, 2160, 2168, 2178, 2250};
-    return std::nullopt;
-  }
-
-  bool ensure_live_mode(
-    std::string_view output,
-    std::string_view mode,
-    const account_t &account,
-    const stationconnect::session::environment_t &environment
-  ) {
-    const auto timing = mode_timing(mode);
-    if (!timing) return false;
-    const std::string name = "StationConnect-" + std::string {mode};
-    const std::vector<std::string> new_mode {
-      "--newmode", name, std::string {timing->clock},
-      std::to_string(timing->h_active), std::to_string(timing->h_sync_start),
-      std::to_string(timing->h_sync_end), std::to_string(timing->h_total),
-      std::to_string(timing->v_active), std::to_string(timing->v_sync_start),
-      std::to_string(timing->v_sync_end), std::to_string(timing->v_total),
-      "+HSync", "-VSync"
-    };
-    // Existing mode names make --newmode/--addmode return non-zero. The
-    // authoritative layout transaction below decides whether the mode is
-    // actually usable, so these idempotent setup calls are intentionally
-    // best-effort.
-    run_bounded_user_command(
-      xrandr_path, new_mode, std::chrono::seconds {5}, account, environment
-    );
-    run_bounded_user_command(
-      xrandr_path, {"--addmode", std::string {output}, name},
-      std::chrono::seconds {5}, account, environment
-    );
-    return true;
-  }
-
   bool apply_live_display_transition(
     const stationconnect::session::display_request_t &request,
     const stationconnect::session::descriptor_t &session,
@@ -492,29 +432,12 @@ namespace {
       return arguments;
     };
 
-    // NVIDIA already publishes every EDID and built-in mode through RandR.
-    // Prefer those exact names. Trying to add an identical renamed timing can
-    // fail with RRAddOutputMode BadMatch even though the requested mode itself
-    // is valid and usable.
-    if (run_bounded_user_command(
-          xrandr_path,
-          layout_arguments(request.mode_1, request.mode_2),
-          std::chrono::seconds {10}, *account, environment
-        )) {
-      return true;
-    }
-
-    if (!ensure_live_mode("DP-0", request.mode_1, *account, environment) ||
-        (request.layout == "dual-horizontal" &&
-         !ensure_live_mode("DP-2", request.mode_2, *account, environment))) {
-      return false;
-    }
+    // Every qualified mode is part of each virtual monitor's EDID. NVIDIA
+    // validates this pool at Xorg startup, so live transitions never inject
+    // or approve an ad hoc timing.
     return run_bounded_user_command(
       xrandr_path,
-      layout_arguments(
-        "StationConnect-" + request.mode_1,
-        request.mode_2.empty() ? "" : "StationConnect-" + request.mode_2
-      ),
+      layout_arguments(request.mode_1, request.mode_2),
       std::chrono::seconds {10}, *account, environment
     );
   }
