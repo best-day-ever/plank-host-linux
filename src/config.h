@@ -356,6 +356,8 @@ namespace config {
     std::string log_file;  ///< Path to the configured log file.
     bool notify_pre_releases;  ///< Notify users about pre-release updates.
     bool stationconnect_mdns_discovery;  ///< Advertise this StationConnect host with mDNS.
+    std::string virtual_outputs;  ///< Pre-GDM StationConnect virtual-output layout selected by the administrator.
+    std::string virtual_mode;  ///< Pre-GDM StationConnect virtual-output resolution selected by the administrator.
     std::vector<prep_cmd_t> prep_cmds;  ///< Preparation commands executed around application launch.
   };
 

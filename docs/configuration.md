@@ -3025,6 +3025,22 @@ The packaged profile contains the settings StationConnect currently overrides. E
     </tr>
 </table>
 
+### virtual_outputs
+
+<table>
+    <tr><td>Description</td><td colspan="2">Administrator-owned virtual display layout prepared before GDM. The media worker parses this shared setting but does not reconfigure Xorg.</td></tr>
+    <tr><td>Default</td><td colspan="2">@code{}off@endcode</td></tr>
+    <tr><td>Choices</td><td colspan="2">@code{}off@endcode, @code{}single@endcode, or @code{}dual-horizontal@endcode</td></tr>
+</table>
+
+### virtual_mode
+
+<table>
+    <tr><td>Description</td><td colspan="2">Resolution of each StationConnect virtual output prepared before GDM.</td></tr>
+    <tr><td>Default</td><td colspan="2">@code{}3840x2160@endcode</td></tr>
+    <tr><td>Choices</td><td colspan="2">@code{}1920x1080@endcode or @code{}3840x2160@endcode</td></tr>
+</table>
+
 ### sw_vbv_maxrate_percentage
 
 <table>

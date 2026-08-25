@@ -875,6 +875,8 @@ namespace config {
     platf::appdata().string() + "/sunshine.log",  // log file
     false,  // notify_pre_releases
     false,  // StationConnect mDNS advertisement
+    "off",  // StationConnect virtual outputs
+    "3840x2160",  // StationConnect virtual output mode
     {},  // prep commands
   };
 
@@ -1754,6 +1756,8 @@ namespace config {
 
     bool_f(vars, "notify_pre_releases", sunshine.notify_pre_releases);
     bool_f(vars, "stationconnect_mdns_discovery", sunshine.stationconnect_mdns_discovery);
+    string_f(vars, "virtual_outputs", sunshine.virtual_outputs);
+    string_f(vars, "virtual_mode", sunshine.virtual_mode);
 
     int port = sunshine.port;
     int_between_f(vars, "port"s, port, {1024 + nvhttp::PORT_HTTPS, 65535 - rtsp_stream::RTSP_SETUP_PORT});
