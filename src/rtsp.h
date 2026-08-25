@@ -71,6 +71,12 @@ namespace rtsp_stream {
   int session_count();
 
   /**
+   * @brief Check whether an accepted launch is still waiting for its RTSP peer.
+   * @return True when a launch session is pending.
+   */
+  bool launch_session_pending();
+
+  /**
    * @brief Terminates all running streaming sessions.
    */
   void terminate_sessions();

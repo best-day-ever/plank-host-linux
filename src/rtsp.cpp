@@ -739,6 +739,10 @@ namespace rtsp_stream {
     return server.session_count();
   }
 
+  bool launch_session_pending() {
+    return server.launch_event.view(0s) != nullptr;
+  }
+
   void terminate_sessions() {
     server.clear(true);
     input::terminate_retained_input();
@@ -1192,6 +1196,12 @@ namespace rtsp_stream {
       configuredBitrateKbps = util::from_view(args.at("x-ml-video.configuredBitrateKbps"sv));
       encoderTargetKbps = util::from_view(args.at("x-sc-video.encoderTargetKbps"sv));
     } catch (std::out_of_range &) {
+      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+      return;
+    }
+
+    if (config.monitor.chromaSamplingType < 0 || config.monitor.chromaSamplingType > 2) {
+      BOOST_LOG(warning) << "Rejecting unsupported chroma sampling type: "sv << config.monitor.chromaSamplingType;
       respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
       return;
     }

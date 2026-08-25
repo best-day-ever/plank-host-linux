@@ -446,7 +446,10 @@ namespace cuda {
      * @return 0 on success; -1 on invalid state.
      */
     int init(int in_width, int in_height, platf::pix_fmt_e requested_format) {
-      if (!cdf || (requested_format != platf::pix_fmt_e::yuv444p && requested_format != platf::pix_fmt_e::yuv444p16)) {
+      if (!cdf || (requested_format != platf::pix_fmt_e::yuv444p &&
+                   requested_format != platf::pix_fmt_e::yuv444p16 &&
+                   requested_format != platf::pix_fmt_e::yuv422p &&
+                   requested_format != platf::pix_fmt_e::yuv422p10)) {
         return -1;
       }
 
@@ -483,10 +486,14 @@ namespace cuda {
 
       const bool native_bgr0 = frame->format == AV_PIX_FMT_BGR0;
       const bool identity_10bit = frame->format == AV_PIX_FMT_YUV444P10LE;
-      if ((!native_bgr0 && !identity_10bit) ||
+      const bool yuv422_8bit = frame->format == AV_PIX_FMT_YUV422P;
+      const bool yuv422_10bit = frame->format == AV_PIX_FMT_YUV422P10LE;
+      if ((!native_bgr0 && !identity_10bit && !yuv422_8bit && !yuv422_10bit) ||
           (native_bgr0 && capture_format != platf::pix_fmt_e::yuv444p) ||
-          (identity_10bit && capture_format != platf::pix_fmt_e::yuv444p16)) {
-        BOOST_LOG(error) << "CUDA software encode supports only native BGR0 and identity YUV444P10"sv;
+          (identity_10bit && capture_format != platf::pix_fmt_e::yuv444p16) ||
+          (yuv422_8bit && capture_format != platf::pix_fmt_e::yuv422p) ||
+          (yuv422_10bit && capture_format != platf::pix_fmt_e::yuv422p10)) {
+        BOOST_LOG(error) << "CUDA software encode received an unsupported frame/capture format pair"sv;
         return -1;
       }
 
@@ -507,9 +514,10 @@ namespace cuda {
         << " encode=" << output_width << 'x' << output_height;
       const auto plane_size = static_cast<std::size_t>(output_width) * output_height;
       native_direct = native_bgr0 && output_width == width && output_height == height;
-      host_readback_size = native_bgr0 ?
-                             static_cast<std::size_t>(width) * height * 4U :
-                             plane_size * 3U;
+      host_readback_size = native_bgr0 ? static_cast<std::size_t>(width) * height * 4U :
+                           yuv422_8bit ? plane_size * 2U :
+                           yuv422_10bit ? plane_size * 4U :
+                           plane_size * 3U;
       CU_CHECK(host_alloc(&host_readback, host_readback_size, 1U), "Couldn't allocate pinned software-encoder readback");
 
       if (native_bgr0) {
@@ -542,6 +550,39 @@ namespace cuda {
         return 0;
       }
 
+      if (yuv422_8bit || yuv422_10bit) {
+        const std::size_t bytes_per_sample = yuv422_10bit ? 2U : 1U;
+        const auto luma_size = plane_size * bytes_per_sample;
+        const auto chroma_size = (plane_size / 2U) * bytes_per_sample;
+        auto *base = static_cast<std::uint8_t *>(host_readback);
+        std::memset(base, 0, luma_size);
+        if (yuv422_10bit) {
+          auto *u = reinterpret_cast<std::uint16_t *>(base + luma_size);
+          auto *v = reinterpret_cast<std::uint16_t *>(base + luma_size + chroma_size);
+          std::fill_n(u, plane_size / 2U, static_cast<std::uint16_t>(512));
+          std::fill_n(v, plane_size / 2U, static_cast<std::uint16_t>(512));
+        } else {
+          std::memset(base + luma_size, 128, chroma_size * 2U);
+        }
+
+        frame->data[0] = base;
+        frame->data[1] = base + luma_size;
+        frame->data[2] = base + luma_size + chroma_size;
+        frame->linesize[0] = output_width * bytes_per_sample;
+        frame->linesize[1] = frame->linesize[2] = (output_width / 2) * bytes_per_sample;
+
+        CU_CHECK(cdf->cuMemAlloc(&device_compact, host_readback_size), "Couldn't allocate CUDA YUV422 planes");
+        CU_CHECK(cdf->cuMemcpyHtoDAsync(device_compact, host_readback, host_readback_size, stream.get()),
+                 "Couldn't initialize CUDA YUV422 background");
+        auto converter = sws_t::make(width, height, output_width, output_height, width * 4);
+        if (!converter) {
+          return -1;
+        }
+        sws = std::move(*converter);
+        mode = yuv422_10bit ? mode_e::yuv422_10bit : mode_e::yuv422_8bit;
+        return 0;
+      }
+
       if (av_frame_get_buffer(frame, 64) < 0) {
         BOOST_LOG(error) << "Couldn't allocate x264 10-bit software frame"sv;
         return -1;
@@ -564,7 +605,9 @@ namespace cuda {
      * @brief Apply identity GBR coefficients to the CUDA converter.
      */
     void apply_colorspace() override {
-      if (mode == mode_e::identity_10bit) {
+      if (mode == mode_e::identity_10bit ||
+          mode == mode_e::yuv422_8bit ||
+          mode == mode_e::yuv422_10bit) {
         sws.apply_colorspace(colorspace);
       }
     }
@@ -597,6 +640,24 @@ namespace cuda {
           return -1;
         }
         CU_CHECK(cdf->cuMemcpyDtoHAsync(host_readback, device_compact, host_readback_size, stream.get()), "Couldn't read back compact identity planes");
+      } else if (mode == mode_e::yuv422_8bit || mode == mode_e::yuv422_10bit) {
+        auto *base = reinterpret_cast<std::uint8_t *>(static_cast<std::uintptr_t>(device_compact));
+        const auto plane_size = static_cast<std::size_t>(output_width) * output_height;
+        const auto bytes_per_sample = mode == mode_e::yuv422_10bit ? 2U : 1U;
+        const auto luma_size = plane_size * bytes_per_sample;
+        const auto chroma_size = (plane_size / 2U) * bytes_per_sample;
+        const auto texture_object =
+          (width != output_width || height != output_height) ? texture.texture.linear : texture.texture.point;
+        const auto conversion_status = mode == mode_e::yuv422_10bit ?
+          sws.convert_yuv422_10bit(base, base + luma_size, base + luma_size + chroma_size,
+                                   output_width * 2U, output_width, texture_object, stream.get()) :
+          sws.convert_yuv422(base, base + luma_size, base + luma_size + chroma_size,
+                            output_width, output_width / 2U, texture_object, stream.get());
+        if (conversion_status) {
+          return -1;
+        }
+        CU_CHECK(cdf->cuMemcpyDtoHAsync(host_readback, device_compact, host_readback_size, stream.get()),
+                 "Couldn't read back YUV422 planes");
       } else {
         return -1;
       }
@@ -650,7 +711,9 @@ namespace cuda {
     enum class mode_e {
       unset,  ///< Frame format has not been attached.
       native_bgr0,  ///< Pinned native BGRA/BGR0 readback for libx264rgb.
-      identity_10bit  ///< Compact identity GBR readback followed by CPU depth expansion.
+      identity_10bit,  ///< Compact identity GBR readback followed by CPU depth expansion.
+      yuv422_8bit,  ///< CUDA Rec. 709 conversion to pinned planar 8-bit YUV 4:2:2.
+      yuv422_10bit  ///< CUDA Rec. 709 conversion to pinned planar 10-bit YUV 4:2:2.
     };
 
     /**
