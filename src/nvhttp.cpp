@@ -508,6 +508,18 @@ namespace nvhttp {
     });
 
     const bool virtual_layout = config::sunshine.virtual_outputs != "off";
+    if (!stationconnect::topology::layout_allowed_by_display_policy(
+          session.host_layout, virtual_layout
+        )) {
+      tree.put("root.<xmlattr>.status_code", 409);
+      tree.put(
+        "root.<xmlattr>.status_message",
+        virtual_layout ?
+          "Host is configured to use StationConnect virtual displays" :
+          "Host is configured to use its physical displays"
+      );
+      return false;
+    }
     const auto actual_layout = !virtual_layout ? "physical"s :
                                  outputs.size() == 1 ? "single"s :
                                  outputs.size() == 2 ? "dual-horizontal"s :

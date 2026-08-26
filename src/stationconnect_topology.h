@@ -67,6 +67,14 @@ namespace stationconnect::topology {
            layout == "dual-horizontal";
   }
 
+  constexpr bool layout_allowed_by_display_policy(
+    std::string_view layout,
+    bool virtual_outputs_enabled
+  ) {
+    return valid_layout(layout) &&
+           (virtual_outputs_enabled ? layout != "physical" : layout == "physical");
+  }
+
   constexpr bool valid_virtual_mode(std::string_view mode) {
     const auto size = virtual_mode_size(mode);
     return size.width > 0 && size.height > 0;

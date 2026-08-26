@@ -54,6 +54,12 @@ namespace stationconnect::session {
     invalid,
   };
 
+  enum class display_policy_t {
+    physical,
+    virtual_outputs,
+    invalid,
+  };
+
   class supervisor_control_t {
   public:
     virtual ~supervisor_control_t() = default;
@@ -87,6 +93,9 @@ namespace stationconnect::session {
 
   /** Read the intended secondary-monitor visibility from an owned Xorg overlay. */
   std::optional<bool> secondary_output_visible_from_overlay(std::string_view overlay);
+
+  /** Read the administrator-owned virtual-display policy; malformed input fails closed. */
+  display_policy_t configured_display_policy(std::string_view config_path);
 
   /** Request a display transition from GDM or the authenticated user's desktop. */
   display_request_status request_display_transition(const display_request_t &request);

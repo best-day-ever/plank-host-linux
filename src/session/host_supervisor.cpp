@@ -46,6 +46,8 @@ namespace {
   constexpr std::string_view xrandr_path = "/usr/bin/xrandr";
   constexpr std::string_view display_overlay_path =
     "/etc/X11/xorg.conf.d/99-stationconnect-headless.conf";
+  constexpr std::string_view stationconnect_config_path =
+    "/etc/stationconnect/stationconnect.conf";
 
   struct account_t {
     uid_t uid {};
@@ -444,6 +446,12 @@ namespace {
     return stationconnect::session::secondary_output_visible_from_overlay(contents);
   }
 
+  bool virtual_display_transitions_enabled() {
+    return stationconnect::session::configured_display_policy(
+             stationconnect_config_path
+           ) == stationconnect::session::display_policy_t::virtual_outputs;
+  }
+
   bool set_secondary_desktop_visibility(
     bool visible,
     const stationconnect::session::descriptor_t &session,
@@ -540,7 +548,15 @@ int main(int argc, char **argv) {
 
   worker_t worker;
   std::optional<stationconnect::session::display_request_t> pending_display_request;
-  std::optional<bool> desired_secondary_visibility = overlay_secondary_visibility();
+  const auto initial_display_policy =
+    stationconnect::session::configured_display_policy(stationconnect_config_path);
+  const bool initial_virtual_display_policy =
+    initial_display_policy == stationconnect::session::display_policy_t::virtual_outputs;
+  if (initial_display_policy == stationconnect::session::display_policy_t::invalid) {
+    std::cerr << "StationConnect display policy is invalid; virtual display transitions are disabled\n";
+  }
+  std::optional<bool> desired_secondary_visibility =
+    initial_virtual_display_policy ? overlay_secondary_visibility() : std::nullopt;
   bool initial_secondary_visibility = desired_secondary_visibility.has_value();
   std::string visibility_session_id;
   auto display_request_deadline = std::chrono::steady_clock::time_point::max();
@@ -551,7 +567,9 @@ int main(int argc, char **argv) {
     if (pending_display_request &&
         std::chrono::steady_clock::now() >= display_request_deadline) {
       const auto selected = stationconnect::session::active_seat0_graphical_session();
-      if (!selected || selected->id != worker.session_id) {
+      if (!virtual_display_transitions_enabled()) {
+        std::cerr << "Refusing StationConnect virtual display transition because the host is configured for physical displays\n";
+      } else if (!selected || selected->id != worker.session_id) {
         std::cerr << "Refusing StationConnect display transition because the graphical session changed\n";
       } else if (selected->session_class == "greeter") {
         const auto request = std::move(*pending_display_request);
@@ -683,6 +701,8 @@ int main(int argc, char **argv) {
       const auto active = stationconnect::session::active_seat0_graphical_session();
       if (!request) {
         std::cerr << "Rejected malformed StationConnect display transition request\n";
+      } else if (!virtual_display_transitions_enabled()) {
+        std::cerr << "Refused StationConnect virtual display transition because the host is configured for physical displays\n";
       } else if (!active || active->id != worker.session_id ||
                  (active->session_class == "user" &&
                   active->uid != request->account_uid) ||

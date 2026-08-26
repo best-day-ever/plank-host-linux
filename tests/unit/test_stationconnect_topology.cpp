@@ -30,6 +30,16 @@ TEST(StationConnectTopology, AcceptsExactQualifiedLayouts) {
             topology::layout_error::none);
 }
 
+TEST(StationConnectTopology, EnforcesAdministratorDisplayPolicy) {
+  EXPECT_TRUE(topology::layout_allowed_by_display_policy("physical", false));
+  EXPECT_FALSE(topology::layout_allowed_by_display_policy("single", false));
+  EXPECT_FALSE(topology::layout_allowed_by_display_policy("dual-horizontal", false));
+  EXPECT_FALSE(topology::layout_allowed_by_display_policy("physical", true));
+  EXPECT_TRUE(topology::layout_allowed_by_display_policy("single", true));
+  EXPECT_TRUE(topology::layout_allowed_by_display_policy("dual-horizontal", true));
+  EXPECT_FALSE(topology::layout_allowed_by_display_policy("dual-vertical", true));
+}
+
 TEST(StationConnectTopology, RejectsMismatchBeforeLaunchState) {
   EXPECT_EQ(topology::validate_layout_binding(
               "single", "1920x1080", "",

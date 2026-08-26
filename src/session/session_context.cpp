@@ -442,6 +442,55 @@ namespace stationconnect::session {
     return std::nullopt;
   }
 
+  display_policy_t configured_display_policy(std::string_view config_path) {
+    constexpr std::size_t maximum_config_size = 1024U * 1024U;
+    std::ifstream input {std::string {config_path}};
+    if (!input) return display_policy_t::invalid;
+
+    auto trim = [](std::string_view value) {
+      constexpr std::string_view whitespace = " \t\r\n";
+      const auto first = value.find_first_not_of(whitespace);
+      if (first == std::string_view::npos) return std::string_view {};
+      const auto last = value.find_last_not_of(whitespace);
+      return value.substr(first, last - first + 1);
+    };
+
+    bool in_display_section = false;
+    bool saw_virtual_outputs = false;
+    display_policy_t policy = display_policy_t::physical;
+    std::size_t total_size = 0;
+    std::string line;
+    while (std::getline(input, line)) {
+      total_size += line.size() + 1;
+      if (total_size > maximum_config_size) return display_policy_t::invalid;
+      const auto text = trim(line);
+      if (text.empty() || text.front() == '#' || text.front() == ';') continue;
+      if (text.front() == '[') {
+        if (text.size() < 2 || text.back() != ']') return display_policy_t::invalid;
+        in_display_section = trim(text.substr(1, text.size() - 2)) == "display";
+        continue;
+      }
+      if (!in_display_section) continue;
+      const auto separator = text.find('=');
+      if (separator == std::string_view::npos) return display_policy_t::invalid;
+      const auto key = trim(text.substr(0, separator));
+      if (key != "virtual_outputs") continue;
+      if (saw_virtual_outputs) return display_policy_t::invalid;
+      saw_virtual_outputs = true;
+      const auto value = trim(text.substr(separator + 1));
+      if (value == "off") {
+        policy = display_policy_t::physical;
+        continue;
+      }
+      if (value == "single" || value == "dual-horizontal") {
+        policy = display_policy_t::virtual_outputs;
+        continue;
+      }
+      return display_policy_t::invalid;
+    }
+    return input.bad() ? display_policy_t::invalid : policy;
+  }
+
   display_request_status request_display_transition(const display_request_t &request) {
     const std::string message = display_request_message(request);
     if (message.empty()) return display_request_status::invalid;
