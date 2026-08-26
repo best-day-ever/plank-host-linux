@@ -876,8 +876,8 @@ namespace config {
     false,  // notify_pre_releases
     false,  // StationConnect mDNS advertisement
     "off",  // StationConnect virtual outputs
-    "3840x2160",  // StationConnect virtual output 1 mode
-    "3840x2160",  // StationConnect virtual output 2 mode
+    "1920x1080",  // StationConnect virtual output 1 mode
+    "1920x1080",  // StationConnect virtual output 2 mode
     {},  // prep commands
   };
 

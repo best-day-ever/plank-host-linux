@@ -3037,7 +3037,7 @@ The packaged profile contains the settings StationConnect currently overrides. E
 
 <table>
     <tr><td>Description</td><td colspan="2">Resolution of the first StationConnect virtual output prepared before GDM.</td></tr>
-    <tr><td>Default</td><td colspan="2">@code{}3840x2160@endcode</td></tr>
+    <tr><td>Default</td><td colspan="2">@code{}1920x1080@endcode</td></tr>
     <tr><td>Choices</td><td colspan="2">@code{}1024x2160@endcode, @code{}1280x720@endcode, @code{}1280x1024@endcode, @code{}1280x2160@endcode, @code{}1920x1080@endcode, @code{}1920x1200@endcode, @code{}2560x1440@endcode, @code{}2560x1600@endcode, @code{}3440x1440@endcode, @code{}3840x1600@endcode, @code{}3840x2160@endcode, or @code{}4096x2160@endcode</td></tr>
 </table>
 
@@ -3045,7 +3045,7 @@ The packaged profile contains the settings StationConnect currently overrides. E
 
 <table>
     <tr><td>Description</td><td colspan="2">Resolution of the second StationConnect virtual output in @code{}dual-horizontal@endcode mode.</td></tr>
-    <tr><td>Default</td><td colspan="2">@code{}3840x2160@endcode</td></tr>
+    <tr><td>Default</td><td colspan="2">@code{}1920x1080@endcode</td></tr>
     <tr><td>Choices</td><td colspan="2">The same qualified modes as @code{}virtual_mode_1@endcode. The two outputs may use different resolutions.</td></tr>
 </table>
 
