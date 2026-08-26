@@ -58,6 +58,7 @@ namespace nvhttp {
   constexpr std::string_view pam_broker_socket = "/run/stationconnect/pam/auth.sock"sv;  ///< Privileged broker activation path.
   std::unique_ptr<stationconnect::auth::web_auth_manager_t> web_auth;  ///< PAM conversations and ephemeral tokens.
   constexpr auto stationconnect_topology_version = stationconnect::topology::protocol_version;
+  constexpr std::uint32_t stationconnect_host_metadata_version = 1;
   constexpr auto stationconnect_feature_selected_output =
     stationconnect::topology::feature_selected_output;
   constexpr auto stationconnect_feature_scaled_span =
@@ -971,6 +972,8 @@ namespace nvhttp {
     tree.put("root.HttpsPort", net::map_port(PORT_HTTPS));
     tree.put("root.ExternalPort", net::map_port(PORT_HTTP));
     tree.put("root.StationConnectAuth", 1);
+    tree.put("root.StationConnectHostMetadataVersion", stationconnect_host_metadata_version);
+    tree.put("root.StationConnectHostVersion", PROJECT_VERSION);
     tree.put("root.StationConnectTopologyVersion", stationconnect_topology_version);
     tree.put("root.StationConnectFeatureFlags", stationconnect_topology_features);
     tree.put("root.MaxLumaPixelsHEVC", video::active_hevc_mode > 1 ? "1869449984" : "0");
