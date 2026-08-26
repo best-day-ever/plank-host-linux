@@ -407,7 +407,12 @@ namespace {
 
     const auto layout_arguments = [&](const std::string &mode_1,
                                       const std::string &mode_2) {
+      const int canvas_width = first.width +
+        (request.layout == "dual-horizontal" ? second.width : 0);
+      const int canvas_height = request.layout == "dual-horizontal" ?
+        std::max(first.height, second.height) : first.height;
       std::vector<std::string> arguments {
+        "--fb", std::to_string(canvas_width) + "x" + std::to_string(canvas_height),
         "--output", "DP-0", "--mode", mode_1, "--rate", "60",
         "--pos", "0x0", "--primary"
       };
