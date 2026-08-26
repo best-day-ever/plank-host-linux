@@ -25,6 +25,12 @@ extern "C" {
 // lib includes
 #include <boost/endian/buffers.hpp>
 
+// platform includes
+#ifdef SUNSHINE_BUILD_X11
+  #include <X11/XKBlib.h>
+  #include <X11/keysym.h>
+#endif
+
 // local includes
 #include "config.h"
 #include "globals.h"
@@ -32,6 +38,7 @@ extern "C" {
 #include "raw_hid_tablet.h"
 #include "logging.h"
 #include "platform/common.h"
+#include "platform/virtualhid_input.h"
 #include "thread_pool.h"
 #include "utility.h"
 
@@ -64,6 +71,49 @@ namespace input {
   constexpr auto VKEY_MENU = 0x12;  ///< Windows virtual-key code for menu.
   constexpr auto VKEY_LMENU = 0xA4;  ///< Windows virtual-key code for lmenu.
   constexpr auto VKEY_RMENU = 0xA5;  ///< Windows virtual-key code for rmenu.
+  constexpr auto VKEY_NUMLOCK = 0x90;  ///< Windows virtual-key code for Num Lock.
+
+  /**
+   * @brief Force the active X11 desktop's Num Lock modifier on.
+   *
+   * StationConnect is a workstation product and always treats the numeric
+   * keypad as numeric input. Querying the live XKB modifier avoids blindly
+   * toggling a host state that can persist across stream connections.
+   *
+   * @return True when Num Lock is confirmed enabled.
+   */
+  bool enable_num_lock() {
+#ifdef SUNSHINE_BUILD_X11
+    auto *display = XOpenDisplay(nullptr);
+    if (!display) {
+      return false;
+    }
+
+    const auto num_lock_mask = XkbKeysymToModifiers(display, XK_Num_Lock);
+    XkbStateRec state {};
+    auto enabled = num_lock_mask != 0 &&
+                   XkbGetState(display, XkbUseCoreKbd, &state) == Success &&
+                   (state.locked_mods & num_lock_mask) == num_lock_mask;
+    if (!enabled && num_lock_mask != 0 &&
+        XkbLockModifiers(display, XkbUseCoreKbd, num_lock_mask, num_lock_mask)) {
+      XSync(display, False);
+      enabled = XkbGetState(display, XkbUseCoreKbd, &state) == Success &&
+                (state.locked_mods & num_lock_mask) == num_lock_mask;
+    }
+
+    XCloseDisplay(display);
+    return enabled;
+#else
+    return false;
+#endif
+  }
+
+  /**
+   * @brief Return whether a virtual key depends on the numeric keypad mode.
+   */
+  bool is_numeric_keypad_key(const std::uint16_t key_code) {
+    return (key_code >= 0x60 && key_code <= 0x69) || key_code == 0x6E;
+  }
 
   /**
    * @brief Packed identifier for a pressed key and its modifier flags.
@@ -839,6 +889,19 @@ namespace input {
     auto release = util::endian::little(packet->header.magic) == KEY_UP_EVENT_MAGIC;
     auto keyCode = packet->keyCode & 0x00FF;
 
+    // Num Lock is an always-on StationConnect invariant. Consume the client's
+    // lock-key transition so differing local LED state cannot invert the host,
+    // and reassert the host state before any keypad key that depends on it.
+    if (keyCode == VKEY_NUMLOCK) {
+      if (!release && !enable_num_lock()) {
+        BOOST_LOG(debug) << "Unable to confirm the always-on Num Lock policy"sv;
+      }
+      return;
+    }
+    if (!release && is_numeric_keypad_key(keyCode) && !enable_num_lock()) {
+      BOOST_LOG(debug) << "Unable to confirm Num Lock before numeric keypad input"sv;
+    }
+
     if (keyCode == VKEY_LMENU) {
       input->left_alt_pressed = !release;
     } else if (keyCode == VKEY_RMENU) {
@@ -1466,6 +1529,10 @@ namespace input {
       });
     }
 
+    if (!enable_num_lock()) {
+      BOOST_LOG(debug) << "Num Lock will be enabled when the authenticated X11 desktop becomes available"sv;
+    }
+
     // Workaround to ensure new frames will be captured when a client connects
     task_pool.pushDelayed([]() {
       platf::move_mouse(platf_input, 1, 1);
@@ -1493,6 +1560,25 @@ namespace input {
 
     bool normalized_pen_enabled(const std::shared_ptr<input_t> &input) {
       return input && platf::normalized_pen_enabled(input->client_context.get());
+    }
+
+    void handle_keyboard(const std::shared_ptr<input_t> &input, const std::uint16_t key_code, const bool release) {
+      if (!input) {
+        return;
+      }
+      NV_KEYBOARD_PACKET packet {};
+      packet.header.magic = util::endian::little<std::uint32_t>(release ? KEY_UP_EVENT_MAGIC : KEY_DOWN_EVENT_MAGIC);
+      packet.keyCode = static_cast<short>(key_code);
+      auto mutable_input = input;
+      passthrough(mutable_input, &packet);
+    }
+
+    std::uint16_t last_keyboard_code() {
+      if (!platf_input) {
+        return 0;
+      }
+      const auto &context = platf::virtualhid::get_input_context(platf_input);
+      return context.keyboard ? context.keyboard->last_submitted_event().key_code : 0;
     }
   }  // namespace testing
 #endif

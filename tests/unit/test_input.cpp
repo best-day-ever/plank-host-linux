@@ -114,6 +114,19 @@ TEST_F(InputRetainedSessionTest, DisconnectSuspendsRatherThanDiscardingResumable
   EXPECT_EQ(input::testing::raw_hid_generation(resumed), 8);
 }
 
+TEST_F(InputRetainedSessionTest, ConsumesNumLockWithoutChangingNumericKeypadIdentity) {
+  const std::string session_id = "always-on-num-lock";
+  std::uint64_t connection_id = 0;
+  auto session = input::alloc(std::make_shared<safe::mail_raw_t>(), session_id, connection_id);
+
+  input::testing::handle_keyboard(session, 0x61, false);
+  EXPECT_EQ(input::testing::last_keyboard_code(), 0x61);
+
+  input::testing::handle_keyboard(session, 0x90, false);
+  input::testing::handle_keyboard(session, 0x90, true);
+  EXPECT_EQ(input::testing::last_keyboard_code(), 0x61);
+}
+
 TEST_F(InputRetainedSessionTest, ExactRawTabletSuppressesNormalizedFallbackUntilDetach) {
   if (!raw_hid::available()) {
     GTEST_SKIP() << "/dev/uhid is unavailable to the test process";

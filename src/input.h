@@ -90,6 +90,16 @@ namespace input {
      * @brief Return whether a test session currently exposes normalized pen fallback.
      */
     bool normalized_pen_enabled(const std::shared_ptr<input_t> &input);
+
+    /**
+     * @brief Submit one keyboard transition directly for policy tests.
+     */
+    void handle_keyboard(const std::shared_ptr<input_t> &input, std::uint16_t key_code, bool release);
+
+    /**
+     * @brief Return the last key submitted to the fake platform keyboard.
+     */
+    std::uint16_t last_keyboard_code();
   }  // namespace testing
 #endif
 
