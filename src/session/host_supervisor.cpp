@@ -40,6 +40,7 @@ namespace {
   constexpr std::string_view runtime_pulse_cookie =
     "/run/stationconnect/host/pulse-cookie";
   constexpr std::string_view systemctl_path = "/usr/bin/systemctl";
+  constexpr std::string_view systemd_run_path = "/usr/bin/systemd-run";
   constexpr std::string_view display_prepare_path =
     "/usr/libexec/stationconnect/stationconnect-display-prepare";
   constexpr std::string_view xrandr_path = "/usr/bin/xrandr";
@@ -362,46 +363,30 @@ namespace {
   ) {
     if (!program.is_absolute() || access(program.c_str(), X_OK) != 0 ||
         account.uid == 0 || account.name.empty()) return false;
-    const pid_t child = fork();
-    if (child == 0) {
-      sigset_t empty_mask;
-      sigemptyset(&empty_mask);
-      if (sigprocmask(SIG_SETMASK, &empty_mask, nullptr) != 0 ||
-          setgroups(0, nullptr) != 0 || setgid(account.gid) != 0 ||
-          setuid(account.uid) != 0) {
-        std::_Exit(126);
-      }
-      clearenv();
-      set_environment_value("HOME", account.home);
-      set_environment_value("USER", account.name);
-      set_environment_value("LOGNAME", account.name);
-      set_environment_value("PATH", "/usr/local/bin:/usr/bin:/bin");
-      set_environment_value("DISPLAY", environment.display);
-      set_environment_value("XAUTHORITY", environment.xauthority);
-      set_environment_value("XDG_RUNTIME_DIR", environment.runtime_directory);
-      std::vector<char *> command;
-      command.reserve(arguments.size() + 2);
-      command.push_back(const_cast<char *>(program.c_str()));
-      for (const auto &argument : arguments) {
-        command.push_back(const_cast<char *>(argument.c_str()));
-      }
-      command.push_back(nullptr);
-      execv(program.c_str(), command.data());
-      std::_Exit(127);
-    }
-    if (child <= 0) return false;
-
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    int status {};
-    while (std::chrono::steady_clock::now() < deadline) {
-      const pid_t result = waitpid(child, &status, WNOHANG);
-      if (result == child) return WIFEXITED(status) && WEXITSTATUS(status) == 0;
-      if (result < 0 && errno != EINTR) return false;
-      std::this_thread::sleep_for(std::chrono::milliseconds {50});
-    }
-    kill(child, SIGKILL);
-    waitpid(child, nullptr, 0);
-    return false;
+    std::vector<std::string> transient_arguments {
+      "--quiet", "--wait", "--collect", "--service-type=exec",
+      "--uid=" + account.name,
+      "--gid=" + std::to_string(account.gid),
+      "--property=NoNewPrivileges=yes",
+      "--property=ProtectSystem=strict",
+      "--property=ProtectHome=yes",
+      "--property=RestrictAddressFamilies=AF_UNIX",
+      "--property=RuntimeMaxSec=" + std::to_string(timeout.count()) + "s",
+      "--setenv=HOME=" + account.home,
+      "--setenv=USER=" + account.name,
+      "--setenv=LOGNAME=" + account.name,
+      "--setenv=PATH=/usr/local/bin:/usr/bin:/bin",
+      "--setenv=DISPLAY=" + environment.display,
+      "--setenv=XAUTHORITY=" + environment.xauthority,
+      "--setenv=XDG_RUNTIME_DIR=" + environment.runtime_directory,
+      "--", program.string()
+    };
+    transient_arguments.insert(
+      transient_arguments.end(), arguments.begin(), arguments.end()
+    );
+    return run_bounded_command(
+      systemd_run_path, transient_arguments, timeout + std::chrono::seconds {2}
+    );
   }
 
   bool apply_live_display_transition(
