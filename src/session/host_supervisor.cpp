@@ -540,8 +540,9 @@ int main(int argc, char **argv) {
 
   worker_t worker;
   std::optional<stationconnect::session::display_request_t> pending_display_request;
-  std::optional<bool> pending_secondary_visibility = overlay_secondary_visibility();
-  bool initial_secondary_visibility = pending_secondary_visibility.has_value();
+  std::optional<bool> desired_secondary_visibility = overlay_secondary_visibility();
+  bool initial_secondary_visibility = desired_secondary_visibility.has_value();
+  std::string visibility_session_id;
   auto display_request_deadline = std::chrono::steady_clock::time_point::max();
   std::string pending_session;
   auto next_launch = std::chrono::steady_clock::now();
@@ -560,7 +561,8 @@ int main(int argc, char **argv) {
         std::clog << '\n';
         stop_worker(worker);
         if (apply_display_transition(request)) {
-          pending_secondary_visibility = request.layout == "dual-horizontal";
+          desired_secondary_visibility = request.layout == "dual-horizontal";
+          visibility_session_id.clear();
           initial_secondary_visibility = false;
           std::clog << "StationConnect display transition completed\n";
         }
@@ -572,7 +574,9 @@ int main(int argc, char **argv) {
         } else if (apply_live_display_transition(
                      *pending_display_request, *selected, *environment
                    )) {
-          pending_secondary_visibility.reset();
+          desired_secondary_visibility =
+            pending_display_request->layout == "dual-horizontal";
+          visibility_session_id = selected->id;
           initial_secondary_visibility = false;
           std::clog << "StationConnect live display transition completed for UID "
                     << selected->uid << '\n';
@@ -608,25 +612,27 @@ int main(int argc, char **argv) {
           continue;
         }
         const auto complete_environment = add_audio_environment(*environment, *account);
-        if (pending_secondary_visibility) {
+        if (desired_secondary_visibility && visibility_session_id != selected->id) {
           // An existing user X server retains this connector property across
-          // a supervisor restart. Only derive initial state from the boot
-          // overlay while attached to its greeter; transition state is always
-          // applied to the newly created greeter before its worker starts.
+          // a supervisor restart, so do not replace its live state with a
+          // potentially older boot overlay. Once the supervisor has observed
+          // or changed a visibility state, reapply it to every newly created
+          // GDM or user X server before launching that session's worker.
           if (initial_secondary_visibility && selected->session_class == "user") {
-            pending_secondary_visibility.reset();
+            desired_secondary_visibility.reset();
+            visibility_session_id.clear();
             initial_secondary_visibility = false;
           } else if (!set_secondary_desktop_visibility(
-                       *pending_secondary_visibility, *selected, *environment
+                       *desired_secondary_visibility, *selected, *environment
                      )) {
             std::cerr << "Unable to apply StationConnect secondary-monitor visibility\n";
             next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {2};
             continue;
           } else {
             std::clog << "StationConnect secondary virtual monitor is "
-                      << (*pending_secondary_visibility ? "available" : "hidden")
+                      << (*desired_secondary_visibility ? "available" : "hidden")
                       << " to the desktop\n";
-            pending_secondary_visibility.reset();
+            visibility_session_id = selected->id;
             initial_secondary_visibility = false;
           }
         }
