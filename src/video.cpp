@@ -292,8 +292,9 @@ namespace video {
     return AV_PROFILE_H264_HIGH;
   }
 
-  bool use_native_x264rgb(std::string_view configured_encoder, const config_t &config, const sunshine_colorspace_t &colorspace) {
-    return configured_encoder == "libx264"sv &&
+  bool use_native_x264rgb(std::string_view encoder_backend, std::string_view configured_encoder, const config_t &config, const sunshine_colorspace_t &colorspace) {
+    return encoder_backend != "software-cuda"sv &&
+           configured_encoder == "libx264"sv &&
            config.videoFormat == 0 &&
            config.dynamicRange == 0 &&
            config.chromaSamplingType == 1 &&
@@ -2300,7 +2301,7 @@ namespace video {
 
     auto colorspace = encode_device->colorspace;
     const bool native_x264rgb =
-      use_native_x264rgb(video_format.name, config, colorspace);
+      use_native_x264rgb(encoder.name, video_format.name, config, colorspace);
     const std::string codec_name = native_x264rgb ? "libx264rgb"s : video_format.name;
     auto codec = avcodec_find_encoder_by_name(codec_name.c_str());
     if (!codec) {
@@ -2991,7 +2992,7 @@ namespace video {
 
     {
       auto encoder_name = encoder.codec_from_config(config).name;
-      if (use_native_x264rgb(encoder_name, config, colorspace)) {
+      if (use_native_x264rgb(encoder.name, encoder_name, config, colorspace)) {
         encoder_name = "libx264rgb";
       }
 

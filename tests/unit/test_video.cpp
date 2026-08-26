@@ -103,7 +103,7 @@ TEST(VideoColorspaceTest, H264TenBit422RemainsSdrRec709OnHdrDisplay) {
   EXPECT_EQ(colorspace.bit_depth, 10);
 }
 
-TEST(VideoEncoderTest, NativeX264RgbRequiresEightBitIdentity444) {
+TEST(VideoEncoderTest, NativeX264RgbRequiresEightBitIdentity444OutsideCudaBackend) {
   video::config_t config {};
   config.videoFormat = 0;
   config.dynamicRange = 0;
@@ -114,19 +114,20 @@ TEST(VideoEncoderTest, NativeX264RgbRequiresEightBitIdentity444) {
     8,
   };
 
-  EXPECT_TRUE(video::use_native_x264rgb("libx264"sv, config, identity_8bit));
+  EXPECT_TRUE(video::use_native_x264rgb("software"sv, "libx264"sv, config, identity_8bit));
+  EXPECT_FALSE(video::use_native_x264rgb("software-cuda"sv, "libx264"sv, config, identity_8bit));
 
   config.dynamicRange = 1;
-  EXPECT_FALSE(video::use_native_x264rgb("libx264"sv, config, identity_8bit));
+  EXPECT_FALSE(video::use_native_x264rgb("software"sv, "libx264"sv, config, identity_8bit));
   config.dynamicRange = 0;
   config.chromaSamplingType = 0;
-  EXPECT_FALSE(video::use_native_x264rgb("libx264"sv, config, identity_8bit));
+  EXPECT_FALSE(video::use_native_x264rgb("software"sv, "libx264"sv, config, identity_8bit));
   config.chromaSamplingType = 1;
 
   auto rec709 = identity_8bit;
   rec709.colorspace = video::colorspace_e::rec709;
-  EXPECT_FALSE(video::use_native_x264rgb("libx264"sv, config, rec709));
-  EXPECT_FALSE(video::use_native_x264rgb("h264_nvenc"sv, config, identity_8bit));
+  EXPECT_FALSE(video::use_native_x264rgb("software"sv, "libx264"sv, config, rec709));
+  EXPECT_FALSE(video::use_native_x264rgb("software"sv, "h264_nvenc"sv, config, identity_8bit));
 }
 
 TEST(VideoEncoderTest, SoftwareRateControlAllowsBoundedSceneCutBursts) {
@@ -180,6 +181,10 @@ TEST(VideoEncoderTest, SoftwareRateControlRetainsLegacyBufferSizingWhenDisabled)
 }
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+TEST(VideoColorspaceTest, IdentityGbrCudaKernelProducesExact8BitPlanes) {
+  EXPECT_TRUE(cuda::test_identity_gbr_8bit_conversion());
+}
+
 TEST(VideoColorspaceTest, IdentityGbrCudaKernelProducesExact10BitPlanes) {
   EXPECT_TRUE(cuda::test_identity_gbr_10bit_conversion());
 }

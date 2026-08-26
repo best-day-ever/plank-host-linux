@@ -642,6 +642,59 @@ namespace cuda {
   }
 
   #if defined(SUNSHINE_TESTS)
+  bool test_identity_gbr_8bit_conversion() {
+    constexpr int width = 4;
+    constexpr int height = 1;
+    constexpr std::uint32_t pitch = width;
+    std::uint8_t source[] = {
+      0, 0, 0, 255,
+      255, 255, 255, 255,
+      255, 0, 0, 255,
+      0, 128, 255, 255,
+    };
+
+    auto texture = tex_t::make(height, width * 4);
+    auto converter = sws_t::make(width, height, width, height, width * 4);
+    auto stream = make_stream();
+    if (!texture || !converter || !stream) {
+      return false;
+    }
+
+    converter->apply_colorspace({video::colorspace_e::identity_gbr, true, 8});
+
+    platf::img_t image;
+    image.data = source;
+    image.width = width;
+    image.height = height;
+    image.pixel_pitch = 4;
+    image.row_pitch = width * image.pixel_pitch;
+
+    void *destination = nullptr;
+    if (cudaMalloc(&destination, pitch * height * 3) != cudaSuccess) {
+      return false;
+    }
+
+    const auto cleanup = std::unique_ptr<void, freeCudaPtr_t> {destination};
+    auto *base = static_cast<std::uint8_t *>(destination);
+    if (converter->load_ram(image, texture->array) ||
+        converter->convert_yuv444(base, base + pitch, base + pitch * 2, pitch, texture->texture.point, stream.get()) ||
+        cudaStreamSynchronize(stream.get()) != cudaSuccess) {
+      return false;
+    }
+
+    std::uint8_t actual[width * 3] {};
+    if (cudaMemcpy(actual, destination, sizeof(actual), cudaMemcpyDeviceToHost) != cudaSuccess) {
+      return false;
+    }
+
+    constexpr std::uint8_t expected[] = {
+      0, 255, 0, 128,
+      0, 255, 255, 0,
+      0, 255, 0, 255,
+    };
+    return std::equal(std::begin(actual), std::end(actual), std::begin(expected));
+  }
+
   bool test_identity_gbr_10bit_conversion() {
     constexpr int width = 4;
     constexpr int height = 1;

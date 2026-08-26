@@ -53,6 +53,7 @@ namespace cuda {
   int init();
 
   #if defined(SUNSHINE_TESTS)
+  bool test_identity_gbr_8bit_conversion();
   bool test_identity_gbr_10bit_conversion();
   #endif
 }  // namespace cuda

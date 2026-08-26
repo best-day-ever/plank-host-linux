@@ -404,10 +404,11 @@ namespace cuda {
   /**
    * @brief NvFBC CUDA readback device for latency-bounded x264 encoding.
    *
-   * Native x264rgb receives pinned BGR0 directly. The 10-bit x264 path first
-   * creates compact 8-bit identity GBR planes on CUDA, reads those planes back,
-   * and expands them to full-range 10-bit samples on CPU. This avoids transferring
-   * the 49.8 MB 16-bit carrier produced by direct CUDA 10-bit conversion at 4K.
+   * The qualified 8-bit and 10-bit x264 paths first create compact planar
+   * identity GBR on CUDA and read those planes into pinned memory. The 8-bit
+   * frame uses that readback directly; the 10-bit frame expands it to full-range
+   * 10-bit samples on CPU. This avoids transferring the 49.8 MB 16-bit carrier
+   * produced by direct CUDA 10-bit conversion at 4K.
    */
   class cuda_software_t final: public platf::avcodec_encode_device_t {
   public:
@@ -484,12 +485,12 @@ namespace cuda {
         return -1;
       }
 
-      const bool native_bgr0 = frame->format == AV_PIX_FMT_BGR0;
+      const bool identity_8bit = frame->format == AV_PIX_FMT_YUV444P;
       const bool identity_10bit = frame->format == AV_PIX_FMT_YUV444P10LE;
       const bool yuv422_8bit = frame->format == AV_PIX_FMT_YUV422P;
       const bool yuv422_10bit = frame->format == AV_PIX_FMT_YUV422P10LE;
-      if ((!native_bgr0 && !identity_10bit && !yuv422_8bit && !yuv422_10bit) ||
-          (native_bgr0 && capture_format != platf::pix_fmt_e::yuv444p) ||
+      if ((!identity_8bit && !identity_10bit && !yuv422_8bit && !yuv422_10bit) ||
+          (identity_8bit && capture_format != platf::pix_fmt_e::yuv444p) ||
           (identity_10bit && capture_format != platf::pix_fmt_e::yuv444p16) ||
           (yuv422_8bit && capture_format != platf::pix_fmt_e::yuv422p) ||
           (yuv422_10bit && capture_format != platf::pix_fmt_e::yuv422p10)) {
@@ -513,42 +514,10 @@ namespace cuda {
         << '+' << content_offset_x << '+' << content_offset_y
         << " encode=" << output_width << 'x' << output_height;
       const auto plane_size = static_cast<std::size_t>(output_width) * output_height;
-      native_direct = native_bgr0 && output_width == width && output_height == height;
-      host_readback_size = native_bgr0 ? static_cast<std::size_t>(width) * height * 4U :
-                           yuv422_8bit ? plane_size * 2U :
+      host_readback_size = yuv422_8bit ? plane_size * 2U :
                            yuv422_10bit ? plane_size * 4U :
                            plane_size * 3U;
       CU_CHECK(host_alloc(&host_readback, host_readback_size, 1U), "Couldn't allocate pinned software-encoder readback");
-
-      if (native_bgr0) {
-        if (native_direct) {
-          frame->data[0] = static_cast<std::uint8_t *>(host_readback);
-          frame->linesize[0] = output_width * 4;
-        } else {
-          if (av_frame_get_buffer(frame, 64) < 0) {
-            return -1;
-          }
-          std::memset(frame->data[0], 0,
-                      static_cast<std::size_t>(frame->linesize[0]) * output_height);
-          bgr_scaler.reset(sws_getContext(
-            width,
-            height,
-            AV_PIX_FMT_BGR0,
-            content_width,
-            content_height,
-            AV_PIX_FMT_BGR0,
-            SWS_FAST_BILINEAR,
-            nullptr,
-            nullptr,
-            nullptr
-          ));
-          if (!bgr_scaler) {
-            return -1;
-          }
-        }
-        mode = mode_e::native_bgr0;
-        return 0;
-      }
 
       if (yuv422_8bit || yuv422_10bit) {
         const std::size_t bytes_per_sample = yuv422_10bit ? 2U : 1U;
@@ -583,9 +552,17 @@ namespace cuda {
         return 0;
       }
 
-      if (av_frame_get_buffer(frame, 64) < 0) {
-        BOOST_LOG(error) << "Couldn't allocate x264 10-bit software frame"sv;
-        return -1;
+      if (identity_8bit) {
+        auto *base = static_cast<std::uint8_t *>(host_readback);
+        frame->data[0] = base;
+        frame->data[1] = base + plane_size;
+        frame->data[2] = base + plane_size * 2U;
+        frame->linesize[0] = frame->linesize[1] = frame->linesize[2] = output_width;
+      } else {
+        if (av_frame_get_buffer(frame, 64) < 0) {
+          BOOST_LOG(error) << "Couldn't allocate x264 10-bit software frame"sv;
+          return -1;
+        }
       }
       CU_CHECK(cdf->cuMemAlloc(&device_compact, host_readback_size), "Couldn't allocate compact CUDA identity planes");
       CU_CHECK(cdf->cuMemsetD8Async(device_compact, 0, host_readback_size, stream.get()),
@@ -596,8 +573,14 @@ namespace cuda {
         return -1;
       }
       sws = std::move(*converter);
-      mode = mode_e::identity_10bit;
-      start_workers();
+      mode = identity_8bit ? mode_e::identity_8bit : mode_e::identity_10bit;
+      BOOST_LOG(info)
+        << "StationConnect software identity input: planar GBR, codec depth="
+        << (identity_8bit ? 8 : 10)
+        << "-bit, CUDA readback depth=8-bit";
+      if (mode == mode_e::identity_10bit) {
+        start_workers();
+      }
       return 0;
     }
 
@@ -605,7 +588,8 @@ namespace cuda {
      * @brief Apply identity GBR coefficients to the CUDA converter.
      */
     void apply_colorspace() override {
-      if (mode == mode_e::identity_10bit ||
+      if (mode == mode_e::identity_8bit ||
+          mode == mode_e::identity_10bit ||
           mode == mode_e::yuv422_8bit ||
           mode == mode_e::yuv422_10bit) {
         sws.apply_colorspace(colorspace);
@@ -621,17 +605,7 @@ namespace cuda {
     int convert(platf::img_t &img) override {
       const auto conversion_start = std::chrono::steady_clock::now();
       auto &texture = static_cast<cuda::img_t &>(img).tex;
-      if (mode == mode_e::native_bgr0) {
-        CUDA_MEMCPY2D copy {};
-        copy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
-        copy.srcArray = reinterpret_cast<CUarray>(texture.array);
-        copy.dstMemoryType = CU_MEMORYTYPE_HOST;
-        copy.dstHost = host_readback;
-        copy.dstPitch = width * 4;
-        copy.WidthInBytes = static_cast<std::size_t>(width) * 4U;
-        copy.Height = height;
-        CU_CHECK(cdf->cuMemcpy2DAsync(&copy, stream.get()), "Couldn't read back native BGR0 frame");
-      } else if (mode == mode_e::identity_10bit) {
+      if (mode == mode_e::identity_8bit || mode == mode_e::identity_10bit) {
         auto *base = reinterpret_cast<std::uint8_t *>(static_cast<std::uintptr_t>(device_compact));
         const auto plane_size = static_cast<std::size_t>(output_width) * output_height;
         const auto texture_object =
@@ -671,17 +645,7 @@ namespace cuda {
       readback_sync_us.push_back(
         std::chrono::duration<double, std::micro>(synchronization_end - synchronization_start).count()
       );
-      if (mode == mode_e::native_bgr0 && !native_direct) {
-        const std::uint8_t *source[] = {static_cast<const std::uint8_t *>(host_readback)};
-        const int source_linesize[] = {width * 4};
-        std::uint8_t *destination[] = {
-          frame->data[0] + content_offset_y * frame->linesize[0] + content_offset_x * 4
-        };
-        if (sws_scale(bgr_scaler.get(), source, source_linesize, 0, height,
-                      destination, frame->linesize) != content_height) {
-          return -1;
-        }
-      } else if (mode == mode_e::identity_10bit) {
+      if (mode == mode_e::identity_10bit) {
         const auto expansion_start = std::chrono::steady_clock::now();
         expand_10bit();
         depth_expansion_us.push_back(
@@ -710,7 +674,7 @@ namespace cuda {
      */
     enum class mode_e {
       unset,  ///< Frame format has not been attached.
-      native_bgr0,  ///< Pinned native BGRA/BGR0 readback for libx264rgb.
+      identity_8bit,  ///< Compact planar 8-bit identity GBR readback for libx264.
       identity_10bit,  ///< Compact identity GBR readback followed by CPU depth expansion.
       yuv422_8bit,  ///< CUDA Rec. 709 conversion to pinned planar 8-bit YUV 4:2:2.
       yuv422_10bit  ///< CUDA Rec. 709 conversion to pinned planar 10-bit YUV 4:2:2.
@@ -792,7 +756,6 @@ namespace cuda {
     }
 
     frame_t host_frame;  ///< Owned FFmpeg software frame.
-    video::sws_t bgr_scaler;  ///< CPU BGR0 scaler used only when stream and capture sizes differ.
     sws_t sws;  ///< CUDA identity-GBR converter.
     stream_t stream;  ///< CUDA conversion and readback stream.
     std::vector<std::jthread> workers;  ///< Persistent CPU depth-expansion workers.
@@ -819,7 +782,6 @@ namespace cuda {
     int content_height = 0;  ///< Aspect-preserving scaled content height.
     int content_offset_x = 0;  ///< Horizontal letterbox offset in the encoded frame.
     int content_offset_y = 0;  ///< Vertical letterbox offset in the encoded frame.
-    bool native_direct = false;  ///< Whether pinned BGR0 can be passed to x264rgb without scaling.
     platf::pix_fmt_e capture_format = platf::pix_fmt_e::unknown;  ///< Negotiated software capture format.
     mode_e mode = mode_e::unset;  ///< Active readback and conversion mode.
   };

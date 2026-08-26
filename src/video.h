@@ -92,14 +92,17 @@ namespace video {
   int select_h264_profile(std::string_view encoder_name, const config_t &config, int amd_coder);
 
   /**
-   * @brief Decide whether an FFmpeg software H.264 session should use native RGB input.
+   * @brief Decide whether an FFmpeg software H.264 session should use packed native RGB input.
    *
+   * @param encoder_backend Sunshine encoder backend selected for the stream.
    * @param configured_encoder FFmpeg encoder name configured for the software backend.
    * @param config Encoding configuration requested by the client.
    * @param colorspace Effective stream colorspace.
-   * @return True when `libx264rgb` and `AV_PIX_FMT_BGR0` should replace `libx264` and planar input.
+   * @return True when `libx264rgb` and `AV_PIX_FMT_BGR0` should replace
+   * `libx264` and planar input. The qualified CUDA backend deliberately uses
+   * planar identity GBR for both 8-bit and 10-bit 4:4:4 profiles.
    */
-  bool use_native_x264rgb(std::string_view configured_encoder, const config_t &config, const sunshine_colorspace_t &colorspace);
+  bool use_native_x264rgb(std::string_view encoder_backend, std::string_view configured_encoder, const config_t &config, const sunshine_colorspace_t &colorspace);
 
   /**
    * @brief Map an FFmpeg hardware device type to Sunshine's memory type.
