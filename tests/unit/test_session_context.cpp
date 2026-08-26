@@ -131,6 +131,9 @@ TEST(SessionContext, RejectsMalformedDisplayRequests) {
     {"dual-horizontal", "4096x2160", {}, 1000}
   ).empty());
   EXPECT_TRUE(session::display_request_message(
+    {"dual-horizontal", "4096x2160", "1280x2160", 1000}
+  ).empty());
+  EXPECT_TRUE(session::display_request_message(
     {"single", "2560x1600", {}, 0}
   ).empty());
   auto truncated = session::display_request_message(

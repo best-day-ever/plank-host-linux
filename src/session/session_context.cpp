@@ -383,10 +383,9 @@ namespace stationconnect::session {
 
   std::string display_request_message(const display_request_t &request) {
     if ((request.layout != "single" && request.layout != "dual-horizontal") ||
-        !stationconnect::topology::valid_virtual_mode(request.mode_1) ||
-        (request.layout == "single" && !request.mode_2.empty()) ||
-        (request.layout == "dual-horizontal" &&
-         !stationconnect::topology::valid_virtual_mode(request.mode_2)) ||
+        !stationconnect::topology::valid_virtual_layout_modes(
+          request.layout, request.mode_1, request.mode_2
+        ) ||
         request.account_uid == 0) {
       return {};
     }

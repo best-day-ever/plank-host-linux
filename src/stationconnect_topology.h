@@ -9,6 +9,7 @@
 #include <string_view>
 
 namespace stationconnect::topology {
+  constexpr int maximum_virtual_canvas_width = 5120;
   constexpr std::uint32_t protocol_version = 4;
   constexpr std::uint32_t feature_output_topology = 0x1;
   constexpr std::uint32_t feature_selected_output = 0x2;
@@ -80,6 +81,22 @@ namespace stationconnect::topology {
     return size.width > 0 && size.height > 0;
   }
 
+  constexpr bool valid_virtual_layout_modes(
+    std::string_view layout,
+    std::string_view mode_1,
+    std::string_view mode_2
+  ) {
+    const auto first = virtual_mode_size(mode_1);
+    if (layout == "single") {
+      return first.width > 0 && first.height > 0 && mode_2.empty();
+    }
+    if (layout != "dual-horizontal") return false;
+    const auto second = virtual_mode_size(mode_2);
+    return first.width > 0 && first.height > 0 &&
+           second.width > 0 && second.height > 0 &&
+           first.width + second.width <= maximum_virtual_canvas_width;
+  }
+
   constexpr layout_error validate_layout_binding(
     std::string_view requested_layout,
     std::string_view requested_mode_1,
@@ -92,11 +109,10 @@ namespace stationconnect::topology {
     if (!valid_layout(requested_layout) ||
         (requested_layout == "physical" &&
          (!requested_mode_1.empty() || !requested_mode_2.empty())) ||
-        (requested_layout == "single" &&
-         (!valid_virtual_mode(requested_mode_1) || !requested_mode_2.empty())) ||
-        (requested_layout == "dual-horizontal" &&
-         (!valid_virtual_mode(requested_mode_1) ||
-          !valid_virtual_mode(requested_mode_2)))) {
+        (requested_layout != "physical" &&
+         !valid_virtual_layout_modes(
+           requested_layout, requested_mode_1, requested_mode_2
+         ))) {
       return layout_error::invalid_request;
     }
     if (requested_layout != actual_layout ||

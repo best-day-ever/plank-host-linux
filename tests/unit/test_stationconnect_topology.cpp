@@ -15,6 +15,12 @@ TEST(StationConnectTopology, PublishesVersionFourFeatureContract) {
   EXPECT_TRUE(topology::valid_virtual_mode("2560x2160"));
   EXPECT_TRUE(topology::valid_virtual_mode("4096x2160"));
   EXPECT_FALSE(topology::valid_virtual_mode("5120x2160"));
+  EXPECT_TRUE(topology::valid_virtual_layout_modes(
+    "dual-horizontal", "4096x2160", "1024x2160"
+  ));
+  EXPECT_FALSE(topology::valid_virtual_layout_modes(
+    "dual-horizontal", "4096x2160", "1280x2160"
+  ));
 }
 
 TEST(StationConnectTopology, AcceptsExactQualifiedLayouts) {
