@@ -660,7 +660,7 @@ namespace nvhttp {
       return false;
     }
     if (session.output_id.empty()) {
-      session.output_name = display_device::map_output_name(config::video.output_name);
+      session.output_name.clear();
       return true;
     }
     if (session.stationconnect_protocol_version != stationconnect_topology_version ||

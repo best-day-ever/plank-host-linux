@@ -1125,9 +1125,7 @@ namespace rtsp_stream {
 
     stream::config_t config;
     config.monitor.span_desktop = session.span_desktop;
-    config.monitor.output_name = session.span_desktop ? std::string {} : session.output_name.empty() ?
-                                   display_device::map_output_name(config::video.output_name) :
-                                   session.output_name;
+    config.monitor.output_name = session.span_desktop ? std::string {} : session.output_name;
 
     std::int64_t configuredBitrateKbps;
     std::int64_t encoderTargetKbps;

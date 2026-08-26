@@ -61,9 +61,10 @@ TEST_P(ParseDeviceId, IntegrationTest) {
 
   config::video_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
-  video_config.output_name = input_value;
+  rtsp_stream::launch_session_t session {};
+  session.output_name = input_value;
 
-  const auto result {display_device::parse_configuration(video_config, {})};
+  const auto result {display_device::parse_configuration(video_config, session)};
   EXPECT_EQ(std::get<display_device::SingleDisplayConfiguration>(result).m_device_id, expected_value);
 }
 

@@ -121,7 +121,6 @@ namespace config {
     std::string capture;  ///< Capture backend name selected by configuration.
     std::string encoder;  ///< Encoder backend name selected by configuration.
     std::string adapter_name;  ///< Display adapter name selected in configuration.
-    std::string output_name;  ///< Display output name selected in configuration.
 
     /**
      * @brief Display-device integration settings.

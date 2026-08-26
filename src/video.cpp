@@ -3552,7 +3552,7 @@ namespace video {
    * @brief Validate encoder before it is used.
    */
   bool validate_encoder(encoder_t &encoder, bool expect_failure) {
-    const auto output_name {display_device::map_output_name(config::video.output_name)};
+    const std::string output_name;
     std::shared_ptr<platf::display_t> disp;
 
     BOOST_LOG(info) << "Trying encoder ["sv << encoder.name << ']';
@@ -3937,10 +3937,9 @@ namespace video {
     }
 
     if (chosen_encoder == nullptr) {
-      const auto output_name {display_device::map_output_name(config::video.output_name)};
       BOOST_LOG(fatal) << "Unable to find display or encoder during startup."sv;
-      if (!config::video.adapter_name.empty() || !output_name.empty()) {
-        BOOST_LOG(fatal) << "Please ensure your manually chosen GPU and monitor are connected and powered on."sv;
+      if (!config::video.adapter_name.empty()) {
+        BOOST_LOG(fatal) << "Please ensure your manually chosen GPU is connected and available."sv;
       } else {
         BOOST_LOG(fatal) << "Please check that a display is connected and powered on."sv;
       }
