@@ -101,7 +101,10 @@ TEST(SessionContext, RejectsMalformedOrIneligibleDesktopUpdates) {
 }
 
 TEST(SessionContext, RoundTripsBoundedDisplayRequests) {
-  const session::display_request_t single {"single", "2560x1600", {}, 1000};
+  const session::display_request_t single {
+    session::display_request_t::action_t::acquire,
+    "single", "2560x1600", {}, 1000
+  };
   const auto singleMessage = session::display_request_message(single);
   const auto parsedSingle = session::parse_display_request(singleMessage);
   ASSERT_TRUE(parsedSingle);
@@ -111,6 +114,7 @@ TEST(SessionContext, RoundTripsBoundedDisplayRequests) {
   EXPECT_EQ(parsedSingle->account_uid, single.account_uid);
 
   const session::display_request_t dual {
+    session::display_request_t::action_t::acquire,
     "dual-horizontal", "4096x2160", "1024x2160", 1000
   };
   const auto parsedDual = session::parse_display_request(
@@ -118,30 +122,69 @@ TEST(SessionContext, RoundTripsBoundedDisplayRequests) {
   );
   ASSERT_TRUE(parsedDual);
   EXPECT_EQ(parsedDual->mode_2, dual.mode_2);
+
+  for (const auto action : {
+         session::display_request_t::action_t::activate,
+         session::display_request_t::action_t::release,
+       }) {
+    const session::display_request_t control {action, {}, {}, {}, 1000};
+    const auto parsed = session::parse_display_request(
+      session::display_request_message(control)
+    );
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed->action, action);
+    EXPECT_EQ(parsed->account_uid, 1000U);
+  }
 }
 
 TEST(SessionContext, RejectsMalformedDisplayRequests) {
   EXPECT_TRUE(session::display_request_message(
-    {"single", "5120x2160", {}, 1000}
+    {session::display_request_t::action_t::acquire,
+     "single", "5120x2160", {}, 1000}
   ).empty());
   EXPECT_TRUE(session::display_request_message(
-    {"single", "2560x1600", "1024x2160", 1000}
+    {session::display_request_t::action_t::acquire,
+     "single", "2560x1600", "1024x2160", 1000}
   ).empty());
   EXPECT_TRUE(session::display_request_message(
-    {"dual-horizontal", "4096x2160", {}, 1000}
+    {session::display_request_t::action_t::acquire,
+     "dual-horizontal", "4096x2160", {}, 1000}
   ).empty());
   EXPECT_FALSE(session::display_request_message(
-    {"dual-horizontal", "4096x2160", "1280x2160", 1000}
+    {session::display_request_t::action_t::acquire,
+     "dual-horizontal", "4096x2160", "1280x2160", 1000}
   ).empty());
   EXPECT_TRUE(session::display_request_message(
-    {"single", "2560x1600", {}, 0}
+    {session::display_request_t::action_t::acquire,
+     "single", "2560x1600", {}, 0}
   ).empty());
   auto truncated = session::display_request_message(
-    {"single", "2560x1600", {}, 1000}
+    {session::display_request_t::action_t::acquire,
+     "single", "2560x1600", {}, 1000}
   );
   ASSERT_FALSE(truncated.empty());
   truncated.pop_back();
   EXPECT_FALSE(session::parse_display_request(truncated));
+}
+
+TEST(SessionContext, RoundTripsTemporaryRuntimeDisplayState) {
+  const session::runtime_display_state_t state {
+    "dual-horizontal", "3840x2160", "1280x2160", 1000
+  };
+  const auto message = session::runtime_display_state_message(state);
+  const auto parsed = session::parse_runtime_display_state(message);
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->layout, state.layout);
+  EXPECT_EQ(parsed->mode_1, state.mode_1);
+  EXPECT_EQ(parsed->mode_2, state.mode_2);
+  EXPECT_EQ(parsed->lease_uid, state.lease_uid);
+
+  auto truncated = message;
+  truncated.pop_back();
+  EXPECT_FALSE(session::parse_runtime_display_state(truncated));
+  EXPECT_TRUE(session::runtime_display_state_message(
+    {"single", "5120x2160", {}, 1000}
+  ).empty());
 }
 
 TEST(SessionContext, ReadsSecondaryVisibilityFromOwnedOverlay) {

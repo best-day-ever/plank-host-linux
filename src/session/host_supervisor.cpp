@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <csignal>
 #include <cstring>
@@ -16,6 +17,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <regex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -44,10 +46,13 @@ namespace {
   constexpr std::string_view display_prepare_path =
     "/usr/libexec/stationconnect/stationconnect-display-prepare";
   constexpr std::string_view xrandr_path = "/usr/bin/xrandr";
+  constexpr std::string_view nvidia_settings_path = "/usr/bin/nvidia-settings";
   constexpr std::string_view display_overlay_path =
     "/etc/X11/xorg.conf.d/99-stationconnect-headless.conf";
   constexpr std::string_view stationconnect_config_path =
     "/etc/stationconnect/stationconnect.conf";
+  constexpr std::string_view runtime_display_state_path =
+    "/run/stationconnect/host/display-state";
 
   struct account_t {
     uid_t uid {};
@@ -61,6 +66,28 @@ namespace {
     int control_descriptor {-1};
     std::string session_id;
     std::uint64_t generation {};
+  };
+
+  struct physical_output_t {
+    std::string name;
+    std::string mode;
+    int native_width {};
+    int native_height {};
+    int x {};
+  };
+
+  struct physical_snapshot_t {
+    std::string assignment;
+    std::vector<physical_output_t> outputs;
+  };
+
+  struct physical_display_lease_t {
+    uid_t uid {};
+    stationconnect::session::display_request_t request;
+    std::string session_id;
+    physical_snapshot_t snapshot;
+    bool active {};
+    std::chrono::steady_clock::time_point deadline;
   };
 
   std::optional<account_t> account_for_uid(uid_t uid) {
@@ -356,6 +383,94 @@ namespace {
     return false;
   }
 
+  std::optional<std::string> run_bounded_command_capture(
+    const std::filesystem::path &program,
+    const std::vector<std::string> &arguments,
+    std::chrono::seconds timeout
+  ) {
+    constexpr std::size_t maximum_output_size = 64U * 1024U;
+    if (!program.is_absolute() || access(program.c_str(), X_OK) != 0) {
+      return std::nullopt;
+    }
+    int output_pipe[2] {-1, -1};
+    if (pipe2(output_pipe, O_CLOEXEC | O_NONBLOCK) != 0) return std::nullopt;
+    const pid_t child = fork();
+    if (child == 0) {
+      close(output_pipe[0]);
+      if (dup2(output_pipe[1], STDOUT_FILENO) < 0) std::_Exit(127);
+      close(output_pipe[1]);
+      std::vector<char *> command;
+      command.reserve(arguments.size() + 2);
+      command.push_back(const_cast<char *>(program.c_str()));
+      for (const auto &argument : arguments) {
+        command.push_back(const_cast<char *>(argument.c_str()));
+      }
+      command.push_back(nullptr);
+      execv(program.c_str(), command.data());
+      std::_Exit(127);
+    }
+    close(output_pipe[1]);
+    if (child <= 0) {
+      close(output_pipe[0]);
+      return std::nullopt;
+    }
+
+    std::string output;
+    int status {};
+    bool exited = false;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      std::array<char, 4096> buffer {};
+      while (true) {
+        const ssize_t size = read(output_pipe[0], buffer.data(), buffer.size());
+        if (size > 0) {
+          if (output.size() + static_cast<std::size_t>(size) > maximum_output_size) {
+            kill(child, SIGKILL);
+            waitpid(child, nullptr, 0);
+            close(output_pipe[0]);
+            return std::nullopt;
+          }
+          output.append(buffer.data(), static_cast<std::size_t>(size));
+          continue;
+        }
+        if (size < 0 && errno != EAGAIN && errno != EINTR) {
+          kill(child, SIGKILL);
+          waitpid(child, nullptr, 0);
+          close(output_pipe[0]);
+          return std::nullopt;
+        }
+        break;
+      }
+      const pid_t result = waitpid(child, &status, WNOHANG);
+      if (result == child) {
+        exited = true;
+        break;
+      }
+      if (result < 0 && errno != EINTR) break;
+      pollfd descriptor {output_pipe[0], POLLIN, 0};
+      poll(&descriptor, 1, 50);
+    }
+    if (!exited) {
+      kill(child, SIGKILL);
+      waitpid(child, nullptr, 0);
+      close(output_pipe[0]);
+      return std::nullopt;
+    }
+    std::array<char, 4096> tail {};
+    while (true) {
+      const ssize_t size = read(output_pipe[0], tail.data(), tail.size());
+      if (size <= 0) break;
+      if (output.size() + static_cast<std::size_t>(size) > maximum_output_size) {
+        close(output_pipe[0]);
+        return std::nullopt;
+      }
+      output.append(tail.data(), static_cast<std::size_t>(size));
+    }
+    close(output_pipe[0]);
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 ?
+      std::optional<std::string> {std::move(output)} : std::nullopt;
+  }
+
   bool run_bounded_user_command(
     const std::filesystem::path &program,
     const std::vector<std::string> &arguments,
@@ -389,6 +504,300 @@ namespace {
     return run_bounded_command(
       systemd_run_path, transient_arguments, timeout + std::chrono::seconds {2}
     );
+  }
+
+  std::optional<std::string> run_bounded_user_command_capture(
+    const std::filesystem::path &program,
+    const std::vector<std::string> &arguments,
+    std::chrono::seconds timeout,
+    const account_t &account,
+    const stationconnect::session::environment_t &environment
+  ) {
+    if (!program.is_absolute() || access(program.c_str(), X_OK) != 0 ||
+        account.uid == 0 || account.name.empty()) return std::nullopt;
+    std::vector<std::string> transient_arguments {
+      "--quiet", "--pipe", "--wait", "--collect", "--service-type=exec",
+      "--uid=" + account.name,
+      "--gid=" + std::to_string(account.gid),
+      "--property=NoNewPrivileges=yes",
+      "--property=ProtectSystem=strict",
+      "--property=ProtectHome=yes",
+      "--property=RestrictAddressFamilies=AF_UNIX",
+      "--property=RuntimeMaxSec=" + std::to_string(timeout.count()) + "s",
+      "--setenv=HOME=" + account.home,
+      "--setenv=USER=" + account.name,
+      "--setenv=LOGNAME=" + account.name,
+      "--setenv=PATH=/usr/local/bin:/usr/bin:/bin",
+      "--setenv=DISPLAY=" + environment.display,
+      "--setenv=XAUTHORITY=" + environment.xauthority,
+      "--setenv=XDG_RUNTIME_DIR=" + environment.runtime_directory,
+      "--", program.string()
+    };
+    transient_arguments.insert(
+      transient_arguments.end(), arguments.begin(), arguments.end()
+    );
+    return run_bounded_command_capture(
+      systemd_run_path, transient_arguments, timeout + std::chrono::seconds {2}
+    );
+  }
+
+  std::string_view trim_view(std::string_view value) {
+    constexpr std::string_view whitespace = " \t\r\n";
+    const auto first = value.find_first_not_of(whitespace);
+    if (first == std::string_view::npos) return {};
+    const auto last = value.find_last_not_of(whitespace);
+    return value.substr(first, last - first + 1);
+  }
+
+  std::optional<int> parse_positive_int(std::string_view value) {
+    int parsed {};
+    const auto result = std::from_chars(
+      value.data(), value.data() + value.size(), parsed
+    );
+    if (value.empty() || result.ec != std::errc {} ||
+        result.ptr != value.data() + value.size() || parsed <= 0) {
+      return std::nullopt;
+    }
+    return parsed;
+  }
+
+  std::optional<physical_snapshot_t> parse_current_metamode(
+    std::string_view response
+  ) {
+    constexpr std::size_t maximum_assignment_size = 32U * 1024U;
+    const auto separator = response.find("::");
+    if (separator == std::string_view::npos) return std::nullopt;
+    const auto assignment_view = trim_view(response.substr(separator + 2));
+    if (assignment_view.empty() || assignment_view.size() > maximum_assignment_size) {
+      return std::nullopt;
+    }
+    for (const unsigned char character : assignment_view) {
+      if (character < 0x20 || character > 0x7e) return std::nullopt;
+    }
+
+    std::vector<std::string_view> clauses;
+    std::size_t start = 0;
+    int brace_depth = 0;
+    for (std::size_t index = 0; index <= assignment_view.size(); ++index) {
+      const char character = index < assignment_view.size() ? assignment_view[index] : ',';
+      if (character == '{') ++brace_depth;
+      else if (character == '}') --brace_depth;
+      if (brace_depth < 0) return std::nullopt;
+      if (character == ',' && brace_depth == 0) {
+        clauses.push_back(trim_view(assignment_view.substr(start, index - start)));
+        start = index + 1;
+      }
+    }
+    if (brace_depth != 0 || clauses.empty()) return std::nullopt;
+
+    static const std::regex output_name {R"(^[A-Za-z0-9_-]+$)"};
+    static const std::regex viewport_out {
+      R"(ViewPortOut=([0-9]+)x([0-9]+)\+[0-9]+\+[0-9]+)"
+    };
+    static const std::regex logical_position {
+      R"(@[0-9]+x[0-9]+ \+([0-9]+)\+[0-9]+)"
+    };
+    physical_snapshot_t snapshot;
+    snapshot.assignment = std::string {assignment_view};
+    for (const auto clause : clauses) {
+      const auto colon = clause.find(':');
+      if (colon == std::string_view::npos) return std::nullopt;
+      const std::string name {trim_view(clause.substr(0, colon))};
+      const auto body = trim_view(clause.substr(colon + 1));
+      if (!std::regex_match(name, output_name)) return std::nullopt;
+      if (body == "NULL") continue;
+      const auto mode_end = body.find_first_of(" \t");
+      if (mode_end == std::string_view::npos) return std::nullopt;
+      const std::string mode {body.substr(0, mode_end)};
+      if (!std::regex_match(mode, output_name)) return std::nullopt;
+      std::match_results<std::string_view::const_iterator> viewport_match;
+      std::match_results<std::string_view::const_iterator> position_match;
+      if (!std::regex_search(body.begin(), body.end(), viewport_match, viewport_out) ||
+          !std::regex_search(body.begin(), body.end(), position_match, logical_position)) {
+        return std::nullopt;
+      }
+      const auto width = parse_positive_int(
+        std::string_view {viewport_match[1].first, viewport_match[1].second}
+      );
+      const auto height = parse_positive_int(
+        std::string_view {viewport_match[2].first, viewport_match[2].second}
+      );
+      const auto x = parse_positive_int(
+        std::string_view {position_match[1].first, position_match[1].second}
+      );
+      // The leftmost output legitimately begins at zero.
+      int parsed_x = 0;
+      const auto x_view = std::string_view {
+        position_match[1].first, position_match[1].second
+      };
+      const auto x_result = std::from_chars(
+        x_view.data(), x_view.data() + x_view.size(), parsed_x
+      );
+      if (!width || !height || x_result.ec != std::errc {} ||
+          x_result.ptr != x_view.data() + x_view.size() || parsed_x < 0) {
+        return std::nullopt;
+      }
+      (void) x;
+      snapshot.outputs.push_back({name, mode, *width, *height, parsed_x});
+    }
+    if (snapshot.outputs.empty()) return std::nullopt;
+    std::sort(snapshot.outputs.begin(), snapshot.outputs.end(), [](const auto &left,
+                                                                  const auto &right) {
+      return std::tie(left.x, left.name) < std::tie(right.x, right.name);
+    });
+    return snapshot;
+  }
+
+  std::optional<physical_snapshot_t> capture_physical_snapshot(
+    const account_t &account,
+    const stationconnect::session::environment_t &environment
+  ) {
+    const auto response = run_bounded_user_command_capture(
+      nvidia_settings_path, {"--query", "CurrentMetaMode", "--terse"},
+      std::chrono::seconds {10}, account, environment
+    );
+    return response ? parse_current_metamode(*response) : std::nullopt;
+  }
+
+  bool assign_metamode(
+    std::string_view assignment,
+    const account_t &account,
+    const stationconnect::session::environment_t &environment
+  ) {
+    return !assignment.empty() && run_bounded_user_command(
+      nvidia_settings_path,
+      {"--assign", "CurrentMetaMode=" + std::string {assignment}},
+      std::chrono::seconds {10}, account, environment
+    );
+  }
+
+  std::optional<std::string> temporary_metamode(
+    const physical_snapshot_t &snapshot,
+    const stationconnect::session::display_request_t &request
+  ) {
+    const std::size_t required_outputs =
+      request.layout == "dual-horizontal" ? 2U : 1U;
+    if (snapshot.outputs.size() < required_outputs) return std::nullopt;
+    const std::array<std::string_view, 2> modes {request.mode_1, request.mode_2};
+    std::string assignment;
+    int x = 0;
+    for (std::size_t index = 0; index < required_outputs; ++index) {
+      const auto requested = stationconnect::topology::virtual_mode_size(modes[index]);
+      const auto &physical = snapshot.outputs[index];
+      if (requested.width <= 0 || requested.height <= 0) return std::nullopt;
+      if (!assignment.empty()) assignment += ", ";
+      assignment += physical.name + ": " + physical.mode + " @" +
+        std::to_string(requested.width) + "x" + std::to_string(requested.height) +
+        " +" + std::to_string(x) + "+0 {ViewPortIn=" +
+        std::to_string(requested.width) + "x" + std::to_string(requested.height) +
+        ", ViewPortOut=" + std::to_string(physical.native_width) + "x" +
+        std::to_string(physical.native_height) + "+0+0}";
+      x += requested.width;
+    }
+    return assignment;
+  }
+
+  std::string safe_physical_metamode(const physical_snapshot_t &snapshot) {
+    if (snapshot.outputs.empty()) return {};
+    const auto &output = snapshot.outputs.front();
+    return output.name + ": " + output.mode + " @" +
+      std::to_string(output.native_width) + "x" +
+      std::to_string(output.native_height) + " +0+0 {ViewPortIn=" +
+      std::to_string(output.native_width) + "x" +
+      std::to_string(output.native_height) + ", ViewPortOut=" +
+      std::to_string(output.native_width) + "x" +
+      std::to_string(output.native_height) + "+0+0}";
+  }
+
+  bool write_runtime_display_state(
+    const stationconnect::session::runtime_display_state_t &state
+  ) {
+    const std::string contents =
+      stationconnect::session::runtime_display_state_message(state);
+    if (contents.empty()) return false;
+    const std::string temporary = std::string {runtime_display_state_path} +
+      ".tmp." + std::to_string(getpid());
+    const int descriptor = open(
+      temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+      S_IRUSR | S_IWUSR
+    );
+    if (descriptor < 0) return false;
+    ssize_t offset = 0;
+    while (offset < static_cast<ssize_t>(contents.size())) {
+      const ssize_t written = write(
+        descriptor, contents.data() + offset, contents.size() - offset
+      );
+      if (written <= 0) break;
+      offset += written;
+    }
+    const bool complete = offset == static_cast<ssize_t>(contents.size()) &&
+      fsync(descriptor) == 0 && close(descriptor) == 0 &&
+      rename(temporary.c_str(), runtime_display_state_path.data()) == 0;
+    if (!complete) {
+      close(descriptor);
+      unlink(temporary.c_str());
+    }
+    return complete;
+  }
+
+  void clear_runtime_display_state() {
+    if (unlink(runtime_display_state_path.data()) != 0 && errno != ENOENT) {
+      std::cerr << "Unable to remove the StationConnect runtime display state: "
+                << std::strerror(errno) << '\n';
+    }
+  }
+
+  bool apply_physical_lease(
+    physical_display_lease_t &lease,
+    const stationconnect::session::descriptor_t &session,
+    const stationconnect::session::environment_t &environment
+  ) {
+    const auto account = account_for_uid(session.uid);
+    if (!account) return false;
+    const auto snapshot = capture_physical_snapshot(*account, environment);
+    if (!snapshot) {
+      std::cerr << "Unable to capture the physical NVIDIA MetaMode before the StationConnect session\n";
+      return false;
+    }
+    const auto temporary = temporary_metamode(*snapshot, lease.request);
+    if (!temporary || !assign_metamode(*temporary, *account, environment)) {
+      std::cerr << "Unable to apply the temporary StationConnect physical-display layout\n";
+      return false;
+    }
+    if (!write_runtime_display_state({
+          lease.request.layout, lease.request.mode_1, lease.request.mode_2,
+          lease.uid
+        })) {
+      assign_metamode(snapshot->assignment, *account, environment);
+      std::cerr << "Unable to publish the temporary StationConnect display state; restored the physical layout\n";
+      return false;
+    }
+    lease.session_id = session.id;
+    lease.snapshot = *snapshot;
+    return true;
+  }
+
+  bool restore_physical_lease(
+    const physical_display_lease_t &lease,
+    const stationconnect::session::descriptor_t &session,
+    const stationconnect::session::environment_t &environment
+  ) {
+    const auto account = account_for_uid(session.uid);
+    if (!account) return false;
+    if (assign_metamode(lease.snapshot.assignment, *account, environment)) {
+      clear_runtime_display_state();
+      std::clog << "Restored the exact pre-session physical NVIDIA MetaMode\n";
+      return true;
+    }
+    const auto fallback = safe_physical_metamode(lease.snapshot);
+    const bool recovered = !fallback.empty() &&
+      assign_metamode(fallback, *account, environment);
+    clear_runtime_display_state();
+    std::cerr << "ERROR: Exact StationConnect physical-display restoration failed; "
+              << (recovered ? "enabled one safe native physical output" :
+                              "safe physical-output recovery also failed")
+              << '\n';
+    return recovered;
   }
 
   bool apply_live_display_transition(
@@ -449,12 +858,6 @@ namespace {
     );
     if (contents.size() > maximum_overlay_size) return std::nullopt;
     return stationconnect::session::secondary_output_visible_from_overlay(contents);
-  }
-
-  bool virtual_display_transitions_enabled() {
-    return stationconnect::session::configured_display_policy(
-             stationconnect_config_path
-           ) == stationconnect::session::display_policy_t::virtual_outputs;
   }
 
   bool set_secondary_desktop_visibility(
@@ -553,15 +956,23 @@ int main(int argc, char **argv) {
 
   worker_t worker;
   std::optional<stationconnect::session::display_request_t> pending_display_request;
-  const auto initial_display_policy =
-    stationconnect::session::configured_display_policy(stationconnect_config_path);
-  const bool initial_virtual_display_policy =
-    initial_display_policy == stationconnect::session::display_policy_t::virtual_outputs;
-  if (initial_display_policy == stationconnect::session::display_policy_t::invalid) {
-    std::cerr << "StationConnect display policy is invalid; virtual display transitions are disabled\n";
+  std::optional<physical_display_lease_t> physical_display_lease;
+  const auto startup_layout =
+    stationconnect::session::configured_startup_layout(stationconnect_config_path);
+  const bool physical_startup =
+    startup_layout == stationconnect::session::startup_layout_t::physical;
+  const bool virtual_startup =
+    startup_layout == stationconnect::session::startup_layout_t::single ||
+    startup_layout == stationconnect::session::startup_layout_t::dual_horizontal;
+  if (startup_layout == stationconnect::session::startup_layout_t::invalid) {
+    std::cerr << "StationConnect startup display layout is invalid; display transitions are disabled\n";
   }
+  bool recover_stale_runtime_state = physical_startup &&
+    stationconnect::session::read_runtime_display_state(
+      runtime_display_state_path
+    ).has_value();
   std::optional<bool> desired_secondary_visibility =
-    initial_virtual_display_policy ? overlay_secondary_visibility() : std::nullopt;
+    virtual_startup ? overlay_secondary_visibility() : std::nullopt;
   bool initial_secondary_visibility = desired_secondary_visibility.has_value();
   std::string visibility_session_id;
   auto display_request_deadline = std::chrono::steady_clock::time_point::max();
@@ -569,13 +980,44 @@ int main(int argc, char **argv) {
   auto next_launch = std::chrono::steady_clock::now();
   bool stopping = false;
   while (!stopping) {
+    if (physical_display_lease && !physical_display_lease->active &&
+        std::chrono::steady_clock::now() >= physical_display_lease->deadline) {
+      const auto selected = stationconnect::session::active_seat0_graphical_session();
+      const auto environment = selected &&
+        selected->id == physical_display_lease->session_id ?
+          stationconnect::session::discover_environment(*selected) : std::nullopt;
+      if (selected && environment) {
+        restore_physical_lease(*physical_display_lease, *selected, *environment);
+      } else {
+        clear_runtime_display_state();
+        std::cerr << "Temporary StationConnect display lease expired after its X server disappeared\n";
+      }
+      physical_display_lease.reset();
+    }
+
     if (pending_display_request &&
         std::chrono::steady_clock::now() >= display_request_deadline) {
       const auto selected = stationconnect::session::active_seat0_graphical_session();
-      if (!virtual_display_transitions_enabled()) {
-        std::cerr << "Refusing StationConnect virtual display transition because the host is configured for physical displays\n";
-      } else if (!selected || selected->id != worker.session_id) {
+      if (!selected || selected->id != worker.session_id) {
         std::cerr << "Refusing StationConnect display transition because the graphical session changed\n";
+      } else if (physical_startup) {
+        const auto environment = stationconnect::session::discover_environment(*selected);
+        physical_display_lease_t lease {
+          pending_display_request->account_uid, *pending_display_request, {}, {}, false,
+          std::chrono::steady_clock::now() + std::chrono::seconds {45}
+        };
+        if (!environment) {
+          std::cerr << "Unable to discover the active X11 environment for a temporary physical-display lease\n";
+        } else if (physical_display_lease &&
+                   physical_display_lease->uid != lease.uid) {
+          std::cerr << "Refusing to replace a temporary display lease owned by another account\n";
+        } else if (apply_physical_lease(lease, *selected, *environment)) {
+          physical_display_lease = std::move(lease);
+          std::clog << "Temporary StationConnect physical-display lease acquired for UID "
+                    << physical_display_lease->uid << '\n';
+        }
+      } else if (!virtual_startup) {
+        std::cerr << "Refusing a display transition because display.startup_layout is invalid\n";
       } else if (selected->session_class == "greeter") {
         const auto request = std::move(*pending_display_request);
         std::clog << "Applying StationConnect display transition: "
@@ -634,6 +1076,48 @@ int main(int argc, char **argv) {
         if (!confirmed || confirmed->id != selected->id || confirmed->uid != selected->uid) {
           continue;
         }
+        if (worker.pid > 0 && worker.session_id != selected->id) {
+          const auto previous_session = worker.session_id;
+          std::clog << "Graphical session changed from " << previous_session
+                    << " to " << selected->id
+                    << "; restarting the StationConnect media worker for fresh X11/NvFBC state\n";
+          stop_worker(worker);
+        }
+
+        if (recover_stale_runtime_state) {
+          const auto stale_snapshot = capture_physical_snapshot(*account, *environment);
+          const auto fallback = stale_snapshot ?
+            safe_physical_metamode(*stale_snapshot) : std::string {};
+          if (!fallback.empty() && assign_metamode(fallback, *account, *environment)) {
+            std::cerr << "Recovered a stale temporary StationConnect layout with one safe native physical output\n";
+          } else {
+            std::cerr << "ERROR: Unable to recover the stale temporary StationConnect physical layout\n";
+          }
+          clear_runtime_display_state();
+          recover_stale_runtime_state = false;
+        }
+
+        if (physical_display_lease &&
+            physical_display_lease->session_id != selected->id) {
+          if (selected->session_class == "user" &&
+              selected->uid == physical_display_lease->uid) {
+            if (!apply_physical_lease(
+                  *physical_display_lease, *selected, *environment
+                )) {
+              clear_runtime_display_state();
+              physical_display_lease.reset();
+              std::cerr << "Unable to carry the temporary display lease from GDM into the authenticated desktop\n";
+            } else {
+              std::clog << "Carried the temporary StationConnect display lease into user session "
+                        << selected->id << '\n';
+            }
+          } else {
+            clear_runtime_display_state();
+            physical_display_lease.reset();
+            std::clog << "Discarded the temporary display lease after its X server ended\n";
+          }
+        }
+
         const auto complete_environment = add_audio_environment(*environment, *account);
         if (desired_secondary_visibility && visibility_session_id != selected->id) {
           // An existing user X server retains this connector property across
@@ -658,13 +1142,6 @@ int main(int argc, char **argv) {
             visibility_session_id = selected->id;
             initial_secondary_visibility = false;
           }
-        }
-        if (worker.pid > 0) {
-          const auto previous_session = worker.session_id;
-          std::clog << "Graphical session changed from " << previous_session
-                    << " to " << selected->id
-                    << "; restarting the StationConnect media worker for fresh X11/NvFBC state\n";
-          stop_worker(worker);
         }
         if (worker.pid <= 0) {
           auto launched = launch_worker(worker_path, *selected, complete_environment);
@@ -706,14 +1183,35 @@ int main(int argc, char **argv) {
       const auto active = stationconnect::session::active_seat0_graphical_session();
       if (!request) {
         std::cerr << "Rejected malformed StationConnect display transition request\n";
-      } else if (!virtual_display_transitions_enabled()) {
-        std::cerr << "Refused StationConnect virtual display transition because the host is configured for physical displays\n";
       } else if (!active || active->id != worker.session_id ||
                  (active->session_class == "user" &&
                   active->uid != request->account_uid) ||
                  (active->session_class != "greeter" &&
                   active->session_class != "user")) {
         std::cerr << "Refused StationConnect display transition outside an authorized graphical session\n";
+      } else if (request->action ==
+                   stationconnect::session::display_request_t::action_t::activate) {
+        if (physical_display_lease &&
+            physical_display_lease->uid == request->account_uid) {
+          physical_display_lease->active = true;
+          physical_display_lease->deadline =
+            std::chrono::steady_clock::time_point::max();
+          std::clog << "Temporary StationConnect display lease is active\n";
+        }
+      } else if (request->action ==
+                   stationconnect::session::display_request_t::action_t::release) {
+        if (physical_display_lease &&
+            physical_display_lease->uid == request->account_uid) {
+          const auto environment = active->id == physical_display_lease->session_id ?
+            stationconnect::session::discover_environment(*active) : std::nullopt;
+          if (environment) {
+            restore_physical_lease(*physical_display_lease, *active, *environment);
+          } else {
+            clear_runtime_display_state();
+            std::cerr << "Released a temporary display lease after its X server disappeared\n";
+          }
+          physical_display_lease.reset();
+        }
       } else if (!pending_display_request) {
         pending_display_request = *request;
         // Allow the HTTPS worker to return its transition response before it
@@ -734,6 +1232,13 @@ int main(int argc, char **argv) {
           const pid_t result = waitpid(worker.pid, nullptr, WNOHANG);
           if (result == worker.pid) {
             std::clog << "StationConnect worker exited; scheduling restart\n";
+            if (physical_display_lease && physical_display_lease->active &&
+                physical_display_lease->session_id == worker.session_id) {
+              physical_display_lease->active = false;
+              physical_display_lease->deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds {30};
+              std::cerr << "StationConnect worker exited with an active display lease; allowing 30 seconds for recovery\n";
+            }
             close(worker.control_descriptor);
             worker = {};
             next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {2};
@@ -743,6 +1248,17 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (physical_display_lease) {
+    const auto selected = stationconnect::session::active_seat0_graphical_session();
+    const auto environment = selected &&
+      selected->id == physical_display_lease->session_id ?
+        stationconnect::session::discover_environment(*selected) : std::nullopt;
+    if (selected && environment) {
+      restore_physical_lease(*physical_display_lease, *selected, *environment);
+    } else {
+      clear_runtime_display_state();
+    }
+  }
   stop_worker(worker);
   close(signal_fd);
   return 0;

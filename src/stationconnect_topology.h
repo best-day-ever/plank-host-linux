@@ -10,7 +10,7 @@
 
 namespace stationconnect::topology {
   constexpr int maximum_virtual_canvas_width = 8192;
-  constexpr std::uint32_t protocol_version = 4;
+  constexpr std::uint32_t protocol_version = 5;
   constexpr std::uint32_t feature_output_topology = 0x1;
   constexpr std::uint32_t feature_selected_output = 0x2;
   constexpr std::uint32_t feature_unified_absolute_input = 0x4;
@@ -21,6 +21,7 @@ namespace stationconnect::topology {
   constexpr std::uint32_t feature_host_layout_binding = 0x80;
   constexpr std::uint32_t feature_independent_virtual_modes = 0x100;
   constexpr std::uint32_t feature_dynamic_host_layout = 0x200;
+  constexpr std::uint32_t feature_temporary_physical_layout = 0x400;
   constexpr std::uint32_t feature_flags =
     feature_output_topology |
     feature_selected_output |
@@ -31,7 +32,8 @@ namespace stationconnect::topology {
     feature_composite_source_regions |
     feature_host_layout_binding |
     feature_independent_virtual_modes |
-    feature_dynamic_host_layout;
+    feature_dynamic_host_layout |
+    feature_temporary_physical_layout;
 
   enum class layout_error {
     none,
@@ -68,12 +70,12 @@ namespace stationconnect::topology {
            layout == "dual-horizontal";
   }
 
-  constexpr bool layout_allowed_by_display_policy(
+  constexpr bool layout_allowed_by_startup_layout(
     std::string_view layout,
-    bool virtual_outputs_enabled
+    std::string_view startup_layout
   ) {
-    return valid_layout(layout) &&
-           (virtual_outputs_enabled ? layout != "physical" : layout == "physical");
+    if (!valid_layout(layout) || !valid_layout(startup_layout)) return false;
+    return startup_layout == "physical" || layout != "physical";
   }
 
   constexpr bool valid_virtual_mode(std::string_view mode) {

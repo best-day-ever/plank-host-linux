@@ -41,10 +41,22 @@ namespace stationconnect::session {
   };
 
   struct display_request_t {
+    enum class action_t {
+      acquire,
+      activate,
+      release,
+    } action {action_t::acquire};
     std::string layout;
     std::string mode_1;
     std::string mode_2;
     uid_t account_uid {};
+  };
+
+  struct runtime_display_state_t {
+    std::string layout;
+    std::string mode_1;
+    std::string mode_2;
+    uid_t lease_uid {};
   };
 
   enum class display_request_status {
@@ -54,9 +66,10 @@ namespace stationconnect::session {
     invalid,
   };
 
-  enum class display_policy_t {
+  enum class startup_layout_t {
     physical,
-    virtual_outputs,
+    single,
+    dual_horizontal,
     invalid,
   };
 
@@ -91,14 +104,29 @@ namespace stationconnect::session {
   std::string display_request_message(const display_request_t &request);
   std::optional<display_request_t> parse_display_request(std::string_view message);
 
+  /** Encode, decode, or read the supervisor-owned live display-layout marker. */
+  std::string runtime_display_state_message(const runtime_display_state_t &state);
+  std::optional<runtime_display_state_t> parse_runtime_display_state(
+    std::string_view message
+  );
+  std::optional<runtime_display_state_t> read_runtime_display_state(
+    std::string_view path
+  );
+
   /** Read the intended secondary-monitor visibility from an owned Xorg overlay. */
   std::optional<bool> secondary_output_visible_from_overlay(std::string_view overlay);
 
-  /** Read the administrator-owned virtual-display policy; malformed input fails closed. */
-  display_policy_t configured_display_policy(std::string_view config_path);
+  /** Read the administrator-owned startup display layout; malformed input fails closed. */
+  startup_layout_t configured_startup_layout(std::string_view config_path);
 
   /** Request a display transition from GDM or the authenticated user's desktop. */
   display_request_status request_display_transition(const display_request_t &request);
+
+  /** Mark a temporary physical-display lease active once RTSP allocates its stream. */
+  display_request_status activate_display_lease(uid_t account_uid);
+
+  /** Release a temporary physical-display lease when its final stream ends. */
+  display_request_status release_display_lease(uid_t account_uid);
 
   /** Begin monitoring the inherited, root-authenticated supervisor channel. */
   std::unique_ptr<supervisor_control_t> start_supervisor_control(

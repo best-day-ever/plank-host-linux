@@ -40,13 +40,13 @@ TEST(StationConnectTopology, AcceptsExactQualifiedLayouts) {
 }
 
 TEST(StationConnectTopology, EnforcesAdministratorDisplayPolicy) {
-  EXPECT_TRUE(topology::layout_allowed_by_display_policy("physical", false));
-  EXPECT_FALSE(topology::layout_allowed_by_display_policy("single", false));
-  EXPECT_FALSE(topology::layout_allowed_by_display_policy("dual-horizontal", false));
-  EXPECT_FALSE(topology::layout_allowed_by_display_policy("physical", true));
-  EXPECT_TRUE(topology::layout_allowed_by_display_policy("single", true));
-  EXPECT_TRUE(topology::layout_allowed_by_display_policy("dual-horizontal", true));
-  EXPECT_FALSE(topology::layout_allowed_by_display_policy("dual-vertical", true));
+  EXPECT_TRUE(topology::layout_allowed_by_startup_layout("physical", "physical"));
+  EXPECT_TRUE(topology::layout_allowed_by_startup_layout("single", "physical"));
+  EXPECT_TRUE(topology::layout_allowed_by_startup_layout("dual-horizontal", "physical"));
+  EXPECT_FALSE(topology::layout_allowed_by_startup_layout("physical", "single"));
+  EXPECT_TRUE(topology::layout_allowed_by_startup_layout("single", "single"));
+  EXPECT_TRUE(topology::layout_allowed_by_startup_layout("dual-horizontal", "single"));
+  EXPECT_FALSE(topology::layout_allowed_by_startup_layout("dual-vertical", "physical"));
 }
 
 TEST(StationConnectTopology, RejectsMismatchBeforeLaunchState) {

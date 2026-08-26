@@ -874,7 +874,7 @@ namespace config {
     platf::appdata().string() + "/sunshine.log",  // log file
     false,  // notify_pre_releases
     false,  // StationConnect mDNS advertisement
-    "off",  // StationConnect virtual outputs
+    "physical",  // StationConnect startup display layout
     "1920x1080",  // StationConnect virtual output 1 mode
     "1920x1080",  // StationConnect virtual output 2 mode
     {},  // prep commands
@@ -1755,7 +1755,7 @@ namespace config {
 
     bool_f(vars, "notify_pre_releases", sunshine.notify_pre_releases);
     bool_f(vars, "stationconnect_mdns_discovery", sunshine.stationconnect_mdns_discovery);
-    string_f(vars, "virtual_outputs", sunshine.virtual_outputs);
+    string_f(vars, "startup_layout", sunshine.startup_layout);
     string_f(vars, "virtual_mode_1", sunshine.virtual_mode_1);
     string_f(vars, "virtual_mode_2", sunshine.virtual_mode_2);
 

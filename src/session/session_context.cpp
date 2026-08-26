@@ -30,7 +30,8 @@
 namespace stationconnect::session {
   namespace {
     constexpr std::string_view update_prefix = "SC-SESSION-2";
-    constexpr std::string_view display_request_prefix = "SC-DISPLAY-2";
+    constexpr std::string_view display_request_prefix = "SC-DISPLAY-3";
+    constexpr std::string_view runtime_display_state_prefix = "SC-DISPLAY-STATE-1";
     constexpr std::size_t maximum_update_size = 8192;
     using login_string_t = std::unique_ptr<char, decltype(&free)>;
 
@@ -382,16 +383,24 @@ namespace stationconnect::session {
   }
 
   std::string display_request_message(const display_request_t &request) {
-    if ((request.layout != "single" && request.layout != "dual-horizontal") ||
-        !stationconnect::topology::valid_virtual_layout_modes(
-          request.layout, request.mode_1, request.mode_2
-        ) ||
-        request.account_uid == 0) {
+    const std::string_view action =
+      request.action == display_request_t::action_t::acquire ? "acquire" :
+      request.action == display_request_t::action_t::activate ? "activate" :
+                                                               "release";
+    const bool acquire_valid = request.action != display_request_t::action_t::acquire ||
+      ((request.layout == "single" || request.layout == "dual-horizontal") &&
+       stationconnect::topology::valid_virtual_layout_modes(
+         request.layout, request.mode_1, request.mode_2
+       ));
+    const bool control_valid = request.action == display_request_t::action_t::acquire ||
+      (request.layout.empty() && request.mode_1.empty() && request.mode_2.empty());
+    if (!acquire_valid || !control_valid || request.account_uid == 0) {
       return {};
     }
     const auto account_uid = std::to_string(request.account_uid);
-    const std::array<std::string_view, 5> fields {
-      display_request_prefix, request.layout, request.mode_1, request.mode_2, account_uid
+    const std::array<std::string_view, 6> fields {
+      display_request_prefix, action, request.layout, request.mode_1,
+      request.mode_2, account_uid
     };
     std::string message;
     for (const auto field : fields) {
@@ -411,17 +420,86 @@ namespace stationconnect::session {
       fields.emplace_back(message.substr(offset, end - offset));
       offset = end + 1;
     }
-    if (message.size() > maximum_update_size || fields.size() != 5 ||
+    if (message.size() > maximum_update_size || fields.size() != 6 ||
         fields.front() != display_request_prefix) return std::nullopt;
-    const auto account_uid = parse_integer<unsigned long long>(fields[4]);
+    const auto account_uid = parse_integer<unsigned long long>(fields[5]);
     if (!account_uid || *account_uid == 0 ||
         *account_uid > std::numeric_limits<uid_t>::max()) return std::nullopt;
+    const auto action = fields[1] == "acquire" ? display_request_t::action_t::acquire :
+      fields[1] == "activate" ? display_request_t::action_t::activate :
+      fields[1] == "release" ? display_request_t::action_t::release :
+                                display_request_t::action_t {};
+    if (fields[1] != "acquire" && fields[1] != "activate" &&
+        fields[1] != "release") return std::nullopt;
     display_request_t request {
-      std::string {fields[1]}, std::string {fields[2]}, std::string {fields[3]},
+      action, std::string {fields[2]}, std::string {fields[3]}, std::string {fields[4]},
       static_cast<uid_t>(*account_uid)
     };
     return display_request_message(request).empty() ?
              std::nullopt : std::optional<display_request_t> {std::move(request)};
+  }
+
+  std::string runtime_display_state_message(const runtime_display_state_t &state) {
+    if ((state.layout != "single" && state.layout != "dual-horizontal") ||
+        !stationconnect::topology::valid_virtual_layout_modes(
+          state.layout, state.mode_1, state.mode_2
+        ) || state.lease_uid == 0) {
+      return {};
+    }
+    const auto lease_uid = std::to_string(state.lease_uid);
+    const std::array<std::string_view, 5> fields {
+      runtime_display_state_prefix, state.layout, state.mode_1, state.mode_2,
+      lease_uid
+    };
+    std::string message;
+    for (const auto field : fields) {
+      if (field.find('\0') != std::string_view::npos) return {};
+      message.append(field);
+      message.push_back('\0');
+    }
+    return message.size() <= maximum_update_size ? message : std::string {};
+  }
+
+  std::optional<runtime_display_state_t> parse_runtime_display_state(
+    std::string_view message
+  ) {
+    std::vector<std::string_view> fields;
+    std::size_t offset = 0;
+    while (offset < message.size()) {
+      const auto end = message.find('\0', offset);
+      if (end == std::string_view::npos) return std::nullopt;
+      fields.emplace_back(message.substr(offset, end - offset));
+      offset = end + 1;
+    }
+    if (message.size() > maximum_update_size || fields.size() != 5 ||
+        fields.front() != runtime_display_state_prefix) return std::nullopt;
+    const auto lease_uid = parse_integer<unsigned long long>(fields[4]);
+    if (!lease_uid || *lease_uid == 0 ||
+        *lease_uid > std::numeric_limits<uid_t>::max()) return std::nullopt;
+    runtime_display_state_t state {
+      std::string {fields[1]}, std::string {fields[2]}, std::string {fields[3]},
+      static_cast<uid_t>(*lease_uid)
+    };
+    return runtime_display_state_message(state).empty() ?
+      std::nullopt : std::optional<runtime_display_state_t> {std::move(state)};
+  }
+
+  std::optional<runtime_display_state_t> read_runtime_display_state(
+    std::string_view path
+  ) {
+    struct stat status {};
+    const std::string owned_path {path};
+    if (lstat(owned_path.c_str(), &status) != 0 || status.st_uid != 0 ||
+        !S_ISREG(status.st_mode) || status.st_size <= 0 ||
+        status.st_size > static_cast<off_t>(maximum_update_size)) {
+      return std::nullopt;
+    }
+    std::ifstream input {owned_path, std::ios::binary};
+    if (!input) return std::nullopt;
+    std::string contents(
+      std::istreambuf_iterator<char> {input}, std::istreambuf_iterator<char> {}
+    );
+    return input.bad() ? std::nullopt : parse_runtime_display_state(contents);
   }
 
   std::optional<bool> secondary_output_visible_from_overlay(std::string_view overlay) {
@@ -441,10 +519,10 @@ namespace stationconnect::session {
     return std::nullopt;
   }
 
-  display_policy_t configured_display_policy(std::string_view config_path) {
+  startup_layout_t configured_startup_layout(std::string_view config_path) {
     constexpr std::size_t maximum_config_size = 1024U * 1024U;
     std::ifstream input {std::string {config_path}};
-    if (!input) return display_policy_t::invalid;
+    if (!input) return startup_layout_t::invalid;
 
     auto trim = [](std::string_view value) {
       constexpr std::string_view whitespace = " \t\r\n";
@@ -455,39 +533,43 @@ namespace stationconnect::session {
     };
 
     bool in_display_section = false;
-    bool saw_virtual_outputs = false;
-    display_policy_t policy = display_policy_t::physical;
+    bool saw_startup_layout = false;
+    startup_layout_t layout = startup_layout_t::physical;
     std::size_t total_size = 0;
     std::string line;
     while (std::getline(input, line)) {
       total_size += line.size() + 1;
-      if (total_size > maximum_config_size) return display_policy_t::invalid;
+      if (total_size > maximum_config_size) return startup_layout_t::invalid;
       const auto text = trim(line);
       if (text.empty() || text.front() == '#' || text.front() == ';') continue;
       if (text.front() == '[') {
-        if (text.size() < 2 || text.back() != ']') return display_policy_t::invalid;
+        if (text.size() < 2 || text.back() != ']') return startup_layout_t::invalid;
         in_display_section = trim(text.substr(1, text.size() - 2)) == "display";
         continue;
       }
       if (!in_display_section) continue;
       const auto separator = text.find('=');
-      if (separator == std::string_view::npos) return display_policy_t::invalid;
+      if (separator == std::string_view::npos) return startup_layout_t::invalid;
       const auto key = trim(text.substr(0, separator));
-      if (key != "virtual_outputs") continue;
-      if (saw_virtual_outputs) return display_policy_t::invalid;
-      saw_virtual_outputs = true;
+      if (key != "startup_layout") continue;
+      if (saw_startup_layout) return startup_layout_t::invalid;
+      saw_startup_layout = true;
       const auto value = trim(text.substr(separator + 1));
-      if (value == "off") {
-        policy = display_policy_t::physical;
+      if (value == "physical") {
+        layout = startup_layout_t::physical;
         continue;
       }
-      if (value == "single" || value == "dual-horizontal") {
-        policy = display_policy_t::virtual_outputs;
+      if (value == "single") {
+        layout = startup_layout_t::single;
         continue;
       }
-      return display_policy_t::invalid;
+      if (value == "dual-horizontal") {
+        layout = startup_layout_t::dual_horizontal;
+        continue;
+      }
+      return startup_layout_t::invalid;
     }
-    return input.bad() ? display_policy_t::invalid : policy;
+    return input.bad() ? startup_layout_t::invalid : layout;
   }
 
   display_request_status request_display_transition(const display_request_t &request) {
@@ -519,6 +601,18 @@ namespace stationconnect::session {
       return display_request_status::unavailable;
     }
     return display_request_status::submitted;
+  }
+
+  display_request_status activate_display_lease(uid_t account_uid) {
+    return request_display_transition({
+      display_request_t::action_t::activate, {}, {}, {}, account_uid
+    });
+  }
+
+  display_request_status release_display_lease(uid_t account_uid) {
+    return request_display_transition({
+      display_request_t::action_t::release, {}, {}, {}, account_uid
+    });
   }
 
   std::unique_ptr<supervisor_control_t> start_supervisor_control(

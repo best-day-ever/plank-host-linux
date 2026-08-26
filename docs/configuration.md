@@ -2910,12 +2910,12 @@ The packaged profile contains the settings StationConnect currently overrides. E
     </tr>
 </table>
 
-### virtual_outputs
+### startup_layout
 
 <table>
-    <tr><td>Description</td><td colspan="2">Administrator-owned virtual display layout prepared before GDM. The media worker parses this shared setting but does not reconfigure Xorg.</td></tr>
-    <tr><td>Default</td><td colspan="2">@code{}off@endcode</td></tr>
-    <tr><td>Choices</td><td colspan="2">@code{}off@endcode, @code{}single@endcode, or @code{}dual-horizontal@endcode</td></tr>
+    <tr><td>Description</td><td colspan="2">Administrator-owned boot display layout. Physical startup permits a temporary bookmark-selected layout that is restored at disconnect.</td></tr>
+    <tr><td>Default</td><td colspan="2">@code{}physical@endcode</td></tr>
+    <tr><td>Choices</td><td colspan="2">@code{}physical@endcode, @code{}single@endcode, or @code{}dual-horizontal@endcode</td></tr>
 </table>
 
 ### virtual_mode_1

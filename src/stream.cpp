@@ -29,6 +29,7 @@ extern "C" {
 #include "platform/common.h"
 #include "process.h"
 #include "raw_hid_tablet.h"
+#include "session/session_context.h"
 #include "stream.h"
 #include "stationconnect_bitrate.h"
 #include "sync.h"
@@ -489,6 +490,8 @@ namespace stream {
 
     std::uint32_t launch_session_id;  ///< RTSP launch-session ID associated with this stream.
     std::string input_session_id;  ///< Stable client identity used to retain input devices across resume.
+    bool stationconnect_display_lease {};  ///< Whether this stream owns the temporary physical-display layout.
+    uid_t stationconnect_display_lease_uid {};  ///< PAM account that owns the display lease.
     std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained until this stream is destroyed.
 
     safe::mail_raw_t::event_t<bool> shutdown_event;  ///< Event raised when the stream should shut down.
@@ -2114,6 +2117,14 @@ namespace stream {
         }
 
         platf::streaming_will_stop();
+        if (session.stationconnect_display_lease) {
+          const auto released = stationconnect::session::release_display_lease(
+            session.stationconnect_display_lease_uid
+          );
+          if (released != stationconnect::session::display_request_status::submitted) {
+            BOOST_LOG(error) << "Unable to submit the temporary StationConnect display-lease release"sv;
+          }
+        }
       }
 
       BOOST_LOG(debug) << "Session ended"sv;
@@ -2172,7 +2183,17 @@ namespace stream {
       session->shutdown_event = mail->event<bool>(mail::shutdown);
       session->launch_session_id = launch_session.id;
       session->input_session_id = launch_session.unique_id;
+      session->stationconnect_display_lease = launch_session.stationconnect_display_lease;
+      session->stationconnect_display_lease_uid =
+        launch_session.stationconnect_display_lease_uid;
       session->authentication_session = launch_session.authentication_session;
+
+      if (session->stationconnect_display_lease &&
+          stationconnect::session::activate_display_lease(
+            session->stationconnect_display_lease_uid
+          ) != stationconnect::session::display_request_status::submitted) {
+        BOOST_LOG(error) << "Unable to activate the temporary StationConnect display lease"sv;
+      }
 
       session->config = config;
 

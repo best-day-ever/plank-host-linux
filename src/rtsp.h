@@ -8,6 +8,8 @@
 #include <atomic>
 #include <memory>
 
+#include <sys/types.h>
+
 // local includes
 #include "crypto.h"
 #include "thread_safe.h"
@@ -47,6 +49,8 @@ namespace rtsp_stream {
     bool span_desktop {};  ///< Whether the complete virtual desktop is captured for this session.
     std::uint32_t stationconnect_protocol_version {};  ///< Selected StationConnect extension version.
     std::uint32_t stationconnect_feature_flags {};  ///< Client-supported StationConnect feature bits.
+    bool stationconnect_display_lease {};  ///< Whether this stream owns a temporary physical-display layout.
+    uid_t stationconnect_display_lease_uid {};  ///< PAM account that owns the temporary display lease.
 
     std::optional<crypto::cipher::gcm_t> rtsp_cipher;  ///< AES-GCM cipher used once encrypted RTSP is negotiated.
     std::string rtsp_url_scheme;  ///< URL scheme selected by the RTSP SETUP flow.

@@ -56,6 +56,8 @@ namespace nvhttp {
   namespace pt = boost::property_tree;
 
   constexpr std::string_view pam_broker_socket = "/run/stationconnect/pam/auth.sock"sv;  ///< Privileged broker activation path.
+  constexpr std::string_view runtime_display_state =
+    "/run/stationconnect/host/display-state"sv;
   std::unique_ptr<stationconnect::auth::web_auth_manager_t> web_auth;  ///< PAM conversations and ephemeral tokens.
   constexpr auto stationconnect_topology_version = stationconnect::topology::protocol_version;
   constexpr std::uint32_t stationconnect_host_metadata_version = 1;
@@ -73,6 +75,8 @@ namespace nvhttp {
     stationconnect::topology::feature_independent_virtual_modes;
   constexpr auto stationconnect_feature_dynamic_host_layout =
     stationconnect::topology::feature_dynamic_host_layout;
+  constexpr auto stationconnect_feature_temporary_physical_layout =
+    stationconnect::topology::feature_temporary_physical_layout;
   constexpr auto stationconnect_topology_features = stationconnect::topology::feature_flags;
 
   /**
@@ -405,6 +409,48 @@ namespace nvhttp {
     return false;
   }
 
+  struct live_layout_t {
+    std::string startup_kind;
+    std::string kind;
+    bool virtual_layout {};
+    std::vector<std::string> virtual_modes;
+    bool temporary_physical_lease {};
+    uid_t lease_uid {};
+  };
+
+  live_layout_t live_display_layout(
+    const std::vector<platf::display_info_t> &outputs
+  ) {
+    live_layout_t result;
+    result.startup_kind = config::sunshine.startup_layout;
+    if (!stationconnect::topology::valid_layout(result.startup_kind)) {
+      result.startup_kind = "physical";
+    }
+    if (const auto runtime = stationconnect::session::read_runtime_display_state(
+          runtime_display_state
+        )) {
+      result.kind = runtime->layout;
+      result.virtual_layout = true;
+      result.virtual_modes = {runtime->mode_1};
+      if (!runtime->mode_2.empty()) result.virtual_modes.push_back(runtime->mode_2);
+      result.temporary_physical_lease = true;
+      result.lease_uid = runtime->lease_uid;
+      return result;
+    }
+    result.virtual_layout = result.startup_kind != "physical";
+    result.kind = !result.virtual_layout ? "physical" :
+      outputs.size() == 1 ? "single" :
+      outputs.size() == 2 ? "dual-horizontal" : "unhealthy";
+    if (result.virtual_layout) {
+      for (const auto &output : outputs) {
+        result.virtual_modes.push_back(
+          std::format("{}x{}", output.width, output.height)
+        );
+      }
+    }
+    return result;
+  }
+
   nlohmann::json output_topology_json() {
     auto outputs = video::output_topology();
     std::sort(outputs.begin(), outputs.end(), [](const auto &left, const auto &right) {
@@ -430,32 +476,32 @@ namespace nvhttp {
       }
     }
 
-    const bool virtual_layout = config::sunshine.virtual_outputs != "off";
-    const auto layout_kind = !virtual_layout ? "physical"s :
-                               outputs.size() == 1 ? "single"s :
-                               outputs.size() == 2 ? "dual-horizontal"s :
-                                                     "unhealthy"s;
-    nlohmann::json virtual_modes = nlohmann::json::array();
-    if (virtual_layout) {
-      for (const auto &output : outputs) {
-        virtual_modes.push_back(std::format("{}x{}", output.width, output.height));
-      }
+    const auto live_layout = live_display_layout(outputs);
+    nlohmann::json virtual_modes = live_layout.virtual_modes;
+    nlohmann::json allowed_layouts = nlohmann::json::array();
+    if (live_layout.startup_kind == "physical") {
+      allowed_layouts.push_back("physical");
     }
+    allowed_layouts.push_back("single");
+    allowed_layouts.push_back("dual-horizontal");
     nlohmann::json body {
       {"schema_version", stationconnect_topology_version},
       {"feature_flags", stationconnect_topology_features},
       {"layout", {
-        {"kind", layout_kind},
-        {"virtual", virtual_layout},
+        {"kind", live_layout.kind},
+        {"virtual", live_layout.virtual_layout},
         {"virtual_modes", virtual_modes},
         {"output_count", outputs.size()},
+        {"startup_kind", live_layout.startup_kind},
+        {"allowed_kinds", allowed_layouts},
       }},
       {"outputs", nlohmann::json::array()},
     };
     for (std::size_t index = 0; index < outputs.size(); ++index) {
       const auto &output = outputs[index];
-      const std::string configured_mode = !virtual_layout ? std::string {} :
-        std::format("{}x{}", output.width, output.height);
+      const std::string configured_mode = !live_layout.virtual_layout ? std::string {} :
+        index < live_layout.virtual_modes.size() ? live_layout.virtual_modes[index] :
+                                                   std::string {};
       body["outputs"].push_back({
         {"id", output.id},
         {"name", output.name},
@@ -466,7 +512,7 @@ namespace nvhttp {
         {"rotation", output.rotation},
         {"refresh_millihz", output.refresh_millihz},
         {"primary", output.primary},
-        {"virtual", virtual_layout},
+        {"virtual", live_layout.virtual_layout},
         {"configured_mode", configured_mode},
         {"source_rect", {
           {"x", output.x - min_x},
@@ -483,7 +529,7 @@ namespace nvhttp {
     return body;
   }
 
-  bool bind_host_layout(const rtsp_stream::launch_session_t &session,
+  bool bind_host_layout(rtsp_stream::launch_session_t &session,
                         const std::vector<platf::display_info_t> &outputs,
                         uid_t authenticated_uid,
                         pt::ptree &tree) {
@@ -491,6 +537,7 @@ namespace nvhttp {
         (session.stationconnect_feature_flags & stationconnect_feature_host_layout_binding) == 0 ||
         (session.stationconnect_feature_flags & stationconnect_feature_independent_virtual_modes) == 0 ||
         (session.stationconnect_feature_flags & stationconnect_feature_dynamic_host_layout) == 0 ||
+        (session.stationconnect_feature_flags & stationconnect_feature_temporary_physical_layout) == 0 ||
         session.host_layout.empty()) {
       tree.put("root.<xmlattr>.status_code", 400);
       tree.put("root.<xmlattr>.status_message", "Missing StationConnect host-layout binding");
@@ -508,29 +555,23 @@ namespace nvhttp {
       return std::tie(l.x, l.y, l.id) < std::tie(r.x, r.y, r.id);
     });
 
-    const bool virtual_layout = config::sunshine.virtual_outputs != "off";
-    if (!stationconnect::topology::layout_allowed_by_display_policy(
-          session.host_layout, virtual_layout
+    const auto live_layout = live_display_layout(outputs);
+    if (!stationconnect::topology::layout_allowed_by_startup_layout(
+          session.host_layout, live_layout.startup_kind
         )) {
       tree.put("root.<xmlattr>.status_code", 409);
       tree.put(
         "root.<xmlattr>.status_message",
-        virtual_layout ?
-          "Host is configured to use StationConnect virtual displays" :
-          "Host is configured to use its physical displays"
+        "The requested display layout is not supported by this workstation"
       );
       return false;
     }
-    const auto actual_layout = !virtual_layout ? "physical"s :
-                                 outputs.size() == 1 ? "single"s :
-                                 outputs.size() == 2 ? "dual-horizontal"s :
-                                                       "unhealthy"s;
-    const auto actual_mode_1 = virtual_layout && !ordered_outputs.empty() ?
-      std::format("{}x{}", ordered_outputs[0].get().width,
-                  ordered_outputs[0].get().height) : std::string {};
+    const auto &actual_layout = live_layout.kind;
+    const auto actual_mode_1 = live_layout.virtual_layout &&
+      !live_layout.virtual_modes.empty() ? live_layout.virtual_modes[0] : std::string {};
     const auto actual_mode_2 = actual_layout == "dual-horizontal" ?
-      std::format("{}x{}", ordered_outputs[1].get().width,
-                  ordered_outputs[1].get().height) : std::string {};
+      live_layout.virtual_modes.size() > 1 ? live_layout.virtual_modes[1] : std::string {} :
+      std::string {};
     const auto validation = stationconnect::topology::validate_layout_binding(
       session.host_layout,
       session.virtual_mode_1,
@@ -547,6 +588,7 @@ namespace nvhttp {
     }
     if (validation == stationconnect::topology::layout_error::mismatch) {
       const auto transition = stationconnect::session::request_display_transition({
+        stationconnect::session::display_request_t::action_t::acquire,
         session.host_layout, session.virtual_mode_1, session.virtual_mode_2,
         authenticated_uid
       });
@@ -574,7 +616,7 @@ namespace nvhttp {
       tree.put("root.<xmlattr>.status_message", "Configured host display layout is not healthy");
       return false;
     }
-    if (virtual_layout) {
+    if (live_layout.virtual_layout) {
       const auto mode_1 = stationconnect::topology::virtual_mode_size(actual_mode_1);
       const bool first_matches = ordered_outputs[0].get().width == mode_1.width &&
                                  ordered_outputs[0].get().height == mode_1.height;
@@ -591,6 +633,16 @@ namespace nvhttp {
         tree.put("root.<xmlattr>.status_message", "Configured host display modes are not live");
         return false;
       }
+    }
+    if (live_layout.temporary_physical_lease) {
+      if (live_layout.lease_uid != authenticated_uid) {
+        tree.put("root.<xmlattr>.status_code", 423);
+        tree.put("root.<xmlattr>.status_message",
+                 "The temporary workstation display layout belongs to another account");
+        return false;
+      }
+      session.stationconnect_display_lease = true;
+      session.stationconnect_display_lease_uid = authenticated_uid;
     }
     return true;
   }
