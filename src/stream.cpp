@@ -1061,7 +1061,9 @@ namespace stream {
     egl::cursor_t image {};
     unsigned long queued_serial = std::numeric_limits<unsigned long>::max();
     std::uint64_t position_sequence = 0;
-    constexpr auto cursor_sample_period = 1s / 60;
+    constexpr auto cursor_sample_period =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(1s) / 60;
+    static_assert(cursor_sample_period == 16'666'666ns);
     auto next_cursor_sample = std::chrono::steady_clock::now();
 
     while (!stop_token.stop_requested()) {
