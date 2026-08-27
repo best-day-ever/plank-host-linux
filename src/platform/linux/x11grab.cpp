@@ -1112,6 +1112,16 @@ namespace platf {
     bool cursor_t::capture(egl::cursor_t &img) {
       auto display = (xdisplay_t::pointer) ctx.get();
 
+      if (img.desktop_width <= 0 || img.desktop_height <= 0) {
+        XWindowAttributes root_attributes {};
+        if (!x11::GetWindowAttributes(display, DefaultRootWindow(display), &root_attributes) ||
+            root_attributes.width <= 0 || root_attributes.height <= 0) {
+          return false;
+        }
+        img.desktop_width = root_attributes.width;
+        img.desktop_height = root_attributes.height;
+      }
+
       xcursor_t xcursor = fix::GetCursorImage(display);
       if (!xcursor) {
         return false;

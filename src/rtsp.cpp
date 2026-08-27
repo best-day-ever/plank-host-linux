@@ -1322,9 +1322,21 @@ namespace rtsp_stream {
       return;
     }
 
+    if ((config.mlFeatureFlags & ML_FF_CURSOR_POSITION) == 0) {
+      BOOST_LOG(error) << "Rejecting client without required StationConnect cursor-position transport"sv;
+      respond(sock, session, &option, 400, "StationConnect Cursor Position Required", req->sequenceNumber, {});
+      return;
+    }
+
     if ((platf::get_capabilities() & platf::platform_caps::local_cursor) == 0) {
       BOOST_LOG(error) << "StationConnect local cursor transport is unavailable on this host"sv;
       respond(sock, session, &option, 500, "StationConnect Local Cursor Unavailable", req->sequenceNumber, {});
+      return;
+    }
+
+    if ((platf::get_capabilities() & platf::platform_caps::cursor_position) == 0) {
+      BOOST_LOG(error) << "StationConnect cursor-position transport is unavailable on this host"sv;
+      respond(sock, session, &option, 500, "StationConnect Cursor Position Unavailable", req->sequenceNumber, {});
       return;
     }
 

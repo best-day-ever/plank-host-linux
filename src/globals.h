@@ -56,6 +56,7 @@ namespace mail {
   MAIL(raw_hid_feedback);  ///< Raw HID tablet control requests.
   MAIL(video_bitrate);  ///< Active-session video bitrate requests in kilobits per second.
   MAIL(cursor_shape);  ///< Complete local-cursor wire chunks awaiting reliable transmission.
+  MAIL(cursor_position);  ///< Latest host-authoritative cursor position awaiting transmission.
   MAIL(hdr);  ///< HDR.
 #undef MAIL
 

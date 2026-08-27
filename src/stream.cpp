@@ -5,6 +5,7 @@
 
 // standard includes
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <future>
@@ -63,6 +64,7 @@ constexpr int IDX_RAW_HID_CONTROL = 16;  ///< Control-stream message index for S
 constexpr int IDX_SET_VIDEO_BITRATE = 17;  ///< Control-stream message index for StationConnect bitrate updates.
 constexpr int IDX_VIDEO_BITRATE_APPLIED = 18;  ///< Control-stream message index for StationConnect bitrate acknowledgements.
 constexpr int IDX_CURSOR_SHAPE = 19;  ///< Control-stream message index for StationConnect local cursor chunks.
+constexpr int IDX_CURSOR_POSITION = 20;  ///< Control-stream message index for StationConnect cursor positions.
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -85,6 +87,7 @@ static const short packetTypes[] = {
   0x5505,  // Dynamic video bitrate (StationConnect protocol extension)
   0x5506,  // Applied video bitrate (StationConnect protocol extension)
   0x5507,  // Local cursor shape (StationConnect protocol extension)
+  0x5508,  // Local cursor position (StationConnect protocol extension)
 };
 
 namespace asio = boost::asio;
@@ -380,8 +383,11 @@ namespace stream {
      * @param peer Remote endpoint associated with the socket.
      * @return Network operation status.
      */
-    int send(const std::string_view &payload, net::peer_t peer) {
-      auto packet = enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
+    int send(const std::string_view &payload, net::peer_t peer, bool reliable = true) {
+      auto packet = enet_packet_create(
+        payload.data(), payload.size(),
+        reliable ? ENET_PACKET_FLAG_RELIABLE : ENET_PACKET_FLAG_UNSEQUENCED
+      );
       if (enet_peer_send(peer, 0, packet)) {
         enet_packet_destroy(packet);
 
@@ -498,6 +504,7 @@ namespace stream {
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
       raw_hid::feedback_queue_t raw_hid_feedback_queue;
       safe::mail_raw_t::queue_t<std::vector<std::vector<std::uint8_t>>> cursor_shape_queue;
+      safe::mail_raw_t::event_t<SC_CURSOR_POSITION_WIRE_MESSAGE> cursor_position_event;
     } control;  ///< Runtime state for the encrypted GameStream control channel.
 
     std::uint32_t launch_session_id;  ///< RTSP launch-session ID associated with this stream.
@@ -1011,6 +1018,29 @@ namespace stream {
     return session->broadcast_ref->control_server.send(payload, session->control.peer);
   }
 
+  int send_cursor_position_control(
+    session_t *session,
+    const SC_CURSOR_POSITION_WIRE_MESSAGE &position
+  ) {
+    if (!session->control.peer) {
+      return -1;
+    }
+
+    std::array<std::uint8_t, sizeof(control_header_v2) + sizeof(position)> plaintext {};
+    auto *header = reinterpret_cast<control_header_v2 *>(plaintext.data());
+    header->type = util::endian::little(static_cast<std::uint16_t>(packetTypes[IDX_CURSOR_POSITION]));
+    header->payloadLength = util::endian::little(static_cast<std::uint16_t>(sizeof(position)));
+    std::memcpy(plaintext.data() + sizeof(control_header_v2), &position, sizeof(position));
+
+    std::array<std::uint8_t, sizeof(control_encrypted_t) +
+      crypto::cipher::round_to_pkcs7_padded(plaintext.size()) +
+      crypto::cipher::tag_size> encrypted_payload;
+    const auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
+    return session->broadcast_ref->control_server.send(
+      payload, session->control.peer, false
+    );
+  }
+
   template<typename T>
   void write_cursor_little(T &destination, T value) {
     value = util::endian::little(value);
@@ -1030,6 +1060,7 @@ namespace stream {
 
     egl::cursor_t image {};
     unsigned long queued_serial = std::numeric_limits<unsigned long>::max();
+    std::uint64_t position_sequence = 0;
 
     while (!stop_token.stop_requested()) {
       if (!cursor->capture(image)) {
@@ -1037,6 +1068,42 @@ namespace stream {
         session::stop(*session);
         return;
       }
+
+      if (image.desktop_width <= 0 || image.desktop_height <= 0 ||
+          session->config.monitor.width <= 0 || session->config.monitor.height <= 0) {
+        BOOST_LOG(error) << "Invalid desktop/video geometry for StationConnect cursor position transport"sv;
+        session::stop(*session);
+        return;
+      }
+
+      const auto frame_width = session->config.monitor.width;
+      const auto frame_height = session->config.monitor.height;
+      const auto scale = std::min(
+        frame_width / static_cast<double>(image.desktop_width),
+        frame_height / static_cast<double>(image.desktop_height)
+      );
+      const auto content_width = std::max(1, static_cast<int>(image.desktop_width * scale));
+      const auto content_height = std::max(1, static_cast<int>(image.desktop_height * scale));
+      const auto content_x = (frame_width - content_width) / 2;
+      const auto content_y = (frame_height - content_height) / 2;
+      const auto root_x = std::clamp(image.x + image.hotspot_x, 0, image.desktop_width - 1);
+      const auto root_y = std::clamp(image.y + image.hotspot_y, 0, image.desktop_height - 1);
+      const auto frame_x = std::clamp(
+        content_x + static_cast<int>(std::lround(root_x * scale)), 0, frame_width - 1
+      );
+      const auto frame_y = std::clamp(
+        content_y + static_cast<int>(std::lround(root_y * scale)), 0, frame_height - 1
+      );
+
+      SC_CURSOR_POSITION_WIRE_MESSAGE position {};
+      write_cursor_little(position.magic, static_cast<std::uint32_t>(SC_CURSOR_POSITION_WIRE_MAGIC));
+      write_cursor_little(position.version, static_cast<std::uint16_t>(SC_CURSOR_POSITION_WIRE_VERSION));
+      write_cursor_little(position.sequence, ++position_sequence);
+      write_cursor_little(position.x, static_cast<std::uint32_t>(frame_x));
+      write_cursor_little(position.y, static_cast<std::uint32_t>(frame_y));
+      write_cursor_little(position.frameWidth, static_cast<std::uint32_t>(frame_width));
+      write_cursor_little(position.frameHeight, static_cast<std::uint32_t>(frame_height));
+      session->control.cursor_position_event->raise(position);
 
       if (image.serial != queued_serial) {
         const auto width = static_cast<std::uint32_t>(image.width);
@@ -1376,6 +1443,12 @@ namespace stream {
                 }
               }
             }
+
+            if (const auto position = session->control.cursor_position_event->try_pop()) {
+              if (send_cursor_position_control(session, *position)) {
+                BOOST_LOG(debug) << "Unable to send a StationConnect cursor position sample"sv;
+              }
+            }
           }
 
           ++pos;
@@ -1388,7 +1461,9 @@ namespace stream {
         break;
       }
 
-      server->iterate(150ms);
+      // Cursor position is a locally rendered 60 Hz interaction path. Keep the
+      // ENet worker cadence below one frame without polling in a busy loop.
+      server->iterate(8ms);
     }
 
     // Let all remaining connections know the server is shutting down
@@ -2357,6 +2432,8 @@ namespace stream {
       session->control.raw_hid_feedback_queue = mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback);
       session->control.cursor_shape_queue =
         mail->queue<std::vector<std::vector<std::uint8_t>>>(mail::cursor_shape);
+      session->control.cursor_position_event =
+        mail->event<SC_CURSOR_POSITION_WIRE_MESSAGE>(mail::cursor_position);
       session->control.legacy_input_enc_iv = launch_session.iv;
       session->control.cipher = crypto::cipher::gcm_t {
         launch_session.gcm_key,

@@ -592,6 +592,8 @@ namespace egl {
     int src_h;  ///< Cursor source image height in pixels.
     int hotspot_x;  ///< Cursor hotspot X coordinate within the source image.
     int hotspot_y;  ///< Cursor hotspot Y coordinate within the source image.
+    int desktop_width;  ///< Width of the X root desktop containing the cursor.
+    int desktop_height;  ///< Height of the X root desktop containing the cursor.
     bool visible;  ///< Whether any cursor pixel is visible.
 
     unsigned long serial;  ///< X11 cursor serial used to detect cursor image changes.
