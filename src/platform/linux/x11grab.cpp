@@ -88,6 +88,10 @@ namespace platf {
 
     _FN(OpenDisplay, Display *, (_Xconst char *display_name));
     _FN(GetWindowAttributes, Status, (Display * display, Window w, XWindowAttributes *window_attributes_return));
+    _FN(QueryPointer, Bool, (Display * display, Window w, Window *root_return, Window *child_return, int *root_x_return, int *root_y_return, int *win_x_return, int *win_y_return, unsigned int *mask_return));
+    _FN(Pending, int, (Display * display));
+    _FN(NextEvent, int, (Display * display, XEvent *event_return));
+    _FN(Flush, int, (Display * display));
     _FN(CreateSimpleWindow, Window, (Display * display, Window parent, int x, int y, unsigned int width, unsigned int height, unsigned int border_width, unsigned long border, unsigned long background));
     _FN(ChangeWindowAttributes, int, (Display * display, Window w, unsigned long valuemask, XSetWindowAttributes *attributes));
     _FN(InternAtom, Atom, (Display * display, _Xconst char *atom_name, Bool only_if_exists));
@@ -200,6 +204,8 @@ namespace platf {
 
     namespace fix {
       _FN(GetCursorImage, XFixesCursorImage *, (Display * dpy));
+      _FN(QueryExtension, Bool, (Display * dpy, int *event_base_return, int *error_base_return));
+      _FN(SelectCursorInput, void, (Display * dpy, Window win, unsigned long event_mask));
 
       static int init() {
         static void *handle {nullptr};
@@ -218,6 +224,8 @@ namespace platf {
 
         std::vector<std::tuple<dyn::apiproc *, const char *>> funcs {
           {(dyn::apiproc *) &GetCursorImage, "XFixesGetCursorImage"},
+          {(dyn::apiproc *) &QueryExtension, "XFixesQueryExtension"},
+          {(dyn::apiproc *) &SelectCursorInput, "XFixesSelectCursorInput"},
         };
 
         if (dyn::load(handle, funcs)) {
@@ -248,6 +256,10 @@ namespace platf {
         {(dyn::apiproc *) &GetImage, "XGetImage"},
         {(dyn::apiproc *) &OpenDisplay, "XOpenDisplay"},
         {(dyn::apiproc *) &GetWindowAttributes, "XGetWindowAttributes"},
+        {(dyn::apiproc *) &QueryPointer, "XQueryPointer"},
+        {(dyn::apiproc *) &Pending, "XPending"},
+        {(dyn::apiproc *) &NextEvent, "XNextEvent"},
+        {(dyn::apiproc *) &Flush, "XFlush"},
         {(dyn::apiproc *) &CreateSimpleWindow, "XCreateSimpleWindow"},
         {(dyn::apiproc *) &ChangeWindowAttributes, "XChangeWindowAttributes"},
         {(dyn::apiproc *) &InternAtom, "XInternAtom"},
@@ -1796,6 +1808,69 @@ namespace platf {
         [](const std::uint32_t pixel) { return (pixel & 0xFF000000U) != 0; }
       );
       return true;
+    }
+
+    bool cursor_t::subscribe_shape_events() {
+      auto display = (xdisplay_t::pointer) ctx.get();
+      const auto root = DefaultRootWindow(display);
+      XWindowAttributes root_attributes {};
+      int error_base = 0;
+      if (!x11::GetWindowAttributes(display, root, &root_attributes) ||
+          root_attributes.width <= 0 || root_attributes.height <= 0 ||
+          !fix::QueryExtension(display, &xfixes_event_base_, &error_base)) {
+        return false;
+      }
+
+      desktop_width_ = root_attributes.width;
+      desktop_height_ = root_attributes.height;
+      fix::SelectCursorInput(display, root, XFixesDisplayCursorNotifyMask);
+      x11::Flush(display);
+      return true;
+    }
+
+    bool cursor_t::query_position(cursor_position_t &position) {
+      if (desktop_width_ <= 0 || desktop_height_ <= 0) {
+        return false;
+      }
+
+      auto display = (xdisplay_t::pointer) ctx.get();
+      Window root_return = None;
+      Window child_return = None;
+      int root_x = 0;
+      int root_y = 0;
+      int window_x = 0;
+      int window_y = 0;
+      unsigned int mask = 0;
+      if (!x11::QueryPointer(
+            display, DefaultRootWindow(display), &root_return, &child_return,
+            &root_x, &root_y, &window_x, &window_y, &mask)) {
+        return false;
+      }
+
+      position = cursor_position_t {
+        .x = root_x,
+        .y = root_y,
+        .desktop_width = desktop_width_,
+        .desktop_height = desktop_height_,
+      };
+      return true;
+    }
+
+    int cursor_t::consume_shape_change() {
+      if (xfixes_event_base_ < 0) {
+        return -1;
+      }
+
+      auto display = (xdisplay_t::pointer) ctx.get();
+      bool shape_changed = false;
+      while (x11::Pending(display) > 0) {
+        XEvent event {};
+        x11::NextEvent(display, &event);
+        if (event.type == xfixes_event_base_ + XFixesCursorNotify) {
+          shape_changed = true;
+        }
+      }
+      return shape_changed ? 1 : 0;
     }
 
     void cursor_t::blend(img_t &img, int offsetX, int offsetY) {

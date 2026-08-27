@@ -22,6 +22,16 @@ namespace egl {
 
 namespace platf::x11 {
   /**
+   * @brief Host-authoritative root-pointer position.
+   */
+  struct cursor_position_t {
+    int x;  ///< Root-window X coordinate of the pointer hotspot.
+    int y;  ///< Root-window Y coordinate of the pointer hotspot.
+    int desktop_width;  ///< Current root-window width.
+    int desktop_height;  ///< Current root-window height.
+  };
+
+  /**
    * @brief Unpack one depth-30 X11 RGB row into FFmpeg identity-GBR planes.
    *
    * The qualified visual stores red in bits 0-9, green in bits 10-19, and
@@ -82,6 +92,31 @@ namespace platf::x11 {
     bool capture(egl::cursor_t &img);
 
     /**
+     * @brief Subscribe this connection to XFixes cursor-shape changes.
+     *
+     * This also captures the root geometry used by position queries.
+     *
+     * @return True when local cursor monitoring is available.
+     */
+    bool subscribe_shape_events();
+
+    /**
+     * @brief Query the current root-pointer position through XQueryPointer.
+     *
+     * @param position Position populated on success.
+     * @return True when the query succeeds.
+     */
+    bool query_position(cursor_position_t &position);
+
+    /**
+     * @brief Drain queued X11 events and report a cursor-shape change.
+     *
+     * @return 1 when one or more shape changes were coalesced, 0 when none
+     *         were pending, or -1 before shape monitoring is initialized.
+     */
+    int consume_shape_change();
+
+    /**
      * Capture and blend the cursor into the image
      *
      * img <-- destination image
@@ -93,6 +128,11 @@ namespace platf::x11 {
     void blend(img_t &img, int offsetX, int offsetY);
 
     cursor_ctx_t ctx;  ///< X11 cursor context used to track and blend cursor images.
+
+  private:
+    int xfixes_event_base_ {-1};  ///< Base event number for XFixes notifications.
+    int desktop_width_ {0};  ///< Root-window width captured at subscription time.
+    int desktop_height_ {0};  ///< Root-window height captured at subscription time.
   };
 
   /**
