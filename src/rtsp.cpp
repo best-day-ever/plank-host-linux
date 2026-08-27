@@ -1215,7 +1215,10 @@ namespace rtsp_stream {
     }
 
     const bool identity_gbr_requested = (config.monitor.encoderCscMode >> 1) == COLORSPACE_IDENTITY_GBR;
-    const bool identity_gbr_flagged = (config.mlFeatureFlags & ML_FF_IDENTITY_GBR_444) != 0;
+    // Protocol v7 already binds the exact identity profile to the authenticated
+    // launch session. Validate the RTSP format fields themselves here; the
+    // generic Moonlight feature bit is redundant and is not part of the exact
+    // StationConnect encoding tuple.
     const bool identity_gbr_valid =
       config.monitor.chromaSamplingType == 1 &&
       (config.monitor.encoderCscMode & 0x1) != 0 &&
@@ -1223,16 +1226,19 @@ namespace rtsp_stream {
         (config.monitor.dynamicRange == 0 || config.monitor.dynamicRange == 1)) ||
        (config.monitor.videoFormat == 1 &&
         (config.monitor.dynamicRange == 0 || config.monitor.dynamicRange == 1)));
-    if (identity_gbr_requested != identity_gbr_flagged ||
-        (identity_gbr_requested && !identity_gbr_valid)) {
-      BOOST_LOG(warning) << "Rejecting inconsistent identity GBR stream request"sv;
+    if (identity_gbr_requested && !identity_gbr_valid) {
+      BOOST_LOG(warning) << "Rejecting invalid identity GBR stream request: format="sv
+                         << config.monitor.videoFormat
+                         << " depth="sv << config.monitor.dynamicRange
+                         << " chroma="sv << config.monitor.chromaSamplingType
+                         << " csc="sv << config.monitor.encoderCscMode;
       respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
       return;
     }
 
     const bool exact_identity_444 =
       config.monitor.chromaSamplingType == 1 &&
-      identity_gbr_requested && identity_gbr_flagged;
+      identity_gbr_requested && identity_gbr_valid;
     const bool encoding_mode_matches =
       (session.encoding_mode == "h264-8-422-software" &&
        config.monitor.videoFormat == 0 && config.monitor.dynamicRange == 0 &&
