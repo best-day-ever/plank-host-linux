@@ -1126,6 +1126,15 @@ namespace rtsp_stream {
     stream::config_t config;
     config.monitor.span_desktop = session.span_desktop;
     config.monitor.output_name = session.span_desktop ? std::string {} : session.output_name;
+    if (session.capture_source == "nvfbc") {
+      config.monitor.capture_source = video::capture_source_e::nvfbc_8bit;
+    } else if (session.capture_source == "x11-native10") {
+      config.monitor.capture_source = video::capture_source_e::x11_native10;
+    } else {
+      BOOST_LOG(error) << "Rejecting RTSP session without an accepted StationConnect capture source"sv;
+      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+      return;
+    }
 
     std::int64_t configuredBitrateKbps;
     std::int64_t encoderTargetKbps;
@@ -1216,6 +1225,19 @@ namespace rtsp_stream {
         (identity_gbr_requested && !identity_gbr_valid)) {
       BOOST_LOG(warning) << "Rejecting inconsistent identity GBR stream request"sv;
       respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+      return;
+    }
+
+    if (config.monitor.capture_source == video::capture_source_e::x11_native10 &&
+        (config.monitor.videoFormat != 0 ||
+         config.monitor.dynamicRange != 1 ||
+         config.monitor.chromaSamplingType != 1 ||
+         !identity_gbr_requested || !identity_gbr_flagged)) {
+      BOOST_LOG(error)
+        << "Native X11/XShm capture requires H.264 10-bit 4:4:4 identity"sv;
+      respond(sock, session, &option, 400,
+              "Native X11 capture requires H.264 10-bit 4:4:4 identity",
+              req->sequenceNumber, {});
       return;
     }
 

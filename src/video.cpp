@@ -158,10 +158,12 @@ namespace video {
       /**
        * @brief Emit the completed stream's aggregate timing distributions.
        */
+      explicit integrated_timing_samples_t(bool native10 = false): native10(native10) {}
+
       ~integrated_timing_samples_t() {
         log_timing_samples("display_to_convert_start", display_to_convert_start_us);
         log_timing_samples(
-          config::video.capture == "x11-native10"sv ?
+          native10 ?
             "native10_rgb_to_gbr_conversion" :
             "cuda_to_cpu_conversion",
           conversion_us
@@ -177,6 +179,7 @@ namespace video {
       std::vector<double> display_to_packet_ready_us;
       std::vector<double> packet_ready_cadence_us;
       std::optional<std::chrono::steady_clock::time_point> last_packet_ready;
+      bool native10;
     };
   }  // namespace
 
@@ -2762,7 +2765,9 @@ namespace video {
     if (!session) {
       return;
     }
-    integrated_timing_samples_t timing;
+    integrated_timing_samples_t timing {
+      config.capture_source == capture_source_e::x11_native10
+    };
     const bool measure_integrated_timing = encoder.name == "software-cuda"sv;
 
     // As a workaround for NVENC hangs and to generally speed up encoder reinit,
@@ -3006,7 +3011,8 @@ namespace video {
 
       BOOST_LOG(info) << "Creating encoder " << logging::bracket(encoder_name);
 
-      const bool native_x11_10bit = config::video.capture == "x11-native10"sv;
+      const bool native_x11_10bit =
+        config.capture_source == capture_source_e::x11_native10;
       auto color_coding = colorspace.colorspace == colorspace_e::bt2020    ? "HDR (Rec. 2020 + SMPTE 2084 PQ)" :
                           colorspace.colorspace == colorspace_e::rec601    ? "SDR (Rec. 601)" :
                           colorspace.colorspace == colorspace_e::rec709    ? "SDR (Rec. 709)" :
@@ -3580,45 +3586,6 @@ namespace video {
     encoder.h264.capabilities.set();
     encoder.hevc.capabilities.set();
     encoder.av1.capabilities.set();
-
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    if (config::video.capture == "x11-native10"sv) {
-      encoder.h264.capabilities.reset();
-      encoder.hevc.capabilities.reset();
-      encoder.av1.capabilities.reset();
-      if (encoder.name != "software-cuda"sv) {
-        return false;
-      }
-
-      encoder.h264[encoder_t::PASSED] = true;
-      encoder.h264[encoder_t::DYNAMIC_RANGE_YUV444] = true;
-      config_t native10_max_refs {"", 1920, 1080, 60, 6000, 1000, 1, 1, 3, 0, 1, 1};
-      native10_max_refs.encoderCscMode = (COLORSPACE_IDENTITY_GBR << 1) | 1;
-      reset_display(disp, encoder.platform_formats->dev_type, output_name, native10_max_refs);
-      if (!disp || !disp->is_codec_supported(encoder.h264.name, native10_max_refs)) {
-        return false;
-      }
-      native10_max_refs.width = disp->width;
-      native10_max_refs.height = disp->height;
-      const int max_ref_result = validate_config(disp, encoder, native10_max_refs);
-      auto native10_autoselect = native10_max_refs;
-      native10_autoselect.numRefFrames = 0;
-      const int autoselect_result = max_ref_result >= 0 ? max_ref_result :
-                                    validate_config(disp, encoder, native10_autoselect);
-      if (autoselect_result < 0) {
-        encoder.h264.capabilities.reset();
-        return false;
-      }
-      encoder.h264[encoder_t::REF_FRAMES_RESTRICT] = max_ref_result >= 0;
-      encoder.h264[encoder_t::VUI_PARAMETERS] =
-        (autoselect_result & VUI_PARAMS) &&
-        !config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE];
-      BOOST_LOG(info)
-        << "Native X11 capture qualified only H.264 High 10 4:4:4 identity on software-cuda"sv;
-      fg.disable();
-      return true;
-    }
-#endif
 
     // First, test encoder viability
     config_t config_max_ref_frames {"", 1920, 1080, 60, 6000, 1000, 1, 1, 1, 0, 0, 0};

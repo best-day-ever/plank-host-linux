@@ -9,8 +9,8 @@
 namespace topology = stationconnect::topology;
 
 TEST(StationConnectTopology, PublishesVersionFourFeatureContract) {
-  EXPECT_EQ(topology::protocol_version, 4U);
-  EXPECT_EQ(topology::feature_flags, 0x3FFU);
+  EXPECT_EQ(topology::protocol_version, 6U);
+  EXPECT_EQ(topology::feature_flags, 0xFFFU);
   EXPECT_TRUE(topology::valid_virtual_mode("1024x2160"));
   EXPECT_TRUE(topology::valid_virtual_mode("2560x2160"));
   EXPECT_TRUE(topology::valid_virtual_mode("4096x2160"));

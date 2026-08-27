@@ -27,6 +27,12 @@ struct AVPacket;
 
 namespace video {
 
+  enum class capture_source_e {
+    configured,
+    nvfbc_8bit,
+    x11_native10,
+  };
+
   struct software_rate_control_t {
     std::int64_t average_rate;  ///< Sustained encoder target in bits per second.
     std::int64_t peak_rate;  ///< Short-term encoder ceiling in bits per second.
@@ -66,6 +72,7 @@ namespace video {
     int chromaSamplingType;  ///< Chroma sampling type: 0 = 4:2:0, 1 = 4:4:4, 2 = 4:2:2.
     int enableIntraRefresh;  ///< Intra refresh setting: 0 = disabled, 1 = enabled.
     bool span_desktop {};  ///< Capture and scale the complete virtual desktop rather than one output.
+    capture_source_e capture_source {capture_source_e::configured};  ///< Exact capture path negotiated for this session, or configured during probes.
   };
 
   namespace amf {

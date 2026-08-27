@@ -77,6 +77,8 @@ namespace nvhttp {
     stationconnect::topology::feature_dynamic_host_layout;
   constexpr auto stationconnect_feature_temporary_physical_layout =
     stationconnect::topology::feature_temporary_physical_layout;
+  constexpr auto stationconnect_feature_capture_source_selection =
+    stationconnect::topology::feature_capture_source_selection;
   constexpr auto stationconnect_topology_features = stationconnect::topology::feature_flags;
 
   /**
@@ -737,6 +739,26 @@ namespace nvhttp {
     return true;
   }
 
+  bool validate_capture_source(rtsp_stream::launch_session_t &session,
+                               pt::ptree &tree) {
+    if (session.stationconnect_protocol_version != stationconnect_topology_version ||
+        (session.stationconnect_feature_flags &
+         stationconnect_feature_capture_source_selection) == 0) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message",
+               "StationConnect capture-source negotiation is required");
+      return false;
+    }
+    if (session.capture_source != "nvfbc" &&
+        session.capture_source != "x11-native10") {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message",
+               "Unsupported StationConnect capture source");
+      return false;
+    }
+    return true;
+  }
+
   /**
    * @brief Read a named query argument from the HTTP request map.
    *
@@ -845,6 +867,7 @@ namespace nvhttp {
     launch_session->host_layout = get_arg(args, "scHostLayout", "");
     launch_session->virtual_mode_1 = get_arg(args, "scVirtualMode1", "");
     launch_session->virtual_mode_2 = get_arg(args, "scVirtualMode2", "");
+    launch_session->capture_source = get_arg(args, "scCaptureSource", "");
     launch_session->stationconnect_protocol_version =
       static_cast<std::uint32_t>(util::from_view(get_arg(args, "scProtocolVersion", "0")));
     launch_session->stationconnect_feature_flags =
@@ -1031,6 +1054,7 @@ namespace nvhttp {
     tree.put("root.StationConnectHostVersion", PROJECT_VERSION);
     tree.put("root.StationConnectTopologyVersion", stationconnect_topology_version);
     tree.put("root.StationConnectFeatureFlags", stationconnect_topology_features);
+    tree.put("root.StationConnectCaptureSources", "nvfbc,x11-native10");
     tree.put("root.MaxLumaPixelsHEVC", video::active_hevc_mode > 1 ? "1869449984" : "0");
 
     // Moonlight clients track LAN IPv6 addresses separately from LocalIP which is expected to
@@ -1196,6 +1220,10 @@ namespace nvhttp {
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     auto launch_session = make_launch_session(host_audio, args);
+    if (!validate_capture_source(*launch_session, tree)) {
+      tree.put("root.gamesession", 0);
+      return;
+    }
     if (!resolve_selected_output(*launch_session, *authenticated_uid, tree)) {
       tree.put("root.gamesession", 0);
       return;
@@ -1255,6 +1283,7 @@ namespace nvhttp {
       )
     );
     tree.put("root.gamesession", 1);
+    tree.put("root.StationConnectCaptureSource", launch_session->capture_source);
 
     rtsp_stream::launch_session_raise(launch_session);
 
@@ -1336,6 +1365,10 @@ namespace nvhttp {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
     const auto launch_session = make_launch_session(host_audio, args);
+    if (!validate_capture_source(*launch_session, tree)) {
+      tree.put("root.resume", 0);
+      return;
+    }
     if (!resolve_selected_output(*launch_session, *authenticated_uid, tree)) {
       tree.put("root.resume", 0);
       return;
@@ -1381,6 +1414,7 @@ namespace nvhttp {
       )
     );
     tree.put("root.resume", 1);
+    tree.put("root.StationConnectCaptureSource", launch_session->capture_source);
 
     rtsp_stream::launch_session_raise(launch_session);
   }

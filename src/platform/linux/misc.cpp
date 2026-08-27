@@ -1234,6 +1234,28 @@ namespace platf {
   }
 
   std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
+    if (config.capture_source == video::capture_source_e::nvfbc_8bit) {
+#ifdef SUNSHINE_BUILD_CUDA
+      if (sources[source::NVFBC] && hwdevice_type == mem_type_e::cuda) {
+        BOOST_LOG(info) << "Screencasting with NvFBC"sv;
+        return nvfbc_display(hwdevice_type, display_name, config);
+      }
+#endif
+      BOOST_LOG(error) << "NvFBC capture was requested but is unavailable"sv;
+      return nullptr;
+    }
+
+    if (config.capture_source == video::capture_source_e::x11_native10) {
+#ifdef SUNSHINE_BUILD_X11
+      if (sources[source::X11]) {
+        BOOST_LOG(info) << "Screencasting with native 10-bit X11/XShm"sv;
+        return x11_display(hwdevice_type, display_name, config);
+      }
+#endif
+      BOOST_LOG(error) << "Native 10-bit X11/XShm capture was requested but is unavailable"sv;
+      return nullptr;
+    }
+
     // Keep KMS as first element to check before dropping CAP_SYS_ADMIN
 #ifdef SUNSHINE_BUILD_DRM
     if (sources[source::KMS]) {
@@ -1261,9 +1283,7 @@ namespace platf {
 #endif
 #ifdef SUNSHINE_BUILD_X11
     if (sources[source::X11]) {
-      BOOST_LOG(info) << "Screencasting with "sv
-                      << (config::video.capture == "x11-native10"sv ?
-                            "native 10-bit X11/XShm"sv : "X11"sv);
+      BOOST_LOG(info) << "Screencasting with X11"sv;
       return x11_display(hwdevice_type, display_name, config);
     }
 #endif
@@ -1316,7 +1336,9 @@ namespace platf {
 #endif
 
 #ifdef SUNSHINE_BUILD_CUDA
-    if (((config::video.capture.empty() && sources.none()) || config::video.capture == "nvfbc") && verify_nvfbc()) {
+    if (((config::video.capture.empty() && sources.none()) ||
+         config::video.capture == "nvfbc" ||
+         config::video.capture == "x11-native10") && verify_nvfbc()) {
       sources[source::NVFBC] = true;
     }
 #endif

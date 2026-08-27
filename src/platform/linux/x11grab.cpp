@@ -1553,7 +1553,7 @@ namespace platf {
       return nullptr;
     }
 
-    if (config::video.capture == "x11-native10"sv) {
+    if (config.capture_source == ::video::capture_source_e::x11_native10) {
       if (x11::composite::init() || x11::shape::init()) {
         BOOST_LOG(error) << "Couldn't load XComposite/XShape for native 10-bit capture"sv;
         return nullptr;

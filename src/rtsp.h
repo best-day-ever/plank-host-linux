@@ -46,6 +46,7 @@ namespace rtsp_stream {
     std::string host_layout;  ///< Exact StationConnect host display layout required by the bookmark.
     std::string virtual_mode_1;  ///< Exact qualified mode required for virtual output 1.
     std::string virtual_mode_2;  ///< Exact qualified mode required for virtual output 2.
+    std::string capture_source;  ///< Exact StationConnect capture source requested by the client.
     bool span_desktop {};  ///< Whether the complete virtual desktop is captured for this session.
     std::uint32_t stationconnect_protocol_version {};  ///< Selected StationConnect extension version.
     std::uint32_t stationconnect_feature_flags {};  ///< Client-supported StationConnect feature bits.
