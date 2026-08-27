@@ -1042,6 +1042,14 @@ namespace stream {
         const auto width = static_cast<std::uint32_t>(image.width);
         const auto height = static_cast<std::uint32_t>(image.height);
         const auto image_size_64 = static_cast<std::uint64_t>(width) * height * 4U;
+        // Xorg represents the hidden pointer as a transparent 1x1 image whose
+        // nominal hotspot may sit just outside that placeholder. The hotspot
+        // is irrelevant while invisible, so normalize it instead of treating
+        // a valid hidden-pointer state as a fatal protocol error.
+        if (!image.visible && width != 0 && height != 0) {
+          image.hotspot_x = std::clamp(image.hotspot_x, 0, image.width - 1);
+          image.hotspot_y = std::clamp(image.hotspot_y, 0, image.height - 1);
+        }
         if (width == 0 || height == 0 ||
             width > SC_CURSOR_MAX_DIMENSION || height > SC_CURSOR_MAX_DIMENSION ||
             image_size_64 > SC_CURSOR_MAX_IMAGE_SIZE ||
