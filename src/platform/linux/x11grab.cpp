@@ -91,6 +91,7 @@ namespace platf {
 
     _FN(OpenDisplay, Display *, (_Xconst char *display_name));
     _FN(GetWindowAttributes, Status, (Display * display, Window w, XWindowAttributes *window_attributes_return));
+    _FN(QueryPointer, Bool, (Display * display, Window w, Window *root_return, Window *child_return, int *root_x_return, int *root_y_return, int *win_x_return, int *win_y_return, unsigned int *mask_return));
     _FN(QueryExtension, Bool, (Display * display, _Xconst char *name, int *major_opcode_return, int *first_event_return, int *first_error_return));
     _FN(Pending, int, (Display * display));
     _FN(NextEvent, int, (Display * display, XEvent *event_return));
@@ -293,6 +294,7 @@ namespace platf {
         {(dyn::apiproc *) &GetImage, "XGetImage"},
         {(dyn::apiproc *) &OpenDisplay, "XOpenDisplay"},
         {(dyn::apiproc *) &GetWindowAttributes, "XGetWindowAttributes"},
+        {(dyn::apiproc *) &QueryPointer, "XQueryPointer"},
         {(dyn::apiproc *) &QueryExtension, "XQueryExtension"},
         {(dyn::apiproc *) &Pending, "XPending"},
         {(dyn::apiproc *) &NextEvent, "XNextEvent"},
@@ -1897,7 +1899,11 @@ namespace platf {
       desktop_height_ = root_attributes.height;
 
       unsigned char mask[XIMaskLen(XI_LASTEVENT)] {};
-      XISetMask(mask, XI_Motion);
+      // XI_Motion is delivered to the window under the pointer, not reliably
+      // to a root-window selection. XI_RawMotion is the global notification
+      // we need here. Its valuators are untransformed device deltas, so use it
+      // only as a wakeup and query Xorg for the authoritative root position.
+      XISetMask(mask, XI_RawMotion);
       XIEventMask event_mask {
         XIAllMasterDevices,
         static_cast<int>(sizeof(mask)),
@@ -1920,25 +1926,35 @@ namespace platf {
         return wait_result;
       }
 
-      bool found_position = false;
+      bool saw_motion = false;
       while (x11::Pending(display) > 0) {
         XEvent event {};
         x11::NextEvent(display, &event);
         if (event.type != GenericEvent || event.xcookie.extension != xi_opcode_ ||
-            event.xcookie.evtype != XI_Motion ||
+            event.xcookie.evtype != XI_RawMotion ||
             !x11::GetEventData(display, &event.xcookie)) {
           continue;
         }
-
-        const auto *motion = static_cast<const XIDeviceEvent *>(event.xcookie.data);
-        position.x = static_cast<int>(std::lround(motion->root_x));
-        position.y = static_cast<int>(std::lround(motion->root_y));
-        position.desktop_width = desktop_width_;
-        position.desktop_height = desktop_height_;
-        found_position = true;
+        saw_motion = true;
         x11::FreeEventData(display, &event.xcookie);
       }
-      return found_position ? 1 : 0;
+      if (!saw_motion) {
+        return 0;
+      }
+
+      Window root_return = None;
+      Window child_return = None;
+      int window_x = 0;
+      int window_y = 0;
+      unsigned int pointer_mask = 0;
+      if (!x11::QueryPointer(
+            display, DefaultRootWindow(display), &root_return, &child_return,
+            &position.x, &position.y, &window_x, &window_y, &pointer_mask)) {
+        return -1;
+      }
+      position.desktop_width = desktop_width_;
+      position.desktop_height = desktop_height_;
+      return 1;
     }
 
     bool cursor_t::subscribe_shape_events() {

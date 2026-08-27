@@ -92,14 +92,14 @@ namespace platf::x11 {
     bool capture(egl::cursor_t &img);
 
     /**
-     * @brief Subscribe this connection to XInput2 master-pointer motion.
+     * @brief Subscribe this connection to global XInput2 raw-motion wakeups.
      *
      * @return True when event-driven position tracking is available.
      */
     bool subscribe_position_events();
 
     /**
-     * @brief Return the newest queued XInput2 pointer position.
+     * @brief Return Xorg's current transformed pointer position after motion.
      *
      * @param position Position populated when an event is returned.
      * @param timeout_ms Maximum wait in milliseconds.

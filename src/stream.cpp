@@ -1203,7 +1203,7 @@ namespace stream {
       }
     });
 
-    BOOST_LOG(info) << "StationConnect cursor position uses event-driven XInput2 motion"sv;
+    BOOST_LOG(info) << "StationConnect cursor position uses XInput2 raw-motion wakeups with transformed Xorg coordinates"sv;
     std::uint64_t position_sequence = 0;
     while (!stop_token.stop_requested()) {
       platf::x11::cursor_position_t position {};
