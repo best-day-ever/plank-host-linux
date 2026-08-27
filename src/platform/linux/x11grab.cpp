@@ -1102,14 +1102,20 @@ namespace platf {
       cursor_t cursor;
 
       cursor.ctx.reset((cursor_ctx_t::pointer) x11::OpenDisplay(nullptr));
+      if (!cursor.ctx) {
+        return std::nullopt;
+      }
 
       return cursor;
     }
 
-    void cursor_t::capture(egl::cursor_t &img) {
+    bool cursor_t::capture(egl::cursor_t &img) {
       auto display = (xdisplay_t::pointer) ctx.get();
 
       xcursor_t xcursor = fix::GetCursorImage(display);
+      if (!xcursor) {
+        return false;
+      }
 
       if (img.serial != xcursor->cursor_serial) {
         auto buf_size = xcursor->width * xcursor->height * sizeof(int);
@@ -1126,11 +1132,20 @@ namespace platf {
       img.data = img.buffer.data();
       img.width = img.src_w = xcursor->width;
       img.height = img.src_h = xcursor->height;
+      img.hotspot_x = xcursor->xhot;
+      img.hotspot_y = xcursor->yhot;
       img.x = xcursor->x - xcursor->xhot;
       img.y = xcursor->y - xcursor->yhot;
       img.pixel_pitch = 4;
       img.row_pitch = img.pixel_pitch * img.width;
       img.serial = xcursor->cursor_serial;
+      img.visible = std::any_of(
+        reinterpret_cast<const std::uint32_t *>(img.data),
+        reinterpret_cast<const std::uint32_t *>(img.data) +
+          static_cast<std::size_t>(img.width) * img.height,
+        [](const std::uint32_t pixel) { return (pixel & 0xFF000000U) != 0; }
+      );
+      return true;
     }
 
     void cursor_t::blend(img_t &img, int offsetX, int offsetY) {

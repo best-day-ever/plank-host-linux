@@ -59,7 +59,7 @@ namespace platf::x11 {
      *
      * @param img Image or frame object to read from or populate.
      */
-    void capture(egl::cursor_t &img);
+    bool capture(egl::cursor_t &img);
 
     /**
      * Capture and blend the cursor into the image

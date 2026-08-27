@@ -1971,7 +1971,10 @@ namespace video {
         return true;
       };
 
-      auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &display_cursor);
+      // StationConnect always transports cursor shape separately. It is never
+      // composited into the captured video frame.
+      bool capture_cursor = false;
+      auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &capture_cursor);
 
 #ifdef __linux__
       if (status == platf::capture_e::error &&
@@ -3254,7 +3257,10 @@ namespace video {
         return true;
       };
 
-      auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &display_cursor);
+      // StationConnect always transports cursor shape separately. It is never
+      // composited into the captured video frame.
+      bool capture_cursor = false;
+      auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &capture_cursor);
 #ifdef __linux__
       if (status == platf::capture_e::error &&
           getenv("STATIONCONNECT_SESSION_CONTROL_FD") != nullptr) {

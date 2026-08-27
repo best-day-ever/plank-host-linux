@@ -1316,6 +1316,18 @@ namespace rtsp_stream {
       return;
     }
 
+    if ((config.mlFeatureFlags & ML_FF_LOCAL_CURSOR) == 0) {
+      BOOST_LOG(error) << "Rejecting client without required StationConnect local cursor transport"sv;
+      respond(sock, session, &option, 400, "StationConnect Local Cursor Required", req->sequenceNumber, {});
+      return;
+    }
+
+    if ((platf::get_capabilities() & platf::platform_caps::local_cursor) == 0) {
+      BOOST_LOG(error) << "StationConnect local cursor transport is unavailable on this host"sv;
+      respond(sock, session, &option, 500, "StationConnect Local Cursor Unavailable", req->sequenceNumber, {});
+      return;
+    }
+
     // Check that any required encryption is enabled
     auto encryption_mode = net::encryption_mode_for_address(sock.remote_endpoint().address());
     if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY && (config.encryptionFlagsEnabled & (SS_ENC_VIDEO | SS_ENC_AUDIO)) != (SS_ENC_VIDEO | SS_ENC_AUDIO)) {

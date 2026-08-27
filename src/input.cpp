@@ -354,12 +354,6 @@ namespace input {
       return 1;
     }
 
-    switch (keyCode) {
-      case 0x4E /* VKEY_N */:
-        display_cursor = !display_cursor;
-        return 1;
-    }
-
     return 0;
   }
 

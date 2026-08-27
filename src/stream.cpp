@@ -4,8 +4,11 @@
  */
 
 // standard includes
+#include <array>
+#include <cstring>
 #include <fstream>
 #include <future>
+#include <limits>
 #include <queue>
 
 // lib includes
@@ -36,6 +39,11 @@ extern "C" {
 #include "thread_safe.h"
 #include "utility.h"
 
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
+  #include "platform/linux/graphics.h"
+  #include "platform/linux/x11grab.h"
+#endif
+
 constexpr int IDX_START_A = 0;  ///< Control-stream message index for the first stream-start packet.
 constexpr int IDX_START_B = 1;  ///< Control-stream message index for the second stream-start packet.
 constexpr int IDX_INVALIDATE_REF_FRAMES = 2;  ///< Control-stream message index for invalidate ref frames.
@@ -54,6 +62,7 @@ constexpr int IDX_SET_ADAPTIVE_TRIGGERS = 15;  ///< Control-stream message index
 constexpr int IDX_RAW_HID_CONTROL = 16;  ///< Control-stream message index for StationConnect raw HID requests.
 constexpr int IDX_SET_VIDEO_BITRATE = 17;  ///< Control-stream message index for StationConnect bitrate updates.
 constexpr int IDX_VIDEO_BITRATE_APPLIED = 18;  ///< Control-stream message index for StationConnect bitrate acknowledgements.
+constexpr int IDX_CURSOR_SHAPE = 19;  ///< Control-stream message index for StationConnect local cursor chunks.
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -75,6 +84,7 @@ static const short packetTypes[] = {
   0x5504,  // Raw HID control (StationConnect protocol extension)
   0x5505,  // Dynamic video bitrate (StationConnect protocol extension)
   0x5506,  // Applied video bitrate (StationConnect protocol extension)
+  0x5507,  // Local cursor shape (StationConnect protocol extension)
 };
 
 namespace asio = boost::asio;
@@ -433,6 +443,7 @@ namespace stream {
 
     std::jthread audioThread;  ///< Audio thread.
     std::jthread videoThread;  ///< Video thread.
+    std::jthread cursorThread;  ///< XFixes cursor-shape monitor for local-cursor clients.
 
     std::chrono::steady_clock::time_point pingTimeout;  ///< Deadline for receiving the next client ping.
 
@@ -486,6 +497,7 @@ namespace stream {
 
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
       raw_hid::feedback_queue_t raw_hid_feedback_queue;
+      safe::mail_raw_t::queue_t<std::vector<std::vector<std::uint8_t>>> cursor_shape_queue;
     } control;  ///< Runtime state for the encrypted GameStream control channel.
 
     std::uint32_t launch_session_id;  ///< RTSP launch-session ID associated with this stream.
@@ -973,6 +985,120 @@ namespace stream {
     return session->broadcast_ref->control_server.send(payload, session->control.peer);
   }
 
+  int send_cursor_shape_control(session_t *session, const std::vector<std::uint8_t> &frame) {
+    if (!session->control.peer || frame.size() < sizeof(SC_CURSOR_WIRE_HEADER) ||
+        frame.size() > sizeof(SC_CURSOR_WIRE_HEADER) + SC_CURSOR_MAX_CHUNK_SIZE) {
+      return -1;
+    }
+
+    std::vector<std::uint8_t> plaintext(sizeof(control_header_v2) + frame.size());
+    auto *header = reinterpret_cast<control_header_v2 *>(plaintext.data());
+    header->type = util::endian::little(static_cast<std::uint16_t>(packetTypes[IDX_CURSOR_SHAPE]));
+    header->payloadLength = util::endian::little(static_cast<std::uint16_t>(frame.size()));
+    std::ranges::copy(frame, plaintext.begin() + sizeof(control_header_v2));
+
+    constexpr auto maximum_plaintext = sizeof(control_header_v2) +
+                                       sizeof(SC_CURSOR_WIRE_HEADER) +
+                                       SC_CURSOR_MAX_CHUNK_SIZE;
+    std::array<std::uint8_t, sizeof(control_encrypted_t) +
+      crypto::cipher::round_to_pkcs7_padded(maximum_plaintext) +
+      crypto::cipher::tag_size> encrypted_payload;
+    const auto payload = encode_control(
+      session,
+      std::string_view {reinterpret_cast<const char *>(plaintext.data()), plaintext.size()},
+      encrypted_payload
+    );
+    return session->broadcast_ref->control_server.send(payload, session->control.peer);
+  }
+
+  template<typename T>
+  void write_cursor_little(T &destination, T value) {
+    value = util::endian::little(value);
+    std::memcpy(&destination, &value, sizeof(value));
+  }
+
+  void localCursorThread(std::stop_token stop_token, session_t *session) {
+    platf::set_thread_name("sc::cursor");
+
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
+    auto cursor = platf::x11::cursor_t::make();
+    if (!cursor) {
+      BOOST_LOG(error) << "Unable to open the active X11 display for StationConnect local cursor transport"sv;
+      session::stop(*session);
+      return;
+    }
+
+    egl::cursor_t image {};
+    unsigned long queued_serial = std::numeric_limits<unsigned long>::max();
+
+    while (!stop_token.stop_requested()) {
+      if (!cursor->capture(image)) {
+        BOOST_LOG(error) << "Unable to capture the active X11 cursor through XFixes"sv;
+        session::stop(*session);
+        return;
+      }
+
+      if (image.serial != queued_serial) {
+        const auto width = static_cast<std::uint32_t>(image.width);
+        const auto height = static_cast<std::uint32_t>(image.height);
+        const auto image_size_64 = static_cast<std::uint64_t>(width) * height * 4U;
+        if (width == 0 || height == 0 ||
+            width > SC_CURSOR_MAX_DIMENSION || height > SC_CURSOR_MAX_DIMENSION ||
+            image_size_64 > SC_CURSOR_MAX_IMAGE_SIZE ||
+            image.hotspot_x < 0 || image.hotspot_y < 0 ||
+            image.hotspot_x >= image.width || image.hotspot_y >= image.height) {
+          BOOST_LOG(error) << "Invalid X11 cursor geometry for StationConnect local cursor transport: "sv
+                           << image.width << 'x' << image.height << " hotspot="sv
+                           << image.hotspot_x << ',' << image.hotspot_y;
+          session::stop(*session);
+          return;
+        }
+
+        const auto image_size = static_cast<std::uint32_t>(image_size_64);
+        std::vector<std::vector<std::uint8_t>> frames;
+        for (std::uint32_t offset = 0; offset < image_size;) {
+          const auto chunk_size = std::min<std::uint32_t>(
+            SC_CURSOR_MAX_CHUNK_SIZE, image_size - offset
+          );
+          std::vector<std::uint8_t> frame(sizeof(SC_CURSOR_WIRE_HEADER) + chunk_size);
+          SC_CURSOR_WIRE_HEADER header {};
+          write_cursor_little(header.magic, static_cast<std::uint32_t>(SC_CURSOR_WIRE_MAGIC));
+          write_cursor_little(header.version, static_cast<std::uint16_t>(SC_CURSOR_WIRE_VERSION));
+          write_cursor_little(header.pixelFormat, static_cast<std::uint16_t>(SC_CURSOR_PIXEL_FORMAT_ARGB8888));
+          std::uint32_t flags = image.visible ? SC_CURSOR_FLAG_VISIBLE : 0U;
+          if (offset == 0) flags |= SC_CURSOR_FLAG_FIRST_CHUNK;
+          if (offset + chunk_size == image_size) flags |= SC_CURSOR_FLAG_LAST_CHUNK;
+          write_cursor_little(header.flags, flags);
+          write_cursor_little(header.generation, static_cast<std::uint64_t>(image.serial));
+          write_cursor_little(header.width, width);
+          write_cursor_little(header.height, height);
+          write_cursor_little(header.hotspotX, static_cast<std::uint32_t>(image.hotspot_x));
+          write_cursor_little(header.hotspotY, static_cast<std::uint32_t>(image.hotspot_y));
+          write_cursor_little(header.imageSize, image_size);
+          write_cursor_little(header.chunkOffset, offset);
+          write_cursor_little(header.chunkSize, chunk_size);
+          std::memcpy(frame.data(), &header, sizeof(header));
+          std::memcpy(frame.data() + sizeof(header), image.data + offset, chunk_size);
+          frames.emplace_back(std::move(frame));
+          offset += chunk_size;
+        }
+        session->control.cursor_shape_queue->raise(std::move(frames));
+
+        queued_serial = image.serial;
+        BOOST_LOG(debug) << "Queued StationConnect local cursor generation "sv
+                         << static_cast<std::uint64_t>(image.serial) << " ("sv
+                         << image.width << 'x' << image.height << ", hotspot "sv
+                         << image.hotspot_x << ',' << image.hotspot_y << ")"sv;
+      }
+
+      std::this_thread::sleep_for(16ms);
+    }
+#else
+    BOOST_LOG(error) << "StationConnect local cursor transport requires the Linux X11 host backend"sv;
+    session::stop(*session);
+#endif
+  }
+
   /**
    * @brief Confirm an accepted StationConnect encoder target to the client.
    */
@@ -1214,6 +1340,10 @@ namespace stream {
           if (!session->control.peer) {
             has_session_awaiting_peer = true;
           } else {
+            if (!session->cursorThread.joinable()) {
+              session->cursorThread = std::jthread {localCursorThread, session};
+            }
+
             auto &hdr_queue = session->control.hdr_queue;
             while (session->control.peer && hdr_queue->peek()) {
               auto hdr_info = hdr_queue->pop();
@@ -1225,6 +1355,18 @@ namespace stream {
             while (session->control.peer && raw_hid_feedback_queue->peek()) {
               const auto frame = raw_hid_feedback_queue->pop();
               send_raw_hid_control(session, *frame);
+            }
+
+            auto &cursor_shape_queue = session->control.cursor_shape_queue;
+            while (session->control.peer && cursor_shape_queue->peek()) {
+              const auto frames = cursor_shape_queue->pop();
+              for (const auto &frame : *frames) {
+                if (send_cursor_shape_control(session, frame)) {
+                  BOOST_LOG(warning) << "Unable to send a StationConnect local cursor chunk"sv;
+                  session::stop(*session);
+                  break;
+                }
+              }
             }
           }
 
@@ -2072,6 +2214,7 @@ namespace stream {
       }
 
       session.shutdown_event->raise(true);
+      session.cursorThread.request_stop();
     }
 
     /**
@@ -2096,6 +2239,10 @@ namespace stream {
       session.videoThread.join();
       BOOST_LOG(debug) << "Waiting for audio to end..."sv;
       session.audioThread.join();
+      BOOST_LOG(debug) << "Waiting for local cursor monitor to end..."sv;
+      if (session.cursorThread.joinable()) {
+        session.cursorThread.join();
+      }
       BOOST_LOG(debug) << "Waiting for control to end..."sv;
       session.controlEnd.view();
       // Reset input on session stop to avoid stuck repeated keys
@@ -2200,6 +2347,8 @@ namespace stream {
       session->control.connect_data = launch_session.control_connect_data;
       session->control.hdr_queue = mail->event<video::hdr_info_t>(mail::hdr);
       session->control.raw_hid_feedback_queue = mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback);
+      session->control.cursor_shape_queue =
+        mail->queue<std::vector<std::vector<std::uint8_t>>>(mail::cursor_shape);
       session->control.legacy_input_enc_iv = launch_session.iv;
       session->control.cipher = crypto::cipher::gcm_t {
         launch_session.gcm_key,

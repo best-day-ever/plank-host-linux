@@ -397,6 +397,7 @@ namespace platf {
     constexpr caps_t dynamic_video_bitrate = 0x08;  // Live encoder bitrate control
     constexpr caps_t encoder_target_ack = 0x10;  // Exact startup target and applied-target acknowledgement
     constexpr caps_t raw_hid_focus_suspend = 0x20;  // Preserve raw HID endpoints across client focus changes
+    constexpr caps_t local_cursor = 0x40;  // Exact host cursor shapes rendered by the client compositor
   };  // namespace platform_caps
 
   /**
