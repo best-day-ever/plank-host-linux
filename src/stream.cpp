@@ -1061,6 +1061,8 @@ namespace stream {
     egl::cursor_t image {};
     unsigned long queued_serial = std::numeric_limits<unsigned long>::max();
     std::uint64_t position_sequence = 0;
+    constexpr auto cursor_sample_period = 1s / 60;
+    auto next_cursor_sample = std::chrono::steady_clock::now();
 
     while (!stop_token.stop_requested()) {
       if (!cursor->capture(image)) {
@@ -1166,7 +1168,18 @@ namespace stream {
                          << image.hotspot_x << ',' << image.hotspot_y << ")"sv;
       }
 
-      std::this_thread::sleep_for(16ms);
+      // Keep the position transport on a fixed 60 Hz clock. Sleeping for a
+      // full period after XFixesGetCursorImage() makes the synchronous X11
+      // query time part of the cadence, which produces visibly uneven Wacom
+      // motion when native XShm frame capture is using the same X server.
+      next_cursor_sample += cursor_sample_period;
+      const auto now = std::chrono::steady_clock::now();
+      if (next_cursor_sample <= now) {
+        const auto missed_samples =
+          (now - next_cursor_sample) / cursor_sample_period + 1;
+        next_cursor_sample += cursor_sample_period * missed_samples;
+      }
+      std::this_thread::sleep_until(next_cursor_sample);
     }
 #else
     BOOST_LOG(error) << "StationConnect local cursor transport requires the Linux X11 host backend"sv;
