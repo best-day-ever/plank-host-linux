@@ -3649,6 +3649,10 @@ namespace video {
     config_t config_max_ref_frames {"", 1920, 1080, 60, 6000, 1000, 1, 1, 1, 0, 0, 0};
     config_t config_autoselect {"", 1920, 1080, 60, 6000, 1000, 1, 0, 1, 0, 0, 0};
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    if (encoder.platform_formats->dev_type == platf::mem_type_e::cuda) {
+      config_max_ref_frames.capture_source = capture_source_e::nvfbc_8bit;
+      config_autoselect.capture_source = capture_source_e::nvfbc_8bit;
+    }
     if (encoder.name == "software-cuda"sv) {
       config_max_ref_frames.encoderCscMode = (COLORSPACE_IDENTITY_GBR << 1) | 1;
       config_max_ref_frames.chromaSamplingType = 1;

@@ -7,7 +7,6 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
-#include <fstream>
 #include <mutex>
 #include <ranges>
 #include <thread>
@@ -35,7 +34,6 @@
 #include "src/globals.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
-#include "src/task_pool.h"
 #include "src/video.h"
 #include "vaapi.h"
 #include "x11grab.h"
@@ -83,8 +81,6 @@ namespace platf {
    * @brief Loaded X11 entry point pointer. \
    */ \
   static x##_fn x
-
-    _FN(GetImage, XImage *, (Display * display, Drawable d, int x, int y, unsigned int width, unsigned int height, unsigned long plane_mask, int format));
 
     _FN(OpenDisplay, Display *, (_Xconst char *display_name));
     _FN(GetWindowAttributes, Status, (Display * display, Window w, XWindowAttributes *window_attributes_return));
@@ -253,7 +249,6 @@ namespace platf {
       }
 
       std::vector<std::tuple<dyn::apiproc *, const char *>> funcs {
-        {(dyn::apiproc *) &GetImage, "XGetImage"},
         {(dyn::apiproc *) &OpenDisplay, "XOpenDisplay"},
         {(dyn::apiproc *) &GetWindowAttributes, "XGetWindowAttributes"},
         {(dyn::apiproc *) &QueryPointer, "XQueryPointer"},
@@ -288,17 +283,14 @@ namespace platf {
 
     _FN(shm_get_image_unchecked, xcb_shm_get_image_cookie_t, (xcb_connection_t * c, xcb_drawable_t drawable, int16_t x, int16_t y, uint16_t width, uint16_t height, uint32_t plane_mask, uint8_t format, xcb_shm_seg_t shmseg, uint32_t offset));
 
-    _FN(shm_attach, xcb_void_cookie_t, (xcb_connection_t * c, xcb_shm_seg_t shmseg, uint32_t shmid, uint8_t read_only));
     _FN(shm_attach_checked, xcb_void_cookie_t, (xcb_connection_t * c, xcb_shm_seg_t shmseg, uint32_t shmid, uint8_t read_only));
     _FN(shm_detach, xcb_void_cookie_t, (xcb_connection_t * c, xcb_shm_seg_t shmseg));
 
     _FN(get_extension_data, xcb_query_extension_reply_t *, (xcb_connection_t * c, xcb_extension_t *ext));
 
-    _FN(get_setup, xcb_setup_t *, (xcb_connection_t * c));
     _FN(disconnect, void, (xcb_connection_t * c));
     _FN(connection_has_error, int, (xcb_connection_t * c));
     _FN(connect, xcb_connection_t *, (const char *displayname, int *screenp));
-    _FN(setup_roots_iterator, xcb_screen_iterator_t, (const xcb_setup_t *R));
     _FN(generate_id, std::uint32_t, (xcb_connection_t * c));
     _FN(request_check, xcb_generic_error_t *, (xcb_connection_t * c, xcb_void_cookie_t cookie));
     _FN(flush, int, (xcb_connection_t * c));
@@ -327,7 +319,6 @@ namespace platf {
         {(dyn::apiproc *) &shm_id, "xcb_shm_id"},
         {(dyn::apiproc *) &shm_get_image_reply, "xcb_shm_get_image_reply"},
         {(dyn::apiproc *) &shm_get_image_unchecked, "xcb_shm_get_image_unchecked"},
-        {(dyn::apiproc *) &shm_attach, "xcb_shm_attach"},
         {(dyn::apiproc *) &shm_attach_checked, "xcb_shm_attach_checked"},
         {(dyn::apiproc *) &shm_detach, "xcb_shm_detach"},
       };
@@ -362,11 +353,9 @@ namespace platf {
 
       std::vector<std::tuple<dyn::apiproc *, const char *>> funcs {
         {(dyn::apiproc *) &get_extension_data, "xcb_get_extension_data"},
-        {(dyn::apiproc *) &get_setup, "xcb_get_setup"},
         {(dyn::apiproc *) &disconnect, "xcb_disconnect"},
         {(dyn::apiproc *) &connection_has_error, "xcb_connection_has_error"},
         {(dyn::apiproc *) &connect, "xcb_connect"},
-        {(dyn::apiproc *) &setup_roots_iterator, "xcb_setup_roots_iterator"},
         {(dyn::apiproc *) &generate_id, "xcb_generate_id"},
         {(dyn::apiproc *) &request_check, "xcb_request_check"},
         {(dyn::apiproc *) &flush, "xcb_flush"},
@@ -384,12 +373,6 @@ namespace platf {
   }  // namespace xcb
 
   /**
-   * @brief Release image resources.
-   *
-   * @param p Pointer passed to the deleter or conversion helper.
-   */
-  void freeImage(XImage *);
-  /**
    * @brief Release x resources.
    *
    * @param p Pointer passed to the deleter or conversion helper.
@@ -405,10 +388,6 @@ namespace platf {
    */
   using xcb_img_t = util::c_ptr<xcb_shm_get_image_reply_t>;
 
-  /**
-   * @brief XImage pointer released with `XDestroyImage`.
-   */
-  using ximg_t = util::safe_ptr<XImage, freeImage>;
   /**
    * @brief XFixes cursor image pointer released with `XFree`.
    */
@@ -426,98 +405,6 @@ namespace platf {
    * @brief XRandR screen resources pointer released with `XRRFreeScreenResources`.
    */
   using screen_res_t = util::dyn_safe_ptr<_XRRScreenResources, &x11::rr::FreeScreenResources>;
-
-  /**
-   * @brief RAII wrapper that removes a SysV shared-memory segment.
-   */
-  class shm_id_t {
-  public:
-    shm_id_t():
-        id {-1} {
-    }
-
-    /**
-     * @brief Take ownership of a SysV shared-memory segment ID.
-     *
-     * @param id SysV shared-memory segment ID.
-     */
-    shm_id_t(int id):
-        id {id} {
-    }
-
-    /**
-     * @brief Move ownership of a SysV shared-memory segment ID.
-     *
-     * @param other Shared-memory ID wrapper whose segment ownership is moved.
-     */
-    shm_id_t(shm_id_t &&other) noexcept:
-        id(other.id) {
-      other.id = -1;
-    }
-
-    ~shm_id_t() {
-      if (id != -1) {
-        shmctl(id, IPC_RMID, nullptr);
-        id = -1;
-      }
-    }
-
-    int id;  ///< SysV shared-memory segment identifier returned by shmget.
-  };
-
-  /**
-   * @brief RAII wrapper that detaches mapped SysV shared memory.
-   */
-  class shm_data_t {
-  public:
-    shm_data_t():
-        data {(void *) -1} {
-    }
-
-    /**
-     * @brief Take ownership of an attached shared-memory mapping.
-     *
-     * @param data Pointer returned by shmat.
-     */
-    shm_data_t(void *data):
-        data {data} {
-    }
-
-    /**
-     * @brief Move ownership of an attached shared-memory mapping.
-     *
-     * @param other Shared-memory mapping wrapper whose attachment is moved.
-     */
-    shm_data_t(shm_data_t &&other) noexcept:
-        data(other.data) {
-      other.data = (void *) -1;
-    }
-
-    ~shm_data_t() {
-      if ((std::uintptr_t) data != -1) {
-        shmdt(data);
-      }
-    }
-
-    void *data;  ///< Address returned by shmat for the shared-memory segment.
-  };
-
-  /**
-   * @brief X11 image wrapper used by the software capture path.
-   */
-  struct x11_img_t: public img_t {
-    ximg_t img;  ///< XImage backing the current software-captured frame.
-  };
-
-  /**
-   * @brief X11 shared-memory image and segment ownership.
-   */
-  struct shm_img_t: public img_t {
-    ~shm_img_t() override {
-      delete[] data;
-      data = nullptr;
-    }
-  };
 
   /**
    * @brief Shared XCB connection used by native depth-30 capture images.
@@ -915,100 +802,6 @@ namespace platf {
       x11::GetWindowAttributes(xdisplay.get(), xwindow, &xattr);  // Update xattr's
     }
 
-    capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
-      auto next_frame = std::chrono::steady_clock::now();
-
-      sleep_overshoot_logger.reset();
-
-      while (true) {
-        auto now = std::chrono::steady_clock::now();
-
-        if (next_frame > now) {
-          std::this_thread::sleep_for(next_frame - now);
-          sleep_overshoot_logger.first_point(next_frame);
-          sleep_overshoot_logger.second_point_now_and_log();
-        }
-
-        next_frame += delay;
-        if (next_frame < now) {  // some major slowdown happened; we couldn't keep up
-          next_frame = now + delay;
-        }
-
-        std::shared_ptr<platf::img_t> img_out;
-        auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
-        switch (status) {
-          case platf::capture_e::reinit:
-          case platf::capture_e::error:
-          case platf::capture_e::interrupted:
-            return status;
-          case platf::capture_e::timeout:
-            if (!push_captured_image_cb(std::move(img_out), false)) {
-              return platf::capture_e::ok;
-            }
-            break;
-          case platf::capture_e::ok:
-            if (!push_captured_image_cb(std::move(img_out), true)) {
-              return platf::capture_e::ok;
-            }
-            break;
-          default:
-            BOOST_LOG(error) << "Unrecognized capture status ["sv << (int) status << ']';
-            return status;
-        }
-      }
-
-      return capture_e::ok;
-    }
-
-    /**
-     * @brief Capture a display frame into the provided image object.
-     *
-     * @param pull_free_image_cb Callback that provides an available image buffer.
-     * @param img_out XImage-backed captured frame returned to the streaming pipeline.
-     * @param timeout Maximum time to wait for the operation.
-     * @param cursor Cursor image or visibility state to composite.
-     * @return Capture status reported to the streaming pipeline.
-     */
-    capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor) {
-      refresh();
-
-      // The whole X server changed, so we must reinit everything
-      if (xattr.width != env_width || xattr.height != env_height) {
-        BOOST_LOG(warning) << "X dimensions changed in non-SHM mode, request reinit"sv;
-        return capture_e::reinit;
-      }
-
-      if (!pull_free_image_cb(img_out)) {
-        return platf::capture_e::interrupted;
-      }
-      auto img = (x11_img_t *) img_out.get();
-
-      XImage *x_img {x11::GetImage(xdisplay.get(), xwindow, offset_x, offset_y, width, height, AllPlanes, ZPixmap)};
-      img->frame_timestamp = std::chrono::steady_clock::now();
-
-      img->width = x_img->width;
-      img->height = x_img->height;
-      img->data = (uint8_t *) x_img->data;
-      img->row_pitch = x_img->bytes_per_line;
-      img->pixel_pitch = x_img->bits_per_pixel / 8;
-      img->img.reset(x_img);
-
-      if (cursor) {
-        blend_cursor(xdisplay.get(), *img, offset_x, offset_y);
-      }
-
-      return capture_e::ok;
-    }
-
-    /**
-     * @brief Allocate an image buffer compatible with this display backend.
-     *
-     * @return Allocated img object, or null when unavailable.
-     */
-    std::shared_ptr<img_t> alloc_img() override {
-      return std::make_shared<x11_img_t>();
-    }
-
     /**
      * @brief Create AVCodec encode device.
      *
@@ -1031,230 +824,6 @@ namespace platf {
       return std::make_unique<avcodec_encode_device_t>();
     }
 
-    /**
-     * @brief Populate a fallback image when real capture data is unavailable.
-     *
-     * @param img Image or frame object to read from or populate.
-     * @return Capture status reported to the streaming pipeline.
-     */
-    int dummy_img(img_t *img) override {
-      // TODO: stop cheating and give black image
-      if (!img) {
-        return -1;
-      };
-      auto pull_dummy_img_callback = [&img](std::shared_ptr<platf::img_t> &img_out) -> bool {
-        img_out = img->shared_from_this();
-        return true;
-      };
-      std::shared_ptr<platf::img_t> img_out;
-      snapshot(pull_dummy_img_callback, img_out, 0s, true);
-      return 0;
-    }
-  };
-
-  /**
-   * @brief X11 shared-memory image dimensions and identifiers.
-   */
-  struct shm_attr_t: public x11_attr_t {
-    x11::xdisplay_t shm_xdisplay;  ///< X11 display held separately to prevent races with x11_attr_t::xdisplay.
-    xcb_connect_t xcb;  ///< XCB connection used by the shared-memory capture path.
-    xcb_screen_t *display;  ///< XCB screen containing the captured root window.
-    std::uint32_t seg;  ///< XCB shared-memory segment ID attached to the image.
-
-    shm_id_t shm_id;  ///< Shm ID.
-
-    shm_data_t data;  ///< Attached SysV shared-memory data used by XShm.
-
-    task_pool_util::TaskPool::task_id_t refresh_task_id;  ///< Refresh task ID.
-
-    /**
-     * @brief Refresh X11 shared-memory capture after a scheduled delay.
-     */
-    void delayed_refresh() {
-      refresh();
-
-      refresh_task_id = task_pool.pushDelayed(&shm_attr_t::delayed_refresh, 2s, this).task_id;
-    }
-
-    /**
-     * @brief Open an X11 shared-memory capture backend.
-     *
-     * @param mem_type Requested memory path for the capture backend.
-     */
-    shm_attr_t(mem_type_e mem_type):
-        x11_attr_t(mem_type),
-        shm_xdisplay {x11::OpenDisplay(nullptr)} {
-      refresh_task_id = task_pool.pushDelayed(&shm_attr_t::delayed_refresh, 2s, this).task_id;
-    }
-
-    ~shm_attr_t() override {
-      while (!task_pool.cancel(refresh_task_id));
-    }
-
-    capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
-      auto next_frame = std::chrono::steady_clock::now();
-
-      sleep_overshoot_logger.reset();
-
-      while (true) {
-        auto now = std::chrono::steady_clock::now();
-
-        if (next_frame > now) {
-          std::this_thread::sleep_for(next_frame - now);
-          sleep_overshoot_logger.first_point(next_frame);
-          sleep_overshoot_logger.second_point_now_and_log();
-        }
-
-        next_frame += delay;
-        if (next_frame < now) {  // some major slowdown happened; we couldn't keep up
-          next_frame = now + delay;
-        }
-
-        std::shared_ptr<platf::img_t> img_out;
-        auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
-        switch (status) {
-          case platf::capture_e::reinit:
-          case platf::capture_e::error:
-          case platf::capture_e::interrupted:
-            return status;
-          case platf::capture_e::timeout:
-            if (!push_captured_image_cb(std::move(img_out), false)) {
-              return platf::capture_e::ok;
-            }
-            break;
-          case platf::capture_e::ok:
-            if (!push_captured_image_cb(std::move(img_out), true)) {
-              return platf::capture_e::ok;
-            }
-            break;
-          default:
-            BOOST_LOG(error) << "Unrecognized capture status ["sv << (int) status << ']';
-            return status;
-        }
-      }
-
-      return capture_e::ok;
-    }
-
-    /**
-     * @brief Capture a display frame into the provided image object.
-     *
-     * @param pull_free_image_cb Callback that provides an available image buffer.
-     * @param img_out Shared-memory captured frame returned to the streaming pipeline.
-     * @param timeout Maximum time to wait for the operation.
-     * @param cursor Cursor image or visibility state to composite.
-     * @return Capture status reported to the streaming pipeline.
-     */
-    capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor) {
-      // The whole X server changed, so we must reinit everything
-      if (xattr.width != env_width || xattr.height != env_height) {
-        BOOST_LOG(warning) << "X dimensions changed in SHM mode, request reinit"sv;
-        return capture_e::reinit;
-      } else {
-        auto img_cookie = xcb::shm_get_image_unchecked(xcb.get(), display->root, offset_x, offset_y, width, height, ~0, XCB_IMAGE_FORMAT_Z_PIXMAP, seg, 0);
-        auto frame_timestamp = std::chrono::steady_clock::now();
-
-        xcb_img_t img_reply {xcb::shm_get_image_reply(xcb.get(), img_cookie, nullptr)};
-        if (!img_reply) {
-          BOOST_LOG(error) << "Could not get image reply"sv;
-          return capture_e::reinit;
-        }
-
-        if (!pull_free_image_cb(img_out)) {
-          return platf::capture_e::interrupted;
-        }
-
-        std::copy_n((std::uint8_t *) data.data, frame_size(), img_out->data);
-        img_out->frame_timestamp = frame_timestamp;
-
-        if (cursor) {
-          blend_cursor(shm_xdisplay.get(), *img_out, offset_x, offset_y);
-        }
-
-        return capture_e::ok;
-      }
-    }
-
-    /**
-     * @brief Allocate an image buffer compatible with this display backend.
-     *
-     * @return Allocated img object, or null when unavailable.
-     */
-    std::shared_ptr<img_t> alloc_img() override {
-      auto img = std::make_shared<shm_img_t>();
-      img->width = width;
-      img->height = height;
-      img->pixel_pitch = 4;
-      img->row_pitch = img->pixel_pitch * width;
-      img->data = new std::uint8_t[height * img->row_pitch];
-
-      return img;
-    }
-
-    /**
-     * @brief Populate a fallback image when real capture data is unavailable.
-     *
-     * @param img Image or frame object to read from or populate.
-     * @return Capture status reported to the streaming pipeline.
-     */
-    int dummy_img(platf::img_t *img) override {
-      return 0;
-    }
-
-    /**
-     * @brief Initialize X11 shared-memory capture for the selected display.
-     *
-     * @param display_name Display name.
-     * @param config Configuration values to apply.
-     * @return 0 on success; nonzero or negative platform status on failure.
-     */
-    int init(const std::string &display_name, const ::video::config_t &config) {
-      if (x11_attr_t::init(display_name, config)) {
-        return 1;
-      }
-
-      shm_xdisplay.reset(x11::OpenDisplay(nullptr));
-      xcb.reset(xcb::connect(nullptr, nullptr));
-      if (xcb::connection_has_error(xcb.get())) {
-        return -1;
-      }
-
-      if (!xcb::get_extension_data(xcb.get(), xcb::shm_id)->present) {
-        BOOST_LOG(error) << "Missing SHM extension"sv;
-
-        return -1;
-      }
-
-      auto iter = xcb::setup_roots_iterator(xcb::get_setup(xcb.get()));
-      display = iter.data;
-      seg = xcb::generate_id(xcb.get());
-
-      shm_id.id = shmget(IPC_PRIVATE, frame_size(), IPC_CREAT | 0777);
-      if (shm_id.id == -1) {
-        BOOST_LOG(error) << "shmget failed"sv;
-        return -1;
-      }
-
-      xcb::shm_attach(xcb.get(), seg, shm_id.id, false);
-      data.data = shmat(shm_id.id, nullptr, 0);
-
-      if ((uintptr_t) data.data == -1) {
-        BOOST_LOG(error) << "shmat failed"sv;
-
-        return -1;
-      }
-
-      return 0;
-    }
-
-    /**
-     * @brief Calculate the XCB shared-memory frame size.
-     *
-     * @return Frame size in bytes for BGRA pixels.
-     */
-    std::uint32_t frame_size() {
-      return width * height * 4;
-    }
   };
 
   /**
@@ -1574,38 +1143,20 @@ namespace platf {
       return nullptr;
     }
 
-    if (config.capture_source == ::video::capture_source_e::x11_native10) {
-      if (x11::composite::init() || x11::shape::init()) {
-        BOOST_LOG(error) << "Couldn't load XComposite/XShape for native 10-bit capture"sv;
-        return nullptr;
-      }
-      auto native_display = std::make_shared<native10_attr_t>(hwdevice_type);
-      if (native_display->init(display_name, config)) {
-        return nullptr;
-      }
-      return native_display;
-    }
-
-    // Attempt to use shared memory X11 to avoid copying the frame
-    auto shm_disp = std::make_shared<shm_attr_t>(hwdevice_type);
-
-    auto status = shm_disp->init(display_name, config);
-    if (status > 0) {
-      // x11_attr_t::init() failed, don't bother trying again.
+    if (config.capture_source != ::video::capture_source_e::x11_native10) {
+      BOOST_LOG(error) << "Rejecting unsupported generic X11 capture source"sv;
       return nullptr;
     }
 
-    if (status == 0) {
-      return shm_disp;
-    }
-
-    // Fallback
-    auto x11_disp = std::make_shared<x11_attr_t>(hwdevice_type);
-    if (x11_disp->init(display_name, config)) {
+    if (x11::composite::init() || x11::shape::init()) {
+      BOOST_LOG(error) << "Couldn't load XComposite/XShape for native 10-bit capture"sv;
       return nullptr;
     }
-
-    return x11_disp;
+    auto native_display = std::make_shared<native10_attr_t>(hwdevice_type);
+    if (native_display->init(display_name, config)) {
+      return nullptr;
+    }
+    return native_display;
   }
 
   /**
@@ -1716,13 +1267,6 @@ namespace platf {
       });
     }
     return outputs;
-  }
-
-  /**
-   * @brief Release image resources.
-   */
-  void freeImage(XImage *p) {
-    XDestroyImage(p);
   }
 
   /**
