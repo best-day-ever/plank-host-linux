@@ -4,7 +4,6 @@
  */
 // standard includes
 #include <algorithm>
-#include <cerrno>
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
@@ -14,13 +13,11 @@
 #include <thread>
 
 // plaform includes
-#include <poll.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <X11/Xatom.h>
-#include <X11/extensions/XInput2.h>
 #include <X11/extensions/shape.h>
 #include <X11/extensions/Xfixes.h>
 #include <X11/extensions/Xrandr.h>
@@ -91,14 +88,6 @@ namespace platf {
 
     _FN(OpenDisplay, Display *, (_Xconst char *display_name));
     _FN(GetWindowAttributes, Status, (Display * display, Window w, XWindowAttributes *window_attributes_return));
-    _FN(QueryPointer, Bool, (Display * display, Window w, Window *root_return, Window *child_return, int *root_x_return, int *root_y_return, int *win_x_return, int *win_y_return, unsigned int *mask_return));
-    _FN(QueryExtension, Bool, (Display * display, _Xconst char *name, int *major_opcode_return, int *first_event_return, int *first_error_return));
-    _FN(Pending, int, (Display * display));
-    _FN(NextEvent, int, (Display * display, XEvent *event_return));
-    _FN(GetEventData, Bool, (Display * display, XGenericEventCookie *cookie));
-    _FN(FreeEventData, void, (Display * display, XGenericEventCookie *cookie));
-    _FN(Flush, int, (Display * display));
-    _FN(GetConnectionNumber, int, (Display * display));
     _FN(CreateSimpleWindow, Window, (Display * display, Window parent, int x, int y, unsigned int width, unsigned int height, unsigned int border_width, unsigned long border, unsigned long background));
     _FN(ChangeWindowAttributes, int, (Display * display, Window w, unsigned long valuemask, XSetWindowAttributes *attributes));
     _FN(InternAtom, Atom, (Display * display, _Xconst char *atom_name, Bool only_if_exists));
@@ -211,8 +200,6 @@ namespace platf {
 
     namespace fix {
       _FN(GetCursorImage, XFixesCursorImage *, (Display * dpy));
-      _FN(QueryExtension, Bool, (Display * dpy, int *event_base_return, int *error_base_return));
-      _FN(SelectCursorInput, void, (Display * dpy, Window win, unsigned long event_mask));
 
       static int init() {
         static void *handle {nullptr};
@@ -231,8 +218,6 @@ namespace platf {
 
         std::vector<std::tuple<dyn::apiproc *, const char *>> funcs {
           {(dyn::apiproc *) &GetCursorImage, "XFixesGetCursorImage"},
-          {(dyn::apiproc *) &QueryExtension, "XFixesQueryExtension"},
-          {(dyn::apiproc *) &SelectCursorInput, "XFixesSelectCursorInput"},
         };
 
         if (dyn::load(handle, funcs)) {
@@ -243,37 +228,6 @@ namespace platf {
         return 0;
       }
     }  // namespace fix
-
-    namespace xi {
-      _FN(QueryVersion, int, (Display * display, int *major_version_inout, int *minor_version_inout));
-      _FN(SelectEvents, int, (Display * display, Window window, XIEventMask *masks, int num_masks));
-
-      static int init() {
-        static void *handle {nullptr};
-        static bool funcs_loaded = false;
-
-        if (funcs_loaded) {
-          return 0;
-        }
-        if (!handle) {
-          handle = dyn::handle({"libXi.so.6", "libXi.so"});
-          if (!handle) {
-            return -1;
-          }
-        }
-
-        std::vector<std::tuple<dyn::apiproc *, const char *>> funcs {
-          {(dyn::apiproc *) &QueryVersion, "XIQueryVersion"},
-          {(dyn::apiproc *) &SelectEvents, "XISelectEvents"},
-        };
-        if (dyn::load(handle, funcs)) {
-          return -1;
-        }
-
-        funcs_loaded = true;
-        return 0;
-      }
-    }  // namespace xi
 
     static int init() {
       static void *handle {nullptr};
@@ -294,14 +248,6 @@ namespace platf {
         {(dyn::apiproc *) &GetImage, "XGetImage"},
         {(dyn::apiproc *) &OpenDisplay, "XOpenDisplay"},
         {(dyn::apiproc *) &GetWindowAttributes, "XGetWindowAttributes"},
-        {(dyn::apiproc *) &QueryPointer, "XQueryPointer"},
-        {(dyn::apiproc *) &QueryExtension, "XQueryExtension"},
-        {(dyn::apiproc *) &Pending, "XPending"},
-        {(dyn::apiproc *) &NextEvent, "XNextEvent"},
-        {(dyn::apiproc *) &GetEventData, "XGetEventData"},
-        {(dyn::apiproc *) &FreeEventData, "XFreeEventData"},
-        {(dyn::apiproc *) &Flush, "XFlush"},
-        {(dyn::apiproc *) &GetConnectionNumber, "XConnectionNumber"},
         {(dyn::apiproc *) &CreateSimpleWindow, "XCreateSimpleWindow"},
         {(dyn::apiproc *) &ChangeWindowAttributes, "XChangeWindowAttributes"},
         {(dyn::apiproc *) &InternAtom, "XInternAtom"},
@@ -1782,34 +1728,12 @@ namespace platf {
     // This will be called once only
     static int x11_status =
       window_system == window_system_e::NONE ||
-      x11::init() || x11::rr::init() || x11::fix::init() || x11::xi::init();
+      x11::init() || x11::rr::init() || x11::fix::init();
 
     return x11_status;
   }
 
   namespace x11 {
-    namespace {
-      int wait_for_x11_event(Display *display, int timeout_ms) {
-        if (x11::Pending(display) > 0) {
-          return 1;
-        }
-
-        pollfd descriptor {
-          x11::GetConnectionNumber(display),
-          POLLIN,
-          0,
-        };
-        int result;
-        do {
-          result = poll(&descriptor, 1, timeout_ms);
-        } while (result < 0 && errno == EINTR);
-        if (result <= 0) {
-          return result;
-        }
-        return (descriptor.revents & (POLLIN | POLLPRI)) != 0 ? 1 : -1;
-      }
-    }  // namespace
-
     std::optional<cursor_t> cursor_t::make() {
       if (load_x11()) {
         return std::nullopt;
@@ -1872,122 +1796,6 @@ namespace platf {
         [](const std::uint32_t pixel) { return (pixel & 0xFF000000U) != 0; }
       );
       return true;
-    }
-
-    bool cursor_t::subscribe_position_events() {
-      auto display = (xdisplay_t::pointer) ctx.get();
-      int first_event = 0;
-      int first_error = 0;
-      if (!x11::QueryExtension(
-            display, "XInputExtension", &xi_opcode_, &first_event, &first_error)) {
-        return false;
-      }
-
-      int major = 2;
-      int minor = 0;
-      if (xi::QueryVersion(display, &major, &minor) != Success || major < 2) {
-        return false;
-      }
-
-      XWindowAttributes root_attributes {};
-      const auto root = DefaultRootWindow(display);
-      if (!x11::GetWindowAttributes(display, root, &root_attributes) ||
-          root_attributes.width <= 0 || root_attributes.height <= 0) {
-        return false;
-      }
-      desktop_width_ = root_attributes.width;
-      desktop_height_ = root_attributes.height;
-
-      unsigned char mask[XIMaskLen(XI_LASTEVENT)] {};
-      // XI_Motion is delivered to the window under the pointer, not reliably
-      // to a root-window selection. XI_RawMotion is the global notification
-      // we need here. Its valuators are untransformed device deltas, so use it
-      // only as a wakeup and query Xorg for the authoritative root position.
-      XISetMask(mask, XI_RawMotion);
-      XIEventMask event_mask {
-        XIAllMasterDevices,
-        static_cast<int>(sizeof(mask)),
-        mask,
-      };
-      if (xi::SelectEvents(display, root, &event_mask, 1) != Success) {
-        return false;
-      }
-      x11::Flush(display);
-      return true;
-    }
-
-    int cursor_t::wait_position(cursor_position_t &position, int timeout_ms) {
-      auto display = (xdisplay_t::pointer) ctx.get();
-      if (xi_opcode_ < 0 || desktop_width_ <= 0 || desktop_height_ <= 0) {
-        return -1;
-      }
-      const int wait_result = wait_for_x11_event(display, timeout_ms);
-      if (wait_result <= 0) {
-        return wait_result;
-      }
-
-      bool saw_motion = false;
-      while (x11::Pending(display) > 0) {
-        XEvent event {};
-        x11::NextEvent(display, &event);
-        if (event.type != GenericEvent || event.xcookie.extension != xi_opcode_ ||
-            event.xcookie.evtype != XI_RawMotion ||
-            !x11::GetEventData(display, &event.xcookie)) {
-          continue;
-        }
-        saw_motion = true;
-        x11::FreeEventData(display, &event.xcookie);
-      }
-      if (!saw_motion) {
-        return 0;
-      }
-
-      Window root_return = None;
-      Window child_return = None;
-      int window_x = 0;
-      int window_y = 0;
-      unsigned int pointer_mask = 0;
-      if (!x11::QueryPointer(
-            display, DefaultRootWindow(display), &root_return, &child_return,
-            &position.x, &position.y, &window_x, &window_y, &pointer_mask)) {
-        return -1;
-      }
-      position.desktop_width = desktop_width_;
-      position.desktop_height = desktop_height_;
-      return 1;
-    }
-
-    bool cursor_t::subscribe_shape_events() {
-      auto display = (xdisplay_t::pointer) ctx.get();
-      int error_base = 0;
-      if (!fix::QueryExtension(display, &xfixes_event_base_, &error_base)) {
-        return false;
-      }
-      fix::SelectCursorInput(
-        display, DefaultRootWindow(display), XFixesDisplayCursorNotifyMask);
-      x11::Flush(display);
-      return true;
-    }
-
-    int cursor_t::wait_shape_change(int timeout_ms) {
-      auto display = (xdisplay_t::pointer) ctx.get();
-      if (xfixes_event_base_ < 0) {
-        return -1;
-      }
-      const int wait_result = wait_for_x11_event(display, timeout_ms);
-      if (wait_result <= 0) {
-        return wait_result;
-      }
-
-      bool shape_changed = false;
-      while (x11::Pending(display) > 0) {
-        XEvent event {};
-        x11::NextEvent(display, &event);
-        if (event.type == xfixes_event_base_ + XFixesCursorNotify) {
-          shape_changed = true;
-        }
-      }
-      return shape_changed ? 1 : 0;
     }
 
     void cursor_t::blend(img_t &img, int offsetX, int offsetY) {

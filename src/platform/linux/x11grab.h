@@ -22,16 +22,6 @@ namespace egl {
 
 namespace platf::x11 {
   /**
-   * @brief Host-authoritative pointer position reported by XInput2.
-   */
-  struct cursor_position_t {
-    int x;  ///< Root-window X coordinate of the pointer hotspot.
-    int y;  ///< Root-window Y coordinate of the pointer hotspot.
-    int desktop_width;  ///< Current root-window width.
-    int desktop_height;  ///< Current root-window height.
-  };
-
-  /**
    * @brief Unpack one depth-30 X11 RGB row into FFmpeg identity-GBR planes.
    *
    * The qualified visual stores red in bits 0-9, green in bits 10-19, and
@@ -92,37 +82,6 @@ namespace platf::x11 {
     bool capture(egl::cursor_t &img);
 
     /**
-     * @brief Subscribe this connection to global XInput2 raw-motion wakeups.
-     *
-     * @return True when event-driven position tracking is available.
-     */
-    bool subscribe_position_events();
-
-    /**
-     * @brief Return Xorg's current transformed pointer position after motion.
-     *
-     * @param position Position populated when an event is returned.
-     * @param timeout_ms Maximum wait in milliseconds.
-     * @return 1 for a position, 0 for timeout, or -1 for an X11 error.
-     */
-    int wait_position(cursor_position_t &position, int timeout_ms);
-
-    /**
-     * @brief Subscribe this connection to XFixes cursor-shape changes.
-     *
-     * @return True when event-driven shape tracking is available.
-     */
-    bool subscribe_shape_events();
-
-    /**
-     * @brief Wait for an XFixes cursor-shape change notification.
-     *
-     * @param timeout_ms Maximum wait in milliseconds.
-     * @return 1 for a shape change, 0 for timeout, or -1 for an X11 error.
-     */
-    int wait_shape_change(int timeout_ms);
-
-    /**
      * Capture and blend the cursor into the image
      *
      * img <-- destination image
@@ -134,12 +93,6 @@ namespace platf::x11 {
     void blend(img_t &img, int offsetX, int offsetY);
 
     cursor_ctx_t ctx;  ///< X11 cursor context used to track and blend cursor images.
-
-  private:
-    int xi_opcode_ {-1};  ///< XInput2 GenericEvent extension opcode.
-    int xfixes_event_base_ {-1};  ///< Base event number for XFixes notifications.
-    int desktop_width_ {0};  ///< Root-window width captured when motion subscription starts.
-    int desktop_height_ {0};  ///< Root-window height captured when motion subscription starts.
   };
 
   /**
