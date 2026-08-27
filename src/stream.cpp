@@ -1341,7 +1341,7 @@ namespace stream {
             has_session_awaiting_peer = true;
           } else {
             if (!session->cursorThread.joinable()) {
-              session->cursorThread = std::jthread {localCursorThread, session};
+              session->cursorThread = std::jthread(localCursorThread, session);
             }
 
             auto &hdr_queue = session->control.hdr_queue;
