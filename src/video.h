@@ -682,8 +682,6 @@ namespace video {
    */
   using hdr_info_t = std::unique_ptr<hdr_info_raw_t>;
 
-  extern int active_hevc_mode;
-  extern int active_av1_mode;
   extern bool last_encoder_probe_supported_ref_frames_invalidation;
   extern std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec;  // 0 - H.264, 1 - HEVC, 2 - AV1
   extern bool last_encoder_probe_supported_h264_10bit_444;  ///< Whether the selected encoder accepts H.264 10-bit 4:4:4 input.
@@ -723,9 +721,12 @@ namespace video {
    *
    * @param encoder Encoder configuration or encoder instance.
    * @param expect_failure Expect failure.
+   * @param test_hevc Probe HEVC support for an exact StationConnect HEVC backend.
+   * @param test_av1 Probe AV1 support when an exact StationConnect AV1 profile exists.
    * @return True when encoder validation matches `expect_failure`.
    */
-  bool validate_encoder(encoder_t &encoder, bool expect_failure);
+  bool validate_encoder(encoder_t &encoder, bool expect_failure,
+                        bool test_hevc = false, bool test_av1 = false);
 
   /**
    * @brief Probe encoders and select the preferred encoder.

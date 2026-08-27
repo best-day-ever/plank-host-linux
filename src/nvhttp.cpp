@@ -1017,7 +1017,7 @@ namespace nvhttp {
   /**
    * @brief Get codec mode flags.
    *
-   * @return Moonlight codec capability bitmask for the currently probed encoders.
+   * @return Codec capability bitmask for the exact StationConnect profiles.
    */
   uint32_t get_codec_mode_flags() {
     uint32_t codec_mode_flags = SCM_H264;
@@ -1043,34 +1043,15 @@ namespace nvhttp {
     if (video::last_encoder_probe_supported_h264_10bit_422) {
       codec_mode_flags |= SCM_H264_HIGH10_422;
     }
-    if (video::active_hevc_mode >= 2 ||
-        video::nvenc_direct_supports_hevc_444_8bit()) {
+    if (video::nvenc_direct_supports_hevc_444_8bit() ||
+        video::nvenc_direct_supports_hevc_444_10bit()) {
       codec_mode_flags |= SCM_HEVC;
-      if (video::last_encoder_probe_supported_yuv444_for_codec[1] ||
-          video::nvenc_direct_supports_hevc_444_8bit()) {
+      if (video::nvenc_direct_supports_hevc_444_8bit()) {
         codec_mode_flags |= SCM_HEVC_REXT8_444;
       }
     }
-    if (video::active_hevc_mode == 3 || video::active_hevc_mode == 5) {
-      codec_mode_flags |= SCM_HEVC_MAIN10;
-    }
-    if (((video::active_hevc_mode == 4 || video::active_hevc_mode == 5) &&
-         video::last_encoder_probe_supported_yuv444_for_codec[1]) ||
-        video::nvenc_direct_supports_hevc_444_10bit()) {
+    if (video::nvenc_direct_supports_hevc_444_10bit()) {
       codec_mode_flags |= SCM_HEVC_REXT10_444;
-    }
-
-    if (video::active_av1_mode >= 2) {
-      codec_mode_flags |= SCM_AV1_MAIN8;
-      if (video::last_encoder_probe_supported_yuv444_for_codec[2]) {
-        codec_mode_flags |= SCM_AV1_HIGH8_444;
-      }
-    }
-    if (video::active_av1_mode == 3 || video::active_av1_mode == 5) {
-      codec_mode_flags |= SCM_AV1_MAIN10;
-    }
-    if ((video::active_av1_mode == 4 || video::active_av1_mode == 5) && video::last_encoder_probe_supported_yuv444_for_codec[2]) {
-      codec_mode_flags |= SCM_AV1_HIGH10_444;
     }
     return codec_mode_flags;
   }
@@ -1114,8 +1095,7 @@ namespace nvhttp {
              "h264-10-444-software,h264-8-444-nvenc,hevc-8-444-nvenc,"
              "hevc-10-444-nvenc");
     tree.put("root.MaxLumaPixelsHEVC",
-             video::active_hevc_mode > 1 ||
-                 video::nvenc_direct_supports_hevc_444_8bit() ||
+             video::nvenc_direct_supports_hevc_444_8bit() ||
                  video::nvenc_direct_supports_hevc_444_10bit() ?
                "1869449984" : "0");
 
@@ -1184,7 +1164,7 @@ namespace nvhttp {
 
       pt::ptree app;
 
-      app.put("IsHdrSupported"s, video::active_hevc_mode >= 3 ? 1 : 0);
+      app.put("IsHdrSupported"s, 0);
       app.put("AppTitle"s, proc.name);
       app.put("ID", proc.id);
 

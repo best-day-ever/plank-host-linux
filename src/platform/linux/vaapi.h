@@ -50,7 +50,7 @@ namespace va {
    */
   std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device(int width, int height, file_t &&card, int offset_x, int offset_y, bool vram);
 
-  // Ensure the render device pointed to by fd is capable of encoding h264 with the hevc_mode configured
+  // Ensure the render device pointed to by fd is capable of encoding H.264.
   /**
    * @brief Validate that the configured VAAPI device can be used.
    *

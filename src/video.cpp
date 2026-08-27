@@ -1660,9 +1660,6 @@ namespace video {
 #ifndef __APPLE__
     &nvenc,
 #endif
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    &nvenc_direct,
-#endif
 #ifdef _WIN32
     &quicksync,
     &amdvce,
@@ -1684,8 +1681,6 @@ namespace video {
   };
 
   static encoder_t *chosen_encoder;
-  int active_hevc_mode;  ///< HEVC mode selected by the most recent encoder probe.
-  int active_av1_mode;  ///< AV1 mode selected by the most recent encoder probe.
   bool last_encoder_probe_supported_ref_frames_invalidation = false;  ///< Whether the last probe found reference-frame invalidation support.
   std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {};  ///< YUV444 support discovered for each probed codec.
   bool last_encoder_probe_supported_h264_10bit_444 = false;  ///< H.264 10-bit 4:4:4 support discovered for the selected encoder.
@@ -3636,7 +3631,8 @@ namespace video {
   /**
    * @brief Validate encoder before it is used.
    */
-  bool validate_encoder(encoder_t &encoder, bool expect_failure) {
+  bool validate_encoder(encoder_t &encoder, bool expect_failure,
+                        bool test_hevc, bool test_av1) {
     const std::string output_name;
     std::shared_ptr<platf::display_t> disp;
 
@@ -3644,9 +3640,6 @@ namespace video {
     auto fg = util::fail_guard([&]() {
       BOOST_LOG(info) << "Encoder ["sv << encoder.name << "] failed"sv;
     });
-
-    auto test_hevc = active_hevc_mode >= 2 || (active_hevc_mode == 0 && !(encoder.flags & H264_ONLY));
-    auto test_av1 = active_av1_mode >= 2 || (active_av1_mode == 0 && !(encoder.flags & H264_ONLY));
 
     encoder.h264.capabilities.set();
     encoder.hevc.capabilities.set();
@@ -3884,45 +3877,9 @@ namespace video {
     // Restart encoder selection
     auto previous_encoder = chosen_encoder;
     chosen_encoder = nullptr;
-    active_hevc_mode = config::video.hevc_mode;
-    active_av1_mode = config::video.av1_mode;
     last_encoder_probe_supported_ref_frames_invalidation = false;
     last_encoder_probe_supported_h264_8bit_422 = false;
     last_encoder_probe_supported_h264_10bit_422 = false;
-
-    auto adjust_encoder_constraints_hevc = [&](encoder_t *encoder) {
-      // If we can't satisfy both the encoder and codec requirement, prefer the encoder over codec support
-      if (active_hevc_mode == 5 && !encoder->hevc[encoder_t::DYNAMIC_RANGE] && !encoder->hevc[encoder_t::DYNAMIC_RANGE_YUV444]) {
-        BOOST_LOG(warning) << "Encoder ["sv << encoder->name << "] does not support HEVC Main10 Rext10_444 on this system"sv;
-        active_hevc_mode = 0;
-      } else if (active_hevc_mode == 4 && !encoder->hevc[encoder_t::DYNAMIC_RANGE_YUV444]) {
-        BOOST_LOG(warning) << "Encoder ["sv << encoder->name << "] does not support HEVC Rext10_444 on this system"sv;
-        active_hevc_mode = 0;
-      } else if (active_hevc_mode == 3 && !encoder->hevc[encoder_t::DYNAMIC_RANGE]) {
-        BOOST_LOG(warning) << "Encoder ["sv << encoder->name << "] does not support HEVC Main10 on this system"sv;
-        active_hevc_mode = 0;
-      } else if (active_hevc_mode == 2 && !encoder->hevc[encoder_t::PASSED]) {
-        BOOST_LOG(warning) << "Encoder ["sv << encoder->name << "] does not support HEVC on this system"sv;
-        active_hevc_mode = 0;
-      }
-    };
-
-    auto adjust_encoder_constraints_av1 = [&](encoder_t *encoder) {
-      // If we can't satisfy both the encoder and codec requirement, prefer the encoder over codec support
-      if (active_av1_mode == 5 && !encoder->av1[encoder_t::DYNAMIC_RANGE] && !encoder->av1[encoder_t::DYNAMIC_RANGE_YUV444]) {
-        BOOST_LOG(warning) << "Encoder ["sv << encoder->name << "] does not support AV1 Main10 Rext10_444 on this system"sv;
-        active_av1_mode = 0;
-      } else if (active_hevc_mode == 4 && !encoder->av1[encoder_t::DYNAMIC_RANGE_YUV444]) {
-        BOOST_LOG(warning) << "Encoder ["sv << encoder->name << "] does not support AV1 Rext10_444 on this system"sv;
-        active_hevc_mode = 0;
-      } else if (active_hevc_mode == 3 && !encoder->hevc[encoder_t::DYNAMIC_RANGE]) {
-        BOOST_LOG(warning) << "Encoder ["sv << encoder->name << "] does not support AV1 Main10 on this system"sv;
-        active_hevc_mode = 0;
-      } else if (active_av1_mode == 2 && !encoder->av1[encoder_t::PASSED]) {
-        BOOST_LOG(warning) << "Encoder ["sv << encoder->name << "] does not support AV1 on this system"sv;
-        active_av1_mode = 0;
-      }
-    };
 
     if (!config::video.encoder.empty()) {
       // If there is a specific encoder specified, use it if it passes validation
@@ -3931,14 +3888,12 @@ namespace video {
 
         if (encoder->name == config::video.encoder) {
           // Remove the encoder from the list entirely if it fails validation
-          if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
+          if (!validate_encoder(*encoder,
+                                previous_encoder && previous_encoder != encoder,
+                                false, false)) {
             pos = encoder_list.erase(pos);
             break;
           }
-
-          // We will return an encoder here even if it fails one of the codec requirements specified by the user
-          adjust_encoder_constraints_hevc(encoder);
-          adjust_encoder_constraints_av1(encoder);
 
           chosen_encoder = encoder;
           break;
@@ -3954,50 +3909,6 @@ namespace video {
 
     BOOST_LOG(info) << "// Testing for available encoders, this may generate errors. You can safely ignore those errors. //"sv;
 
-    // If we haven't found an encoder yet, but we want one with specific codec support, search for that now.
-    if (chosen_encoder == nullptr && (active_hevc_mode >= 2 || active_av1_mode >= 2)) {
-      KITTY_WHILE_LOOP(auto pos = std::begin(encoder_list), pos != std::end(encoder_list), {
-        auto encoder = *pos;
-
-        // Remove the encoder from the list entirely if it fails validation
-        if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
-          pos = encoder_list.erase(pos);
-          continue;
-        }
-
-        // Skip it if it doesn't support the specified codec at all
-        if ((active_hevc_mode >= 2 && !encoder->hevc[encoder_t::PASSED]) || (active_av1_mode >= 2 && !encoder->av1[encoder_t::PASSED])) {
-          pos++;
-          continue;
-        }
-
-        // Skip it if it doesn't support HDR on the specified codec
-        if ((active_hevc_mode == 5 && !encoder->hevc[encoder_t::DYNAMIC_RANGE] && !encoder->hevc[encoder_t::DYNAMIC_RANGE_YUV444]) || (active_av1_mode == 5 && !encoder->av1[encoder_t::DYNAMIC_RANGE] && !encoder->av1[encoder_t::DYNAMIC_RANGE_YUV444])) {
-          pos++;
-          continue;
-        }
-
-        // Skip it if it doesn't support HDR on the specified codec
-        if ((active_hevc_mode == 4 && !encoder->hevc[encoder_t::DYNAMIC_RANGE_YUV444]) || (active_av1_mode == 4 && !encoder->av1[encoder_t::DYNAMIC_RANGE_YUV444])) {
-          pos++;
-          continue;
-        }
-
-        // Skip it if it doesn't support HDR on the specified codec
-        if ((active_hevc_mode == 3 && !encoder->hevc[encoder_t::DYNAMIC_RANGE]) || (active_av1_mode == 3 && !encoder->av1[encoder_t::DYNAMIC_RANGE])) {
-          pos++;
-          continue;
-        }
-
-        chosen_encoder = encoder;
-        break;
-      });
-
-      if (chosen_encoder == nullptr) {
-        BOOST_LOG(error) << "Couldn't find any working encoder that meets HEVC/AV1 requirements"sv;
-      }
-    }
-
     // If no encoder was specified or the specified encoder was unusable, keep trying
     // the remaining encoders until we find one that passes validation.
     if (chosen_encoder == nullptr) {
@@ -4007,14 +3918,12 @@ namespace video {
         // If we've used a previous encoder and it's not this one, we expect this encoder to
         // fail to validate. It will use a slightly different order of checks to more quickly
         // eliminate failing encoders.
-        if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
+        if (!validate_encoder(*encoder,
+                              previous_encoder && previous_encoder != encoder,
+                              false, false)) {
           pos = encoder_list.erase(pos);
           continue;
         }
-
-        // We will return an encoder here even if it fails one of the codec requirements specified by the user
-        adjust_encoder_constraints_hevc(encoder);
-        adjust_encoder_constraints_av1(encoder);
 
         chosen_encoder = encoder;
         break;
@@ -4081,49 +3990,10 @@ namespace video {
       BOOST_LOG(info) << "Found AV1 encoder: "sv << encoder.av1.name << " ["sv << encoder.name << ']';
     }
 
-    // 2 - passed
-    // 3 - HDR yuv420
-    // 4 - HDR yuv444
-    // 5 - HDR yuv420 & HDR yuv444
-
-    if (active_hevc_mode == 0) {
-      active_hevc_mode = 1;
-      if (encoder.hevc[encoder_t::PASSED]) {
-        active_hevc_mode = 2;
-        if (encoder.hevc[encoder_t::DYNAMIC_RANGE]) {
-          active_hevc_mode += 1;
-        }
-        if (encoder.hevc[encoder_t::DYNAMIC_RANGE_YUV444]) {
-          active_hevc_mode += 2;
-        }
-      }
-      BOOST_LOG(debug) << "ENCODER STATUS ACTIVE_HEVC_MODE: "sv << active_hevc_mode;
-    }
-
-    if (active_av1_mode == 0) {
-      active_av1_mode = 1;
-      if (encoder.av1[encoder_t::PASSED]) {
-        active_av1_mode = 2;
-        if (encoder.av1[encoder_t::DYNAMIC_RANGE]) {
-          active_av1_mode += 1;
-        }
-        if (encoder.av1[encoder_t::DYNAMIC_RANGE_YUV444]) {
-          active_av1_mode += 2;
-        }
-      }
-      BOOST_LOG(debug) << "ENCODER STATUS ACTIVE_AV1_MODE: "sv << active_av1_mode;
-    }
-
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
     if (chosen_encoder != &nvenc_direct) {
       BOOST_LOG(info) << "Qualifying StationConnect per-session encoder [nvenc-direct]"sv;
-      const auto saved_hevc_mode = active_hevc_mode;
-      const auto saved_av1_mode = active_av1_mode;
-      active_hevc_mode = 2;
-      active_av1_mode = 1;
-      nvenc_direct_qualified = validate_encoder(nvenc_direct, false);
-      active_hevc_mode = saved_hevc_mode;
-      active_av1_mode = saved_av1_mode;
+      nvenc_direct_qualified = validate_encoder(nvenc_direct, false, true, false);
     } else {
       nvenc_direct_qualified = true;
     }

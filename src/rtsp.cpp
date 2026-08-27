@@ -937,12 +937,8 @@ namespace rtsp_stream {
     const bool exact_stationconnect_hevc =
       session.encoding_mode == "hevc-8-444-nvenc" ||
       session.encoding_mode == "hevc-10-444-nvenc";
-    if (exact_stationconnect_hevc || video::active_hevc_mode != 1) {
+    if (exact_stationconnect_hevc) {
       ss << "sprop-parameter-sets=AAAAAU"sv << std::endl;
-    }
-
-    if (video::active_av1_mode != 1) {
-      ss << "a=rtpmap:98 AV1/90000"sv << std::endl;
     }
 
     if (!session.surround_params.empty()) {
@@ -1384,24 +1380,6 @@ namespace rtsp_stream {
 
       BOOST_LOG(debug) << "Final adjusted video encoding bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
       config.monitor.bitrate = (int) configuredBitrateKbps;
-    }
-
-    const bool exact_stationconnect_hevc =
-      session.encoding_mode == "hevc-8-444-nvenc" ||
-      session.encoding_mode == "hevc-10-444-nvenc";
-    if (config.monitor.videoFormat == 1 && video::active_hevc_mode == 1 &&
-        !exact_stationconnect_hevc) {
-      BOOST_LOG(warning) << "HEVC is disabled, yet the client requested HEVC"sv;
-
-      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
-      return;
-    }
-
-    if (config.monitor.videoFormat == 2 && video::active_av1_mode == 1) {
-      BOOST_LOG(warning) << "AV1 is disabled, yet the client requested AV1"sv;
-
-      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
-      return;
     }
 
     if ((config.mlFeatureFlags & ML_FF_LOCAL_CURSOR) == 0) {
