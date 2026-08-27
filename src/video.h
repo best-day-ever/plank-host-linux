@@ -73,6 +73,7 @@ namespace video {
     int enableIntraRefresh;  ///< Intra refresh setting: 0 = disabled, 1 = enabled.
     bool span_desktop {};  ///< Capture and scale the complete virtual desktop rather than one output.
     capture_source_e capture_source {capture_source_e::configured};  ///< Exact capture path negotiated for this session, or configured during probes.
+    std::string encoder_backend;  ///< Exact StationConnect encoder backend selected for this session.
   };
 
   namespace amf {
@@ -736,6 +737,17 @@ namespace video {
    * @return 0 when a usable encoder is selected; nonzero when probing fails.
    */
   int probe_encoders();
+
+  /** Return whether a named StationConnect per-session encoder was qualified at startup. */
+  bool encoder_backend_available(std::string_view backend);
+
+  /** Select a previously qualified encoder for the next single-client session. */
+  bool select_encoder_backend_for_session(std::string_view backend);
+
+  /** Return exact direct-NVENC capability bits used by server-info advertisement. */
+  bool nvenc_direct_supports_h264_444_8bit();
+  bool nvenc_direct_supports_hevc_444_8bit();
+  bool nvenc_direct_supports_hevc_444_10bit();
 
   // Several NTSC standard refresh rates are hardcoded here, because their
   // true rate requires a denominator of 1001. ffmpeg's av_d2q() would assume it could

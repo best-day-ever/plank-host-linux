@@ -79,6 +79,8 @@ namespace nvhttp {
     stationconnect::topology::feature_temporary_physical_layout;
   constexpr auto stationconnect_feature_capture_source_selection =
     stationconnect::topology::feature_capture_source_selection;
+  constexpr auto stationconnect_feature_encoder_backend_selection =
+    stationconnect::topology::feature_encoder_backend_selection;
   constexpr auto stationconnect_topology_features = stationconnect::topology::feature_flags;
 
   /**
@@ -759,6 +761,47 @@ namespace nvhttp {
     return true;
   }
 
+  bool validate_encoder_backend(rtsp_stream::launch_session_t &session,
+                                pt::ptree &tree) {
+    if (session.stationconnect_protocol_version != stationconnect_topology_version ||
+        (session.stationconnect_feature_flags &
+         stationconnect_feature_encoder_backend_selection) == 0) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message",
+               "StationConnect encoder-backend negotiation is required");
+      return false;
+    }
+    const bool software_mode =
+      session.encoding_mode == "h264-8-422-software" ||
+      session.encoding_mode == "h264-8-444-software" ||
+      session.encoding_mode == "h264-10-422-software" ||
+      session.encoding_mode == "h264-10-444-software";
+    const bool nvenc_h264_mode = session.encoding_mode == "h264-8-444-nvenc";
+    const bool nvenc_hevc8_mode = session.encoding_mode == "hevc-8-444-nvenc";
+    const bool nvenc_hevc10_mode = session.encoding_mode == "hevc-10-444-nvenc";
+    if (!stationconnect::topology::valid_encoding_tuple(
+          session.capture_source,
+          session.encoder_backend,
+          session.encoding_mode)) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message",
+               "Unsupported StationConnect capture and encoding mode combination");
+      return false;
+    }
+    const bool exact_mode_available =
+      (software_mode && video::encoder_backend_available("software-cuda")) ||
+      (nvenc_h264_mode && video::nvenc_direct_supports_h264_444_8bit()) ||
+      (nvenc_hevc8_mode && video::nvenc_direct_supports_hevc_444_8bit()) ||
+      (nvenc_hevc10_mode && video::nvenc_direct_supports_hevc_444_10bit());
+    if (!exact_mode_available) {
+      tree.put("root.<xmlattr>.status_code", 503);
+      tree.put("root.<xmlattr>.status_message",
+               "Requested StationConnect encoding mode is unavailable");
+      return false;
+    }
+    return true;
+  }
+
   /**
    * @brief Read a named query argument from the HTTP request map.
    *
@@ -868,6 +911,8 @@ namespace nvhttp {
     launch_session->virtual_mode_1 = get_arg(args, "scVirtualMode1", "");
     launch_session->virtual_mode_2 = get_arg(args, "scVirtualMode2", "");
     launch_session->capture_source = get_arg(args, "scCaptureSource", "");
+    launch_session->encoder_backend = get_arg(args, "scEncoderBackend", "");
+    launch_session->encoding_mode = get_arg(args, "scEncodingMode", "");
     launch_session->stationconnect_protocol_version =
       static_cast<std::uint32_t>(util::from_view(get_arg(args, "scProtocolVersion", "0")));
     launch_session->stationconnect_feature_flags =
@@ -976,14 +1021,18 @@ namespace nvhttp {
    */
   uint32_t get_codec_mode_flags() {
     uint32_t codec_mode_flags = SCM_H264;
-    if (video::last_encoder_probe_supported_yuv444_for_codec[0]) {
+    if (video::last_encoder_probe_supported_yuv444_for_codec[0] ||
+        video::nvenc_direct_supports_h264_444_8bit()) {
       codec_mode_flags |= SCM_H264_HIGH8_444;
     }
     if (video::last_encoder_probe_supported_h264_10bit_444) {
       codec_mode_flags |= SCM_H264_HIGH10_444;
     }
     if (video::last_encoder_probe_supported_yuv444_for_codec[0] ||
-        video::last_encoder_probe_supported_h264_10bit_444) {
+        video::last_encoder_probe_supported_h264_10bit_444 ||
+        video::nvenc_direct_supports_h264_444_8bit() ||
+        video::nvenc_direct_supports_hevc_444_8bit() ||
+        video::nvenc_direct_supports_hevc_444_10bit()) {
 #if defined(SUNSHINE_BUILD_CUDA)
       codec_mode_flags |= SCM_IDENTITY_GBR_444;
 #endif
@@ -994,16 +1043,20 @@ namespace nvhttp {
     if (video::last_encoder_probe_supported_h264_10bit_422) {
       codec_mode_flags |= SCM_H264_HIGH10_422;
     }
-    if (video::active_hevc_mode >= 2) {
+    if (video::active_hevc_mode >= 2 ||
+        video::nvenc_direct_supports_hevc_444_8bit()) {
       codec_mode_flags |= SCM_HEVC;
-      if (video::last_encoder_probe_supported_yuv444_for_codec[1]) {
+      if (video::last_encoder_probe_supported_yuv444_for_codec[1] ||
+          video::nvenc_direct_supports_hevc_444_8bit()) {
         codec_mode_flags |= SCM_HEVC_REXT8_444;
       }
     }
     if (video::active_hevc_mode == 3 || video::active_hevc_mode == 5) {
       codec_mode_flags |= SCM_HEVC_MAIN10;
     }
-    if ((video::active_hevc_mode == 4 || video::active_hevc_mode == 5) && video::last_encoder_probe_supported_yuv444_for_codec[1]) {
+    if (((video::active_hevc_mode == 4 || video::active_hevc_mode == 5) &&
+         video::last_encoder_probe_supported_yuv444_for_codec[1]) ||
+        video::nvenc_direct_supports_hevc_444_10bit()) {
       codec_mode_flags |= SCM_HEVC_REXT10_444;
     }
 
@@ -1055,7 +1108,16 @@ namespace nvhttp {
     tree.put("root.StationConnectTopologyVersion", stationconnect_topology_version);
     tree.put("root.StationConnectFeatureFlags", stationconnect_topology_features);
     tree.put("root.StationConnectCaptureSources", "nvfbc,x11-native10");
-    tree.put("root.MaxLumaPixelsHEVC", video::active_hevc_mode > 1 ? "1869449984" : "0");
+    tree.put("root.StationConnectEncoderBackends", "software-cuda,nvenc-direct");
+    tree.put("root.StationConnectEncodingModes",
+             "h264-8-422-software,h264-8-444-software,h264-10-422-software,"
+             "h264-10-444-software,h264-8-444-nvenc,hevc-8-444-nvenc,"
+             "hevc-10-444-nvenc");
+    tree.put("root.MaxLumaPixelsHEVC",
+             video::active_hevc_mode > 1 ||
+                 video::nvenc_direct_supports_hevc_444_8bit() ||
+                 video::nvenc_direct_supports_hevc_444_10bit() ?
+               "1869449984" : "0");
 
     // Moonlight clients track LAN IPv6 addresses separately from LocalIP which is expected to
     // always be an IPv4 address. If we return that same IPv6 address here, it will clobber the
@@ -1224,12 +1286,24 @@ namespace nvhttp {
       tree.put("root.gamesession", 0);
       return;
     }
+    if (!validate_encoder_backend(*launch_session, tree)) {
+      tree.put("root.gamesession", 0);
+      return;
+    }
     if (!resolve_selected_output(*launch_session, *authenticated_uid, tree)) {
       tree.put("root.gamesession", 0);
       return;
     }
 
     if (rtsp_stream::session_count() == 0) {
+      if (!video::select_encoder_backend_for_session(
+              launch_session->encoder_backend)) {
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message",
+                 "Requested StationConnect encoder backend is unavailable");
+        tree.put("root.gamesession", 0);
+        return;
+      }
       // The display should be restored in case something fails as there are no other sessions.
       revert_display_configuration = true;
 
@@ -1284,6 +1358,8 @@ namespace nvhttp {
     );
     tree.put("root.gamesession", 1);
     tree.put("root.StationConnectCaptureSource", launch_session->capture_source);
+    tree.put("root.StationConnectEncoderBackend", launch_session->encoder_backend);
+    tree.put("root.StationConnectEncodingMode", launch_session->encoding_mode);
 
     rtsp_stream::launch_session_raise(launch_session);
 
@@ -1369,12 +1445,24 @@ namespace nvhttp {
       tree.put("root.resume", 0);
       return;
     }
+    if (!validate_encoder_backend(*launch_session, tree)) {
+      tree.put("root.resume", 0);
+      return;
+    }
     if (!resolve_selected_output(*launch_session, *authenticated_uid, tree)) {
       tree.put("root.resume", 0);
       return;
     }
 
     if (no_active_sessions) {
+      if (!video::select_encoder_backend_for_session(
+              launch_session->encoder_backend)) {
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message",
+                 "Requested StationConnect encoder backend is unavailable");
+        tree.put("root.resume", 0);
+        return;
+      }
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
@@ -1415,6 +1503,8 @@ namespace nvhttp {
     );
     tree.put("root.resume", 1);
     tree.put("root.StationConnectCaptureSource", launch_session->capture_source);
+    tree.put("root.StationConnectEncoderBackend", launch_session->encoder_backend);
+    tree.put("root.StationConnectEncodingMode", launch_session->encoding_mode);
 
     rtsp_stream::launch_session_raise(launch_session);
   }

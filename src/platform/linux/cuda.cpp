@@ -794,6 +794,9 @@ namespace cuda {
     ~cuda_nvenc_t() override {
       encoder.reset();
       nvenc = nullptr;
+      if (native10_source && cdf) {
+        CU_CHECK_IGNORE(cdf->cuMemFree(native10_source), "Couldn't free native X11 CUDA upload surface");
+      }
       if (surface && cdf) {
         CU_CHECK_IGNORE(cdf->cuMemFree(surface), "Couldn't free direct NVENC surface");
       }
@@ -822,6 +825,14 @@ namespace cuda {
       return 0;
     }
 
+    int init_native10(int in_width, int in_height, platf::pix_fmt_e format) {
+      if (init(in_width, in_height, format)) {
+        return -1;
+      }
+      native10_input = true;
+      return 0;
+    }
+
     bool init_encoder(const ::video::config_t &client_config, const ::video::sunshine_colorspace_t &colorspace) override {
       output_width = client_config.width;
       output_height = client_config.height;
@@ -829,6 +840,14 @@ namespace cuda {
       const bool yuv444 = buffer_format == platf::pix_fmt_e::yuv444p || buffer_format == platf::pix_fmt_e::yuv444p16;
       if (buffer_format != platf::pix_fmt_e::nv12 && buffer_format != platf::pix_fmt_e::p010 && !yuv444) {
         BOOST_LOG(error) << "Direct CUDA NVENC does not support pixel format " << platf::from_pix_fmt(buffer_format);
+        return false;
+      }
+      if (native10_input &&
+          (buffer_format != platf::pix_fmt_e::yuv444p16 ||
+           output_width != input_width || output_height != input_height ||
+           colorspace.colorspace != video::colorspace_e::identity_gbr ||
+           colorspace.bit_depth != 10)) {
+        BOOST_LOG(error) << "Native X11 direct NVENC requires 1:1 10-bit 4:4:4 identity input"sv;
         return false;
       }
 
@@ -840,16 +859,29 @@ namespace cuda {
       }
       pitch = static_cast<std::uint32_t>(allocated_pitch);
 
+      if (native10_input) {
+        std::size_t source_pitch = 0;
+        if (check(cdf->cuMemAllocPitch(&native10_source, &source_pitch,
+                                       static_cast<std::size_t>(input_width) * 4U,
+                                       input_height, 16U),
+                  "Couldn't allocate native X11 CUDA upload surface: "sv)) {
+          return false;
+        }
+        native10_source_pitch = static_cast<std::uint32_t>(source_pitch);
+      }
+
       stream = make_stream();
       if (!stream) {
         return false;
       }
-      auto converter = sws_t::make(input_width, input_height, output_width, output_height, input_width * 4);
-      if (!converter) {
-        return false;
+      if (!native10_input) {
+        auto converter = sws_t::make(input_width, input_height, output_width, output_height, input_width * 4);
+        if (!converter) {
+          return false;
+        }
+        sws = std::move(*converter);
+        sws.apply_colorspace(colorspace);
       }
-      sws = std::move(*converter);
-      sws.apply_colorspace(colorspace);
 
       encoder = ::nvenc::make_nvenc_cuda_encoder({
         context,
@@ -865,17 +897,41 @@ namespace cuda {
     }
 
     int convert(platf::img_t &img) override {
-      auto &texture = static_cast<cuda::img_t &>(img).tex;
       auto *base = reinterpret_cast<std::uint8_t *>(static_cast<std::uintptr_t>(surface));
       int status = 0;
-      if (buffer_format == platf::pix_fmt_e::nv12) {
-        status = sws.convert_nv12(base, base + pitch * output_height, pitch, pitch, texture.texture.point, stream.get());
-      } else if (buffer_format == platf::pix_fmt_e::p010) {
-        status = sws.convert_p010(base, base + pitch * output_height, pitch, pitch, texture.texture.point, stream.get());
-      } else if (buffer_format == platf::pix_fmt_e::yuv444p16) {
-        status = sws.convert_yuv444_10bit(base, base + pitch * output_height, base + pitch * output_height * 2, pitch, texture.texture.point, stream.get());
+      if (native10_input) {
+        if (!img.data || img.width != input_width || img.height != input_height ||
+            img.pixel_pitch != 4 || img.row_pitch < input_width * 4) {
+          BOOST_LOG(error) << "Native X11 direct NVENC received an incompatible packed RGB10 frame"sv;
+          return -1;
+        }
+        CUDA_MEMCPY2D copy {};
+        copy.srcMemoryType = CU_MEMORYTYPE_HOST;
+        copy.srcHost = img.data;
+        copy.srcPitch = static_cast<std::size_t>(img.row_pitch);
+        copy.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+        copy.dstDevice = native10_source;
+        copy.dstPitch = native10_source_pitch;
+        copy.WidthInBytes = static_cast<std::size_t>(input_width) * 4U;
+        copy.Height = input_height;
+        CU_CHECK(cdf->cuMemcpy2DAsync(&copy, stream.get()),
+                 "Couldn't upload native X11 RGB10 frame");
+        status = unpack_xrgb10_to_yuv444_10bit(
+          static_cast<std::uintptr_t>(native10_source), native10_source_pitch,
+          base, base + pitch * output_height,
+          base + pitch * output_height * 2, pitch,
+          output_width, output_height, stream.get());
       } else {
-        status = sws.convert_yuv444(base, base + pitch * output_height, base + pitch * output_height * 2, pitch, texture.texture.point, stream.get());
+        auto &texture = static_cast<cuda::img_t &>(img).tex;
+        if (buffer_format == platf::pix_fmt_e::nv12) {
+          status = sws.convert_nv12(base, base + pitch * output_height, pitch, pitch, texture.texture.point, stream.get());
+        } else if (buffer_format == platf::pix_fmt_e::p010) {
+          status = sws.convert_p010(base, base + pitch * output_height, pitch, pitch, texture.texture.point, stream.get());
+        } else if (buffer_format == platf::pix_fmt_e::yuv444p16) {
+          status = sws.convert_yuv444_10bit(base, base + pitch * output_height, base + pitch * output_height * 2, pitch, texture.texture.point, stream.get());
+        } else {
+          status = sws.convert_yuv444(base, base + pitch * output_height, base + pitch * output_height * 2, pitch, texture.texture.point, stream.get());
+        }
       }
       if (status) {
         return status;
@@ -905,13 +961,16 @@ namespace cuda {
     stream_t stream;
     CUcontext context = nullptr;
     CUdeviceptr surface = 0;
+    CUdeviceptr native10_source = 0;
     CUdevice cuda_device = 0;
     std::uint32_t pitch = 0;
+    std::uint32_t native10_source_pitch = 0;
     int input_width = 0;
     int input_height = 0;
     int output_width = 0;
     int output_height = 0;
     platf::pix_fmt_e buffer_format = platf::pix_fmt_e::unknown;
+    bool native10_input = false;
   };
 
   /**
@@ -1257,6 +1316,18 @@ namespace cuda {
 
     auto device = std::make_unique<cuda_nvenc_t>();
     if (device->init(width, height, pix_fmt)) {
+      return nullptr;
+    }
+    return device;
+  }
+
+  std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_native10_encode_device(int width, int height, platf::pix_fmt_e pix_fmt) {
+    if (init()) {
+      return nullptr;
+    }
+
+    auto device = std::make_unique<cuda_nvenc_t>();
+    if (device->init_native10(width, height, pix_fmt)) {
       return nullptr;
     }
     return device;

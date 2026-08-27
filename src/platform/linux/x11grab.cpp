@@ -1534,6 +1534,15 @@ namespace platf {
       return std::make_unique<native10_software_t>(width, height, pix_fmt);
     }
 
+    std::unique_ptr<nvenc_encode_device_t> make_nvenc_encode_device(
+        pix_fmt_e pix_fmt) override {
+      if (pix_fmt != pix_fmt_e::yuv444p16) {
+        BOOST_LOG(error) << "Native X11 direct NVENC supports only 10-bit 4:4:4 identity"sv;
+        return nullptr;
+      }
+      return cuda::make_nvenc_native10_encode_device(width, height, pix_fmt);
+    }
+
     std::uint32_t frame_size() const {
       return static_cast<std::uint32_t>(width) *
              static_cast<std::uint32_t>(height) * 4U;

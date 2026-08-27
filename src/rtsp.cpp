@@ -1126,6 +1126,7 @@ namespace rtsp_stream {
     stream::config_t config;
     config.monitor.span_desktop = session.span_desktop;
     config.monitor.output_name = session.span_desktop ? std::string {} : session.output_name;
+    config.monitor.encoder_backend = session.encoder_backend;
     if (session.capture_source == "nvfbc") {
       config.monitor.capture_source = video::capture_source_e::nvfbc_8bit;
     } else if (session.capture_source == "x11-native10") {
@@ -1220,7 +1221,8 @@ namespace rtsp_stream {
       (config.monitor.encoderCscMode & 0x1) != 0 &&
       ((config.monitor.videoFormat == 0 &&
         (config.monitor.dynamicRange == 0 || config.monitor.dynamicRange == 1)) ||
-       (config.monitor.videoFormat == 1 && config.monitor.dynamicRange == 1));
+       (config.monitor.videoFormat == 1 &&
+        (config.monitor.dynamicRange == 0 || config.monitor.dynamicRange == 1)));
     if (identity_gbr_requested != identity_gbr_flagged ||
         (identity_gbr_requested && !identity_gbr_valid)) {
       BOOST_LOG(warning) << "Rejecting inconsistent identity GBR stream request"sv;
@@ -1228,16 +1230,67 @@ namespace rtsp_stream {
       return;
     }
 
-    if (config.monitor.capture_source == video::capture_source_e::x11_native10 &&
-        (config.monitor.videoFormat != 0 ||
-         config.monitor.dynamicRange != 1 ||
-         config.monitor.chromaSamplingType != 1 ||
-         !identity_gbr_requested || !identity_gbr_flagged)) {
-      BOOST_LOG(error)
-        << "Native X11/XShm capture requires H.264 10-bit 4:4:4 identity"sv;
+    const bool exact_identity_444 =
+      config.monitor.chromaSamplingType == 1 &&
+      identity_gbr_requested && identity_gbr_flagged;
+    const bool encoding_mode_matches =
+      (session.encoding_mode == "h264-8-422-software" &&
+       config.monitor.videoFormat == 0 && config.monitor.dynamicRange == 0 &&
+       config.monitor.chromaSamplingType == 2 && !identity_gbr_requested) ||
+      (session.encoding_mode == "h264-8-444-software" &&
+       config.monitor.videoFormat == 0 && config.monitor.dynamicRange == 0 &&
+       exact_identity_444) ||
+      (session.encoding_mode == "h264-10-422-software" &&
+       config.monitor.videoFormat == 0 && config.monitor.dynamicRange == 1 &&
+       config.monitor.chromaSamplingType == 2 && !identity_gbr_requested) ||
+      (session.encoding_mode == "h264-10-444-software" &&
+       config.monitor.videoFormat == 0 && config.monitor.dynamicRange == 1 &&
+       exact_identity_444) ||
+      (session.encoding_mode == "h264-8-444-nvenc" &&
+       config.monitor.videoFormat == 0 && config.monitor.dynamicRange == 0 &&
+       exact_identity_444) ||
+      (session.encoding_mode == "hevc-8-444-nvenc" &&
+       config.monitor.videoFormat == 1 && config.monitor.dynamicRange == 0 &&
+       exact_identity_444) ||
+      (session.encoding_mode == "hevc-10-444-nvenc" &&
+       config.monitor.videoFormat == 1 && config.monitor.dynamicRange == 1 &&
+       exact_identity_444);
+    if (!encoding_mode_matches) {
+      BOOST_LOG(error) << "Rejecting RTSP format that differs from the accepted StationConnect encoding mode"sv;
       respond(sock, session, &option, 400,
-              "Native X11 capture requires H.264 10-bit 4:4:4 identity",
+              "RTSP format differs from accepted StationConnect encoding mode",
               req->sequenceNumber, {});
+      return;
+    }
+    if (session.encoder_backend == "nvenc-direct") {
+      const bool nvfbc_mode =
+        config.monitor.capture_source == video::capture_source_e::nvfbc_8bit &&
+        config.monitor.dynamicRange == 0 && exact_identity_444 &&
+        (config.monitor.videoFormat == 0 || config.monitor.videoFormat == 1);
+      const bool native10_mode =
+        config.monitor.capture_source == video::capture_source_e::x11_native10 &&
+        config.monitor.videoFormat == 1 &&
+        config.monitor.dynamicRange == 1 && exact_identity_444;
+      if (!nvfbc_mode && !native10_mode) {
+        BOOST_LOG(error) << "Rejecting unsupported StationConnect nvenc-direct capture/profile combination"sv;
+        respond(sock, session, &option, 400,
+                "Unsupported StationConnect nvenc-direct capture/profile combination",
+                req->sequenceNumber, {});
+        return;
+      }
+    } else if (session.encoder_backend == "software-cuda") {
+      if (config.monitor.videoFormat != 0 ||
+          (config.monitor.capture_source == video::capture_source_e::x11_native10 &&
+           (config.monitor.dynamicRange != 1 || !exact_identity_444))) {
+        BOOST_LOG(error) << "Rejecting unsupported StationConnect software-cuda capture/profile combination"sv;
+        respond(sock, session, &option, 400,
+                "Unsupported StationConnect software-cuda capture/profile combination",
+                req->sequenceNumber, {});
+        return;
+      }
+    } else {
+      BOOST_LOG(error) << "Rejecting RTSP session without an accepted StationConnect encoder backend"sv;
+      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
       return;
     }
 

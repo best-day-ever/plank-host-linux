@@ -410,6 +410,35 @@ namespace cuda {
     dstV[0] = to_msb_aligned_10bit(calcV(rgb, color_matrix));
   }
 
+  __global__ void XRGB10_to_identity_YUV444_10bit(
+    const std::uint8_t *source,
+    std::uint32_t source_pitch,
+    std::uint8_t *dstYBytes,
+    std::uint8_t *dstUBytes,
+    std::uint8_t *dstVBytes,
+    std::uint32_t destination_pitch,
+    int width,
+    int height
+  ) {
+    const int x = threadIdx.x + blockDim.x * blockIdx.x;
+    const int y = threadIdx.y + blockDim.y * blockIdx.y;
+    if (x >= width || y >= height) {
+      return;
+    }
+
+    const auto pixel = reinterpret_cast<const std::uint32_t *>(
+      source + static_cast<std::size_t>(y) * source_pitch)[x];
+    auto *green = reinterpret_cast<std::uint16_t *>(
+      dstYBytes + static_cast<std::size_t>(y) * destination_pitch);
+    auto *blue = reinterpret_cast<std::uint16_t *>(
+      dstUBytes + static_cast<std::size_t>(y) * destination_pitch);
+    auto *red = reinterpret_cast<std::uint16_t *>(
+      dstVBytes + static_cast<std::size_t>(y) * destination_pitch);
+    red[x] = static_cast<std::uint16_t>((pixel & 0x3ffU) << 6U);
+    green[x] = static_cast<std::uint16_t>(((pixel >> 10U) & 0x3ffU) << 6U);
+    blue[x] = static_cast<std::uint16_t>(((pixel >> 20U) & 0x3ffU) << 6U);
+  }
+
   int tex_t::copy(std::uint8_t *src, int height, int pitch) {
     CU_CHECK(cudaMemcpy2DToArray(array, 0, 0, src, pitch, pitch, height, cudaMemcpyDeviceToDevice), "Couldn't copy to cuda array from deviceptr");
 
@@ -609,6 +638,26 @@ namespace cuda {
 
   int sws_t::convert_yuv444_10bit(std::uint8_t *Y, std::uint8_t *U, std::uint8_t *V, std::uint32_t pitch, cudaTextureObject_t texture, stream_t::pointer stream) {
     return convert_yuv444_10bit(Y, U, V, pitch, texture, stream, viewport);
+  }
+
+  int unpack_xrgb10_to_yuv444_10bit(std::uintptr_t source,
+                                    std::uint32_t source_pitch,
+                                    std::uint8_t *Y,
+                                    std::uint8_t *U,
+                                    std::uint8_t *V,
+                                    std::uint32_t destination_pitch,
+                                    int width,
+                                    int height,
+                                    stream_t::pointer stream) {
+    constexpr int threads_per_block = 16;
+    const dim3 block(threads_per_block, threads_per_block);
+    const dim3 grid(div_align(width, threads_per_block),
+                    div_align(height, threads_per_block));
+    XRGB10_to_identity_YUV444_10bit<<<grid, block, 0, stream>>>(
+      reinterpret_cast<const std::uint8_t *>(source), source_pitch,
+      Y, U, V, destination_pitch, width, height);
+    return CU_CHECK_IGNORE(cudaGetLastError(),
+                           "XRGB10_to_identity_YUV444_10bit failed");
   }
 
   int sws_t::convert_yuv444_10bit(std::uint8_t *Y, std::uint8_t *U, std::uint8_t *V, std::uint32_t pitch, cudaTextureObject_t texture, stream_t::pointer stream, const viewport_t &viewport) {

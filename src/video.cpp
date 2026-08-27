@@ -1691,6 +1691,65 @@ namespace video {
   bool last_encoder_probe_supported_h264_10bit_444 = false;  ///< H.264 10-bit 4:4:4 support discovered for the selected encoder.
   bool last_encoder_probe_supported_h264_8bit_422 = false;  ///< H.264 8-bit 4:2:2 support discovered for the selected encoder.
   bool last_encoder_probe_supported_h264_10bit_422 = false;  ///< H.264 10-bit 4:2:2 support discovered for the selected encoder.
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+  static bool nvenc_direct_qualified = false;
+#endif
+
+  bool nvenc_direct_supports_h264_444_8bit() {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    return nvenc_direct_qualified && nvenc_direct.h264[encoder_t::PASSED] &&
+           nvenc_direct.h264[encoder_t::YUV444];
+#else
+    return false;
+#endif
+  }
+
+  bool nvenc_direct_supports_hevc_444_8bit() {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    return nvenc_direct_qualified && nvenc_direct.hevc[encoder_t::PASSED] &&
+           nvenc_direct.hevc[encoder_t::YUV444];
+#else
+    return false;
+#endif
+  }
+
+  bool nvenc_direct_supports_hevc_444_10bit() {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    return nvenc_direct_qualified && nvenc_direct.hevc[encoder_t::PASSED] &&
+           nvenc_direct.hevc[encoder_t::DYNAMIC_RANGE_YUV444];
+#else
+    return false;
+#endif
+  }
+
+  bool encoder_backend_available(std::string_view backend) {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    if (backend == "nvenc-direct"sv) {
+      return nvenc_direct_supports_h264_444_8bit() ||
+             nvenc_direct_supports_hevc_444_8bit() ||
+             nvenc_direct_supports_hevc_444_10bit();
+    }
+    if (backend == "software-cuda"sv) {
+      return software_cuda.h264[encoder_t::PASSED] &&
+             software_cuda.h264[encoder_t::YUV444];
+    }
+#endif
+    return false;
+  }
+
+  bool select_encoder_backend_for_session(std::string_view backend) {
+    if (!encoder_backend_available(backend)) {
+      return false;
+    }
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    chosen_encoder = backend == "nvenc-direct"sv ? &nvenc_direct : &software_cuda;
+    BOOST_LOG(info) << "StationConnect selected per-session encoder backend ["sv
+                    << chosen_encoder->name << ']';
+    return true;
+#else
+    return false;
+#endif
+  }
 
   /**
    * @brief Recreate a display capture object after a capture failure.
@@ -3389,7 +3448,7 @@ namespace video {
         display = ref->display_wp->lock();
       }
 
-      auto &encoder = *chosen_encoder;
+      auto &encoder = *ref->encoder_p;
 
       auto encode_device = make_encode_device(*display, encoder, config);
       if (!encode_device) {
@@ -3439,6 +3498,12 @@ namespace video {
     auto idr_events = mail->event<bool>(mail::idr);
 
     idr_events->raise(true);
+    if (!select_encoder_backend_for_session(config.encoder_backend)) {
+      BOOST_LOG(error) << "Unable to activate requested StationConnect encoder backend ["sv
+                       << config.encoder_backend << ']';
+      mail->event<bool>(mail::shutdown)->raise(true);
+      return;
+    }
     if (chosen_encoder->flags & PARALLEL_ENCODING) {
       capture_async(std::move(mail), config, channel_data);
     } else {
@@ -4048,6 +4113,25 @@ namespace video {
       }
       BOOST_LOG(debug) << "ENCODER STATUS ACTIVE_AV1_MODE: "sv << active_av1_mode;
     }
+
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    if (chosen_encoder != &nvenc_direct) {
+      BOOST_LOG(info) << "Qualifying StationConnect per-session encoder [nvenc-direct]"sv;
+      const auto saved_hevc_mode = active_hevc_mode;
+      const auto saved_av1_mode = active_av1_mode;
+      active_hevc_mode = 2;
+      active_av1_mode = 1;
+      nvenc_direct_qualified = validate_encoder(nvenc_direct, false);
+      active_hevc_mode = saved_hevc_mode;
+      active_av1_mode = saved_av1_mode;
+    } else {
+      nvenc_direct_qualified = true;
+    }
+    BOOST_LOG(info) << "StationConnect nvenc-direct modes: h264-444-8="sv
+                    << nvenc_direct_supports_h264_444_8bit()
+                    << " hevc-444-8="sv << nvenc_direct_supports_hevc_444_8bit()
+                    << " hevc-444-10="sv << nvenc_direct_supports_hevc_444_10bit();
+#endif
 
     return 0;
   }
