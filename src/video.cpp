@@ -160,7 +160,12 @@ namespace video {
        */
       ~integrated_timing_samples_t() {
         log_timing_samples("display_to_convert_start", display_to_convert_start_us);
-        log_timing_samples("cuda_to_cpu_conversion", conversion_us);
+        log_timing_samples(
+          config::video.capture == "x11-native10"sv ?
+            "native10_rgb_to_gbr_conversion" :
+            "cuda_to_cpu_conversion",
+          conversion_us
+        );
         log_timing_samples("encode_and_packetize", encode_and_packetize_us);
         log_timing_samples("display_to_packet_ready", display_to_packet_ready_us);
         log_timing_samples("packet_ready_cadence", packet_ready_cadence_us);
@@ -2276,13 +2281,13 @@ namespace video {
     }
 
     if (config.chromaSamplingType == 1) {
-      if (!video_format[encoder_t::YUV444]) {
-        BOOST_LOG(error) << video_format.name << ": YUV 4:4:4 not supported"sv;
-        return nullptr;
-      }
-
-      if (config.dynamicRange && !video_format[encoder_t::DYNAMIC_RANGE_YUV444]) {
-        BOOST_LOG(error) << video_format.name << ": YUV 4:4:4 dynamic range not supported"sv;
+      if (config.dynamicRange) {
+        if (!video_format[encoder_t::DYNAMIC_RANGE_YUV444]) {
+          BOOST_LOG(error) << video_format.name << ": 10-bit YUV 4:4:4 not supported"sv;
+          return nullptr;
+        }
+      } else if (!video_format[encoder_t::YUV444]) {
+        BOOST_LOG(error) << video_format.name << ": 8-bit YUV 4:4:4 not supported"sv;
         return nullptr;
       }
 
@@ -3001,11 +3006,13 @@ namespace video {
 
       BOOST_LOG(info) << "Creating encoder " << logging::bracket(encoder_name);
 
+      const bool native_x11_10bit = config::video.capture == "x11-native10"sv;
       auto color_coding = colorspace.colorspace == colorspace_e::bt2020    ? "HDR (Rec. 2020 + SMPTE 2084 PQ)" :
                           colorspace.colorspace == colorspace_e::rec601    ? "SDR (Rec. 601)" :
                           colorspace.colorspace == colorspace_e::rec709    ? "SDR (Rec. 709)" :
                           colorspace.colorspace == colorspace_e::bt2020sdr ? "SDR (Rec. 2020)" :
                           colorspace.colorspace == colorspace_e::identity_gbr && colorspace.bit_depth == 8 ? "SDR (identity GBR, 8-bit source)" :
+                          colorspace.colorspace == colorspace_e::identity_gbr && native_x11_10bit ? "SDR (identity GBR, native 10-bit source)" :
                           colorspace.colorspace == colorspace_e::identity_gbr ? "SDR (identity GBR, 8-bit source/up-converted)" :
                                                                             "unknown";
 
@@ -3573,6 +3580,45 @@ namespace video {
     encoder.h264.capabilities.set();
     encoder.hevc.capabilities.set();
     encoder.av1.capabilities.set();
+
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    if (config::video.capture == "x11-native10"sv) {
+      encoder.h264.capabilities.reset();
+      encoder.hevc.capabilities.reset();
+      encoder.av1.capabilities.reset();
+      if (encoder.name != "software-cuda"sv) {
+        return false;
+      }
+
+      encoder.h264[encoder_t::PASSED] = true;
+      encoder.h264[encoder_t::DYNAMIC_RANGE_YUV444] = true;
+      config_t native10_max_refs {"", 1920, 1080, 60, 6000, 1000, 1, 1, 3, 0, 1, 1};
+      native10_max_refs.encoderCscMode = (COLORSPACE_IDENTITY_GBR << 1) | 1;
+      reset_display(disp, encoder.platform_formats->dev_type, output_name, native10_max_refs);
+      if (!disp || !disp->is_codec_supported(encoder.h264.name, native10_max_refs)) {
+        return false;
+      }
+      native10_max_refs.width = disp->width;
+      native10_max_refs.height = disp->height;
+      const int max_ref_result = validate_config(disp, encoder, native10_max_refs);
+      auto native10_autoselect = native10_max_refs;
+      native10_autoselect.numRefFrames = 0;
+      const int autoselect_result = max_ref_result >= 0 ? max_ref_result :
+                                    validate_config(disp, encoder, native10_autoselect);
+      if (autoselect_result < 0) {
+        encoder.h264.capabilities.reset();
+        return false;
+      }
+      encoder.h264[encoder_t::REF_FRAMES_RESTRICT] = max_ref_result >= 0;
+      encoder.h264[encoder_t::VUI_PARAMETERS] =
+        (autoselect_result & VUI_PARAMS) &&
+        !config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE];
+      BOOST_LOG(info)
+        << "Native X11 capture qualified only H.264 High 10 4:4:4 identity on software-cuda"sv;
+      fg.disable();
+      return true;
+    }
+#endif
 
     // First, test encoder viability
     config_t config_max_ref_frames {"", 1920, 1080, 60, 6000, 1000, 1, 1, 1, 0, 0, 0};

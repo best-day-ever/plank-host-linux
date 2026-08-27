@@ -955,9 +955,12 @@ namespace nvhttp {
     uint32_t codec_mode_flags = SCM_H264;
     if (video::last_encoder_probe_supported_yuv444_for_codec[0]) {
       codec_mode_flags |= SCM_H264_HIGH8_444;
-      if (video::last_encoder_probe_supported_h264_10bit_444) {
-        codec_mode_flags |= SCM_H264_HIGH10_444;
-      }
+    }
+    if (video::last_encoder_probe_supported_h264_10bit_444) {
+      codec_mode_flags |= SCM_H264_HIGH10_444;
+    }
+    if (video::last_encoder_probe_supported_yuv444_for_codec[0] ||
+        video::last_encoder_probe_supported_h264_10bit_444) {
 #if defined(SUNSHINE_BUILD_CUDA)
       codec_mode_flags |= SCM_IDENTITY_GBR_444;
 #endif

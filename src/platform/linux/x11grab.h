@@ -5,6 +5,8 @@
 #pragma once
 
 // standard includes
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 
 // local includes
@@ -19,6 +21,24 @@ namespace egl {
 }
 
 namespace platf::x11 {
+  /**
+   * @brief Unpack one depth-30 X11 RGB row into FFmpeg identity-GBR planes.
+   *
+   * The qualified visual stores red in bits 0-9, green in bits 10-19, and
+   * blue in bits 20-29. FFmpeg's identity matrix consumes planes as G, B, R.
+   *
+   * @param source Packed X11 pixels.
+   * @param green FFmpeg plane 0 destination.
+   * @param blue FFmpeg plane 1 destination.
+   * @param red FFmpeg plane 2 destination.
+   * @param pixel_count Number of pixels in the row.
+   */
+  void unpack_xrgb10_to_gbr10_row(const std::uint32_t *source,
+                                  std::uint16_t *green,
+                                  std::uint16_t *blue,
+                                  std::uint16_t *red,
+                                  std::size_t pixel_count);
+
   struct cursor_ctx_raw_t;
   /**
    * @brief Release cursor context resources.

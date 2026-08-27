@@ -1261,7 +1261,9 @@ namespace platf {
 #endif
 #ifdef SUNSHINE_BUILD_X11
     if (sources[source::X11]) {
-      BOOST_LOG(info) << "Screencasting with X11"sv;
+      BOOST_LOG(info) << "Screencasting with "sv
+                      << (config::video.capture == "x11-native10"sv ?
+                            "native 10-bit X11/XShm"sv : "X11"sv);
       return x11_display(hwdevice_type, display_name, config);
     }
 #endif
@@ -1331,7 +1333,8 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_X11
     // We enumerate this capture backend regardless of other suitable sources,
     // since it may be needed as a NvFBC fallback for software encoding on X11.
-    if ((config::video.capture.empty() || config::video.capture == "x11") && verify_x11()) {
+    if ((config::video.capture.empty() || config::video.capture == "x11" ||
+         config::video.capture == "x11-native10") && verify_x11()) {
       sources[source::X11] = true;
     }
 #endif
