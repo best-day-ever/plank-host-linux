@@ -25,7 +25,7 @@ namespace platf {
                                      platform_caps::raw_hid_focus_suspend :
                                    0;
 #ifdef SUNSHINE_BUILD_X11
-    caps |= platform_caps::local_cursor | platform_caps::cursor_position;
+    caps |= platform_caps::local_cursor;
 #endif
     const auto runtime = virtualhid::create_runtime();
     if (!runtime) {

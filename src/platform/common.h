@@ -398,7 +398,6 @@ namespace platf {
     constexpr caps_t encoder_target_ack = 0x10;  // Exact startup target and applied-target acknowledgement
     constexpr caps_t raw_hid_focus_suspend = 0x20;  // Preserve raw HID endpoints across client focus changes
     constexpr caps_t local_cursor = 0x40;  // Exact host cursor shapes rendered by the client compositor
-    constexpr caps_t cursor_position = 0x80;  // Host-authoritative cursor position for local tablet presentation
   };  // namespace platform_caps
 
   /**
