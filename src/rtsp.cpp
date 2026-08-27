@@ -934,7 +934,10 @@ namespace rtsp_stream {
       ss << "a=x-nv-video[0].refPicInvalidation:1"sv << std::endl;
     }
 
-    if (video::active_hevc_mode != 1) {
+    const bool exact_stationconnect_hevc =
+      session.encoding_mode == "hevc-8-444-nvenc" ||
+      session.encoding_mode == "hevc-10-444-nvenc";
+    if (exact_stationconnect_hevc || video::active_hevc_mode != 1) {
       ss << "sprop-parameter-sets=AAAAAU"sv << std::endl;
     }
 
@@ -1383,7 +1386,11 @@ namespace rtsp_stream {
       config.monitor.bitrate = (int) configuredBitrateKbps;
     }
 
-    if (config.monitor.videoFormat == 1 && video::active_hevc_mode == 1) {
+    const bool exact_stationconnect_hevc =
+      session.encoding_mode == "hevc-8-444-nvenc" ||
+      session.encoding_mode == "hevc-10-444-nvenc";
+    if (config.monitor.videoFormat == 1 && video::active_hevc_mode == 1 &&
+        !exact_stationconnect_hevc) {
       BOOST_LOG(warning) << "HEVC is disabled, yet the client requested HEVC"sv;
 
       respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
