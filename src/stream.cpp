@@ -1047,142 +1047,179 @@ namespace stream {
     std::memcpy(&destination, &value, sizeof(value));
   }
 
+  bool queue_cursor_shape(session_t *session, egl::cursor_t &image,
+                          unsigned long &queued_serial) {
+    if (image.serial == queued_serial) {
+      return true;
+    }
+
+    const auto width = static_cast<std::uint32_t>(image.width);
+    const auto height = static_cast<std::uint32_t>(image.height);
+    const auto image_size_64 = static_cast<std::uint64_t>(width) * height * 4U;
+    // Xorg represents the hidden pointer as a transparent 1x1 image whose
+    // nominal hotspot may sit just outside that placeholder. The hotspot is
+    // irrelevant while invisible, so normalize it instead of rejecting it.
+    if (!image.visible && width != 0 && height != 0) {
+      image.hotspot_x = std::clamp(image.hotspot_x, 0, image.width - 1);
+      image.hotspot_y = std::clamp(image.hotspot_y, 0, image.height - 1);
+    }
+    if (width == 0 || height == 0 ||
+        width > SC_CURSOR_MAX_DIMENSION || height > SC_CURSOR_MAX_DIMENSION ||
+        image_size_64 > SC_CURSOR_MAX_IMAGE_SIZE ||
+        image.hotspot_x < 0 || image.hotspot_y < 0 ||
+        image.hotspot_x >= image.width || image.hotspot_y >= image.height) {
+      BOOST_LOG(error) << "Invalid X11 cursor geometry for StationConnect local cursor transport: "sv
+                       << image.width << 'x' << image.height << " hotspot="sv
+                       << image.hotspot_x << ',' << image.hotspot_y;
+      return false;
+    }
+
+    const auto image_size = static_cast<std::uint32_t>(image_size_64);
+    std::vector<std::vector<std::uint8_t>> frames;
+    for (std::uint32_t offset = 0; offset < image_size;) {
+      const auto chunk_size = std::min<std::uint32_t>(
+        SC_CURSOR_MAX_CHUNK_SIZE, image_size - offset
+      );
+      std::vector<std::uint8_t> frame(sizeof(SC_CURSOR_WIRE_HEADER) + chunk_size);
+      SC_CURSOR_WIRE_HEADER header {};
+      write_cursor_little(header.magic, static_cast<std::uint32_t>(SC_CURSOR_WIRE_MAGIC));
+      write_cursor_little(header.version, static_cast<std::uint16_t>(SC_CURSOR_WIRE_VERSION));
+      write_cursor_little(header.pixelFormat, static_cast<std::uint16_t>(SC_CURSOR_PIXEL_FORMAT_ARGB8888));
+      std::uint32_t flags = image.visible ? SC_CURSOR_FLAG_VISIBLE : 0U;
+      if (offset == 0) flags |= SC_CURSOR_FLAG_FIRST_CHUNK;
+      if (offset + chunk_size == image_size) flags |= SC_CURSOR_FLAG_LAST_CHUNK;
+      write_cursor_little(header.flags, flags);
+      write_cursor_little(header.generation, static_cast<std::uint64_t>(image.serial));
+      write_cursor_little(header.width, width);
+      write_cursor_little(header.height, height);
+      write_cursor_little(header.hotspotX, static_cast<std::uint32_t>(image.hotspot_x));
+      write_cursor_little(header.hotspotY, static_cast<std::uint32_t>(image.hotspot_y));
+      write_cursor_little(header.imageSize, image_size);
+      write_cursor_little(header.chunkOffset, offset);
+      write_cursor_little(header.chunkSize, chunk_size);
+      std::memcpy(frame.data(), &header, sizeof(header));
+      std::memcpy(frame.data() + sizeof(header), image.data + offset, chunk_size);
+      frames.emplace_back(std::move(frame));
+      offset += chunk_size;
+    }
+    session->control.cursor_shape_queue->raise(std::move(frames));
+
+    queued_serial = image.serial;
+    BOOST_LOG(debug) << "Queued StationConnect local cursor generation "sv
+                     << static_cast<std::uint64_t>(image.serial) << " ("sv
+                     << image.width << 'x' << image.height << ", hotspot "sv
+                     << image.hotspot_x << ',' << image.hotspot_y << ")"sv;
+    return true;
+  }
+
+  bool queue_cursor_position(session_t *session,
+                             const platf::x11::cursor_position_t &root_position,
+                             std::uint64_t &position_sequence) {
+    if (root_position.desktop_width <= 0 || root_position.desktop_height <= 0 ||
+        session->config.monitor.width <= 0 || session->config.monitor.height <= 0) {
+      BOOST_LOG(error) << "Invalid desktop/video geometry for StationConnect cursor position transport"sv;
+      return false;
+    }
+
+    const auto frame_width = session->config.monitor.width;
+    const auto frame_height = session->config.monitor.height;
+    const auto scale = std::min(
+      frame_width / static_cast<double>(root_position.desktop_width),
+      frame_height / static_cast<double>(root_position.desktop_height)
+    );
+    const auto content_width = std::max(
+      1, static_cast<int>(root_position.desktop_width * scale));
+    const auto content_height = std::max(
+      1, static_cast<int>(root_position.desktop_height * scale));
+    const auto content_x = (frame_width - content_width) / 2;
+    const auto content_y = (frame_height - content_height) / 2;
+    const auto root_x = std::clamp(
+      root_position.x, 0, root_position.desktop_width - 1);
+    const auto root_y = std::clamp(
+      root_position.y, 0, root_position.desktop_height - 1);
+    const auto frame_x = std::clamp(
+      content_x + static_cast<int>(std::lround(root_x * scale)), 0, frame_width - 1
+    );
+    const auto frame_y = std::clamp(
+      content_y + static_cast<int>(std::lround(root_y * scale)), 0, frame_height - 1
+    );
+
+    SC_CURSOR_POSITION_WIRE_MESSAGE position {};
+    write_cursor_little(position.magic, static_cast<std::uint32_t>(SC_CURSOR_POSITION_WIRE_MAGIC));
+    write_cursor_little(position.version, static_cast<std::uint16_t>(SC_CURSOR_POSITION_WIRE_VERSION));
+    write_cursor_little(position.sequence, ++position_sequence);
+    write_cursor_little(position.x, static_cast<std::uint32_t>(frame_x));
+    write_cursor_little(position.y, static_cast<std::uint32_t>(frame_y));
+    write_cursor_little(position.frameWidth, static_cast<std::uint32_t>(frame_width));
+    write_cursor_little(position.frameHeight, static_cast<std::uint32_t>(frame_height));
+    session->control.cursor_position_event->raise(position);
+    return true;
+  }
+
   void localCursorThread(std::stop_token stop_token, session_t *session) {
     platf::set_thread_name("sc::cursor");
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
-    auto cursor = platf::x11::cursor_t::make();
-    if (!cursor) {
-      BOOST_LOG(error) << "Unable to open the active X11 display for StationConnect local cursor transport"sv;
+    auto position_cursor = platf::x11::cursor_t::make();
+    if (!position_cursor || !position_cursor->subscribe_position_events()) {
+      BOOST_LOG(error) << "Unable to subscribe to XInput2 cursor motion for StationConnect"sv;
       session::stop(*session);
       return;
     }
 
-    egl::cursor_t image {};
-    unsigned long queued_serial = std::numeric_limits<unsigned long>::max();
-    std::uint64_t position_sequence = 0;
-    constexpr auto cursor_sample_period =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(1s) / 60;
-    static_assert(cursor_sample_period == 16'666'666ns);
-    auto next_cursor_sample = std::chrono::steady_clock::now();
+    std::jthread shape_thread([stop_token, session](std::stop_token shape_stop) {
+      platf::set_thread_name("sc::cursor-shape");
+      auto shape_cursor = platf::x11::cursor_t::make();
+      if (!shape_cursor || !shape_cursor->subscribe_shape_events()) {
+        BOOST_LOG(error) << "Unable to subscribe to XFixes cursor-shape changes for StationConnect"sv;
+        session::stop(*session);
+        return;
+      }
+      BOOST_LOG(info) << "StationConnect cursor shape uses XFixes change notifications"sv;
 
-    while (!stop_token.stop_requested()) {
-      if (!cursor->capture(image)) {
-        BOOST_LOG(error) << "Unable to capture the active X11 cursor through XFixes"sv;
+      egl::cursor_t image {};
+      unsigned long queued_serial = std::numeric_limits<unsigned long>::max();
+      if (!shape_cursor->capture(image) ||
+          !queue_cursor_shape(session, image, queued_serial)) {
+        BOOST_LOG(error) << "Unable to capture the initial X11 cursor through XFixes"sv;
         session::stop(*session);
         return;
       }
 
-      if (image.desktop_width <= 0 || image.desktop_height <= 0 ||
-          session->config.monitor.width <= 0 || session->config.monitor.height <= 0) {
-        BOOST_LOG(error) << "Invalid desktop/video geometry for StationConnect cursor position transport"sv;
-        session::stop(*session);
-        return;
-      }
-
-      const auto frame_width = session->config.monitor.width;
-      const auto frame_height = session->config.monitor.height;
-      const auto scale = std::min(
-        frame_width / static_cast<double>(image.desktop_width),
-        frame_height / static_cast<double>(image.desktop_height)
-      );
-      const auto content_width = std::max(1, static_cast<int>(image.desktop_width * scale));
-      const auto content_height = std::max(1, static_cast<int>(image.desktop_height * scale));
-      const auto content_x = (frame_width - content_width) / 2;
-      const auto content_y = (frame_height - content_height) / 2;
-      const auto root_x = std::clamp(image.x + image.hotspot_x, 0, image.desktop_width - 1);
-      const auto root_y = std::clamp(image.y + image.hotspot_y, 0, image.desktop_height - 1);
-      const auto frame_x = std::clamp(
-        content_x + static_cast<int>(std::lround(root_x * scale)), 0, frame_width - 1
-      );
-      const auto frame_y = std::clamp(
-        content_y + static_cast<int>(std::lround(root_y * scale)), 0, frame_height - 1
-      );
-
-      SC_CURSOR_POSITION_WIRE_MESSAGE position {};
-      write_cursor_little(position.magic, static_cast<std::uint32_t>(SC_CURSOR_POSITION_WIRE_MAGIC));
-      write_cursor_little(position.version, static_cast<std::uint16_t>(SC_CURSOR_POSITION_WIRE_VERSION));
-      write_cursor_little(position.sequence, ++position_sequence);
-      write_cursor_little(position.x, static_cast<std::uint32_t>(frame_x));
-      write_cursor_little(position.y, static_cast<std::uint32_t>(frame_y));
-      write_cursor_little(position.frameWidth, static_cast<std::uint32_t>(frame_width));
-      write_cursor_little(position.frameHeight, static_cast<std::uint32_t>(frame_height));
-      session->control.cursor_position_event->raise(position);
-
-      if (image.serial != queued_serial) {
-        const auto width = static_cast<std::uint32_t>(image.width);
-        const auto height = static_cast<std::uint32_t>(image.height);
-        const auto image_size_64 = static_cast<std::uint64_t>(width) * height * 4U;
-        // Xorg represents the hidden pointer as a transparent 1x1 image whose
-        // nominal hotspot may sit just outside that placeholder. The hotspot
-        // is irrelevant while invisible, so normalize it instead of treating
-        // a valid hidden-pointer state as a fatal protocol error.
-        if (!image.visible && width != 0 && height != 0) {
-          image.hotspot_x = std::clamp(image.hotspot_x, 0, image.width - 1);
-          image.hotspot_y = std::clamp(image.hotspot_y, 0, image.height - 1);
-        }
-        if (width == 0 || height == 0 ||
-            width > SC_CURSOR_MAX_DIMENSION || height > SC_CURSOR_MAX_DIMENSION ||
-            image_size_64 > SC_CURSOR_MAX_IMAGE_SIZE ||
-            image.hotspot_x < 0 || image.hotspot_y < 0 ||
-            image.hotspot_x >= image.width || image.hotspot_y >= image.height) {
-          BOOST_LOG(error) << "Invalid X11 cursor geometry for StationConnect local cursor transport: "sv
-                           << image.width << 'x' << image.height << " hotspot="sv
-                           << image.hotspot_x << ',' << image.hotspot_y;
+      while (!stop_token.stop_requested() && !shape_stop.stop_requested()) {
+        const int shape_status = shape_cursor->wait_shape_change(100);
+        if (shape_status < 0) {
+          BOOST_LOG(error) << "Unable to monitor XFixes cursor-shape changes"sv;
           session::stop(*session);
           return;
         }
-
-        const auto image_size = static_cast<std::uint32_t>(image_size_64);
-        std::vector<std::vector<std::uint8_t>> frames;
-        for (std::uint32_t offset = 0; offset < image_size;) {
-          const auto chunk_size = std::min<std::uint32_t>(
-            SC_CURSOR_MAX_CHUNK_SIZE, image_size - offset
-          );
-          std::vector<std::uint8_t> frame(sizeof(SC_CURSOR_WIRE_HEADER) + chunk_size);
-          SC_CURSOR_WIRE_HEADER header {};
-          write_cursor_little(header.magic, static_cast<std::uint32_t>(SC_CURSOR_WIRE_MAGIC));
-          write_cursor_little(header.version, static_cast<std::uint16_t>(SC_CURSOR_WIRE_VERSION));
-          write_cursor_little(header.pixelFormat, static_cast<std::uint16_t>(SC_CURSOR_PIXEL_FORMAT_ARGB8888));
-          std::uint32_t flags = image.visible ? SC_CURSOR_FLAG_VISIBLE : 0U;
-          if (offset == 0) flags |= SC_CURSOR_FLAG_FIRST_CHUNK;
-          if (offset + chunk_size == image_size) flags |= SC_CURSOR_FLAG_LAST_CHUNK;
-          write_cursor_little(header.flags, flags);
-          write_cursor_little(header.generation, static_cast<std::uint64_t>(image.serial));
-          write_cursor_little(header.width, width);
-          write_cursor_little(header.height, height);
-          write_cursor_little(header.hotspotX, static_cast<std::uint32_t>(image.hotspot_x));
-          write_cursor_little(header.hotspotY, static_cast<std::uint32_t>(image.hotspot_y));
-          write_cursor_little(header.imageSize, image_size);
-          write_cursor_little(header.chunkOffset, offset);
-          write_cursor_little(header.chunkSize, chunk_size);
-          std::memcpy(frame.data(), &header, sizeof(header));
-          std::memcpy(frame.data() + sizeof(header), image.data + offset, chunk_size);
-          frames.emplace_back(std::move(frame));
-          offset += chunk_size;
+        if (shape_status > 0 &&
+            (!shape_cursor->capture(image) ||
+             !queue_cursor_shape(session, image, queued_serial))) {
+          BOOST_LOG(error) << "Unable to refresh the active X11 cursor through XFixes"sv;
+          session::stop(*session);
+          return;
         }
-        session->control.cursor_shape_queue->raise(std::move(frames));
-
-        queued_serial = image.serial;
-        BOOST_LOG(debug) << "Queued StationConnect local cursor generation "sv
-                         << static_cast<std::uint64_t>(image.serial) << " ("sv
-                         << image.width << 'x' << image.height << ", hotspot "sv
-                         << image.hotspot_x << ',' << image.hotspot_y << ")"sv;
       }
+    });
 
-      // Keep the position transport on a fixed 60 Hz clock. Sleeping for a
-      // full period after XFixesGetCursorImage() makes the synchronous X11
-      // query time part of the cadence, which produces visibly uneven Wacom
-      // motion when native XShm frame capture is using the same X server.
-      next_cursor_sample += cursor_sample_period;
-      const auto now = std::chrono::steady_clock::now();
-      if (next_cursor_sample <= now) {
-        const auto missed_samples =
-          (now - next_cursor_sample) / cursor_sample_period + 1;
-        next_cursor_sample += cursor_sample_period * missed_samples;
+    BOOST_LOG(info) << "StationConnect cursor position uses event-driven XInput2 motion"sv;
+    std::uint64_t position_sequence = 0;
+    while (!stop_token.stop_requested()) {
+      platf::x11::cursor_position_t position {};
+      const int position_status = position_cursor->wait_position(position, 100);
+      if (position_status < 0) {
+        BOOST_LOG(error) << "Unable to monitor XInput2 cursor motion"sv;
+        session::stop(*session);
+        break;
       }
-      std::this_thread::sleep_until(next_cursor_sample);
+      if (position_status > 0 &&
+          !queue_cursor_position(session, position, position_sequence)) {
+        session::stop(*session);
+        break;
+      }
     }
+    shape_thread.request_stop();
 #else
     BOOST_LOG(error) << "StationConnect local cursor transport requires the Linux X11 host backend"sv;
     session::stop(*session);
