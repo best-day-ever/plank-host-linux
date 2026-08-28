@@ -2604,8 +2604,7 @@ namespace video {
         }
       }
 
-      const std::int64_t bitrate =
-        ((config::video.max_bitrate > 0) ? std::min(config.bitrate, config::video.max_bitrate) : config.bitrate) * 1000LL;
+      const std::int64_t bitrate = config.bitrate * 1000LL;
       BOOST_LOG(info) << "Streaming bitrate is " << bitrate;
       const auto sw_rate_control = software_rate_control(
         bitrate,

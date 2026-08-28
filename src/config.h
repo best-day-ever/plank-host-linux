@@ -196,7 +196,6 @@ namespace config {
       workarounds_t wa;  ///< Display-device compatibility workarounds.
     } dd;  ///< Display-device integration settings.
 
-    int max_bitrate;  ///< Maximum bitrate ceiling in kbps for bitrate requested from the client.
     double minimum_fps_target;  ///< Lowest framerate that will be used when streaming. Range 0-1000, 0 = half of client's requested framerate.
   };
 
@@ -235,8 +234,6 @@ namespace config {
     int lan_encryption_mode;  ///< Video encryption policy for LAN clients.
     int wan_encryption_mode;  ///< Video encryption policy for WAN clients.
 
-    // Limit the packetsize to avoid fragmentation on a low MTU link
-    int packetsize;  ///< Maximum payload size for network packets.
   };
 
   /**
@@ -250,7 +247,6 @@ namespace config {
 
     std::string file_state;  ///< Path to the persisted Sunshine state file.
 
-    std::string external_ip;  ///< External address advertised to clients when configured.
   };
 
   /**
@@ -293,7 +289,6 @@ namespace config {
    * @brief Top-level Sunshine configuration and credential state.
    */
   struct sunshine_t {
-    std::string locale;  ///< Locale selected for Sunshine UI and log messages.
     int min_log_level;  ///< Minimum severity level written to the configured log sink.
     std::bitset<flag::FLAG_SIZE> flags;  ///< Runtime flags parsed from command-line options.
     std::string config_file;  ///< Path to the active Sunshine configuration file.
@@ -312,7 +307,6 @@ namespace config {
     std::string bind_address;  ///< Local address Sunshine should bind to.
 
     std::string log_file;  ///< Path to the configured log file.
-    bool notify_pre_releases;  ///< Notify users about pre-release updates.
     bool stationconnect_mdns_discovery;  ///< Advertise this StationConnect host with mDNS.
     std::string startup_layout;  ///< StationConnect physical or virtual display policy applied before the display manager starts.
   };

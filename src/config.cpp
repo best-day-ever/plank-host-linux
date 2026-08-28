@@ -784,7 +784,6 @@ namespace config {
       {}  // wa
     },  // display_device
 
-    0,  // max_bitrate
     0  // minimum_fps_target (0 = framerate)
   };
 
@@ -808,7 +807,6 @@ namespace config {
 
     ENCRYPTION_MODE_NEVER,  // lan_encryption_mode
     ENCRYPTION_MODE_OPPORTUNISTIC,  // wan_encryption_mode
-    0,  // packetsize
   };
 
   /**
@@ -820,7 +818,6 @@ namespace config {
 
     platf::get_host_name(),  // sunshine_name,
     "stationconnect_state.json"s,  // file_state
-    {},  // external_ip
   };
 
   /**
@@ -854,7 +851,6 @@ namespace config {
    * @brief Default top-level Sunshine configuration values used before file and CLI overrides.
    */
   sunshine_t sunshine {
-    "en",  // locale
     2,  // min_log_level
     0,  // flags
     platf::appdata().string() + "/sunshine.conf",  // config file
@@ -863,7 +859,6 @@ namespace config {
     "ipv4",  // Address family
     {},  // Bind address
     platf::appdata().string() + "/sunshine.log",  // log file
-    false,  // notify_pre_releases
     false,  // StationConnect mDNS advertisement
     "physical",  // StationConnect startup display policy
   };
@@ -1521,7 +1516,6 @@ namespace config {
   void apply_config(std::unordered_map<std::string, std::string> &&vars) {
     log_config_settings(vars, true);
 
-    int_f(vars, "qp", video.qp);
     int_f(vars, "min_threads", video.min_threads);
     string_f(vars, "sw_preset", video.sw.sw_preset);
     if (!video.sw.sw_preset.empty()) {
@@ -1538,9 +1532,6 @@ namespace config {
     generic_f(vars, "nvenc_twopass", video.nv.two_pass, nv::twopass_from_view);
     bool_f(vars, "nvenc_h264_cavlc", video.nv.h264_cavlc);
     generic_f(vars, "nvenc_split_encode", video.nv.split_frame_encoding, nv::split_encode_from_view);
-    bool_f(vars, "nvenc_realtime_hags", video.nv_realtime_hags);
-    bool_f(vars, "nvenc_opengl_vulkan_on_dxgi", video.nv_opengl_vulkan_on_dxgi);
-    bool_f(vars, "nvenc_latency_over_power", video.nv_sunshine_high_power_mode);
 
 #if !defined(__ANDROID__) && !defined(__APPLE__)
     video.nv_legacy.preset = video.nv.quality_preset + 11;
@@ -1552,83 +1543,7 @@ namespace config {
     video.nv_legacy.vbv_percentage_increase = video.nv.vbv_percentage_increase;
 #endif
 
-    int_f(vars, "qsv_preset", video.qsv.qsv_preset, qsv::preset_from_view);
-    int_f(vars, "qsv_coder", video.qsv.qsv_cavlc, qsv::coder_from_view);
-    bool_f(vars, "qsv_slow_hevc", video.qsv.qsv_slow_hevc);
-
-    std::string quality;
-    string_f(vars, "amd_quality", quality);
-    if (!quality.empty()) {
-      video.amd.amd_quality_h264 = amd::quality_from_view<amd::quality_h264_e>(quality, video.amd.amd_quality_h264);
-      video.amd.amd_quality_hevc = amd::quality_from_view<amd::quality_hevc_e>(quality, video.amd.amd_quality_hevc);
-      video.amd.amd_quality_av1 = amd::quality_from_view<amd::quality_av1_e>(quality, video.amd.amd_quality_av1);
-    }
-
-    std::string rc;
-    string_f(vars, "amd_rc", rc);
-    int_f(vars, "amd_coder", video.amd.amd_coder, amd::coder_from_view);
-    if (!rc.empty()) {
-      video.amd.amd_rc_h264 = amd::rc_from_view<amd::rc_h264_e>(rc, video.amd.amd_rc_h264);
-      video.amd.amd_rc_hevc = amd::rc_from_view<amd::rc_hevc_e>(rc, video.amd.amd_rc_hevc);
-      video.amd.amd_rc_av1 = amd::rc_from_view<amd::rc_av1_e>(rc, video.amd.amd_rc_av1);
-    }
-
-    std::string usage;
-    string_f(vars, "amd_usage", usage);
-    if (!usage.empty()) {
-      video.amd.amd_usage_h264 = amd::usage_from_view<amd::usage_h264_e>(usage, video.amd.amd_usage_h264);
-      video.amd.amd_usage_hevc = amd::usage_from_view<amd::usage_hevc_e>(usage, video.amd.amd_usage_hevc);
-      video.amd.amd_usage_av1 = amd::usage_from_view<amd::usage_av1_e>(usage, video.amd.amd_usage_av1);
-    }
-
-    bool_f(vars, "amd_preanalysis", (bool &) video.amd.amd_preanalysis);
-    bool_f(vars, "amd_vbaq", (bool &) video.amd.amd_vbaq);
-    bool_f(vars, "amd_enforce_hrd", (bool &) video.amd.amd_enforce_hrd);
-
-    int_f(vars, "vt_coder", video.vt.vt_coder, vt::coder_from_view);
-    int_f(vars, "vt_software", video.vt.vt_allow_sw, vt::allow_software_from_view);
-    int_f(vars, "vt_software", video.vt.vt_require_sw, vt::force_software_from_view);
-    int_f(vars, "vt_realtime", video.vt.vt_realtime, vt::rt_from_view);
-
-    std::string vaapi_quality;
-    string_f(vars, "vaapi_quality", vaapi_quality);
-    if (!vaapi_quality.empty()) {
-      video.vaapi.vaapi_quality = vaapi::quality_from_view<vaapi::quality_e>(vaapi_quality, video.vaapi.vaapi_quality);
-    }
-    string_f(vars, "vaapi_rc", video.vaapi.vaapi_rc_str);
-    if (!video.vaapi.vaapi_rc_str.empty()) {
-      video.vaapi.vaapi_rc = vaapi::rc_from_view<vaapi::rc_e>(video.vaapi.vaapi_rc_str, video.vaapi.vaapi_rc);
-    }
-    bool_f(vars, "vaapi_blbrc", (bool &) video.vaapi.blbrc);
-    bool_f(vars, "vaapi_strict_rc_buffer", video.vaapi.strict_rc_buffer);
-
-    int_f(vars, "vk_tune", video.vk.tune);
-    int_f(vars, "vk_rc_mode", video.vk.rc_mode);
-
     string_f(vars, "adapter_name", video.adapter_name);
-
-    generic_f(vars, "dd_configuration_option", video.dd.configuration_option, dd::config_option_from_view);
-    generic_f(vars, "dd_resolution_option", video.dd.resolution_option, dd::resolution_option_from_view);
-    string_f(vars, "dd_manual_resolution", video.dd.manual_resolution);
-    generic_f(vars, "dd_refresh_rate_option", video.dd.refresh_rate_option, dd::refresh_rate_option_from_view);
-    string_f(vars, "dd_manual_refresh_rate", video.dd.manual_refresh_rate);
-    generic_f(vars, "dd_hdr_option", video.dd.hdr_option, dd::hdr_option_from_view);
-    {
-      int value = -1;
-      int_between_f(vars, "dd_config_revert_delay", value, {0, std::numeric_limits<int>::max()});
-      if (value >= 0) {
-        video.dd.config_revert_delay = std::chrono::milliseconds {value};
-      }
-    }
-    bool_f(vars, "dd_config_revert_on_disconnect", video.dd.config_revert_on_disconnect);
-    generic_f(vars, "dd_mode_remapping", video.dd.mode_remapping, dd::mode_remapping_from_view);
-    {
-      int value = 0;
-      int_between_f(vars, "dd_wa_hdr_toggle_delay", value, {0, 3000});
-      video.dd.wa.hdr_toggle_delay = std::chrono::milliseconds {value};
-    }
-
-    int_f(vars, "max_bitrate", video.max_bitrate);
     double_between_f(vars, "minimum_fps_target", video.minimum_fps_target, {0.0, 1000.0});
 
     path_f(vars, "pkey", nvhttp.pkey);
@@ -1642,11 +1557,7 @@ namespace config {
     bool broker_allow_root_login = false;
     bool_f(vars, "allow_root_login", broker_allow_root_login);
 
-    string_f(vars, "external_ip", nvhttp.external_ip);
     string_f(vars, "audio_sink", audio.sink);
-    string_f(vars, "virtual_sink", audio.virtual_sink);
-    bool_f(vars, "stream_audio", audio.stream);
-    bool_f(vars, "install_steam_audio_drivers", audio.install_steam_drivers);
 
     int to = -1;
     int_between_f(vars, "ping_timeout", to, {-1, std::numeric_limits<int>::max()});
@@ -1656,20 +1567,9 @@ namespace config {
 
     int_between_f(vars, "lan_encryption_mode", stream.lan_encryption_mode, {0, 2});
     int_between_f(vars, "wan_encryption_mode", stream.wan_encryption_mode, {0, 2});
-    int_between_f(vars, "packetsize", stream.packetsize, {0, PACKETSIZE_MAX});
-
     int_between_f(vars, "fec_percentage", stream.fec_percentage, {1, 255});
 
     map_int_int_f(vars, "keybindings"s, input.keybindings);
-
-    // This config option will only be used by the UI
-    // When editing in the config file itself, use "keybindings"
-    input.key_rightalt_to_key_win = false;
-    bool_f(vars, "key_rightalt_to_key_win", input.key_rightalt_to_key_win);
-
-    if (input.key_rightalt_to_key_win) {
-      input.keybindings.emplace(0xA5, 0x5B);
-    }
 
     double repeat_frequency {0};
     double_between_f(vars, "key_repeat_frequency", repeat_frequency, {0, std::numeric_limits<double>::max()});
@@ -1684,14 +1584,6 @@ namespace config {
       input.key_repeat_delay = std::chrono::milliseconds {to};
     }
 
-    bool_f(vars, "mouse", input.mouse);
-    bool_f(vars, "keyboard", input.keyboard);
-
-    bool_f(vars, "always_send_scancodes", input.always_send_scancodes);
-
-    bool_f(vars, "high_resolution_scrolling", input.high_resolution_scrolling);
-
-    bool_f(vars, "notify_pre_releases", sunshine.notify_pre_releases);
     bool_f(vars, "stationconnect_mdns_discovery", sunshine.stationconnect_mdns_discovery);
     string_restricted_f(vars, "startup_layout", sunshine.startup_layout, {"physical"sv, "virtual"sv});
 
@@ -1701,31 +1593,6 @@ namespace config {
 
     string_restricted_f(vars, "address_family", sunshine.address_family, {"ipv4"sv, "both"sv});
     string_f(vars, "bind_address", sunshine.bind_address);
-
-    string_restricted_f(vars, "locale", config::sunshine.locale, {
-                                                                   "bg"sv,  // Bulgarian
-                                                                   "cs"sv,  // Czech
-                                                                   "de"sv,  // German
-                                                                   "en"sv,  // English
-                                                                   "en_GB"sv,  // English (UK)
-                                                                   "en_US"sv,  // English (US)
-                                                                   "es"sv,  // Spanish
-                                                                   "fr"sv,  // French
-                                                                   "hu"sv,  // Hungarian
-                                                                   "it"sv,  // Italian
-                                                                   "ja"sv,  // Japanese
-                                                                   "ko"sv,  // Korean
-                                                                   "pl"sv,  // Polish
-                                                                   "pt"sv,  // Portuguese
-                                                                   "pt_BR"sv,  // Portuguese (Brazilian)
-                                                                   "ru"sv,  // Russian
-                                                                   "sv"sv,  // Swedish
-                                                                   "tr"sv,  // Turkish
-                                                                   "uk"sv,  // Ukrainian
-                                                                   "vi"sv,  // Vietnamese
-                                                                   "zh"sv,  // Chinese
-                                                                   "zh_TW"sv,  // Chinese (Traditional)
-                                                                 });
 
     std::string log_level_string;
     string_f(vars, "min_log_level", log_level_string);
@@ -1752,13 +1619,6 @@ namespace config {
           sunshine.min_log_level = val - '0';
         }
       }
-    }
-
-    auto it = vars.find("flags"s);
-    if (it != std::end(vars)) {
-      apply_flags(it->second.c_str());
-
-      vars.erase(it);
     }
 
     if (sunshine.min_log_level <= 3) {

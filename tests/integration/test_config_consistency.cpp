@@ -113,6 +113,49 @@ TEST(ConfigConsistencyTest, RuntimeAndDocumentedOptionsMatch) {
   EXPECT_TRUE(obsolete.empty()) << "Documented but unsupported options: " << join(obsolete);
 }
 
+TEST(ConfigConsistencyTest, RuntimeOptionsMatchStationConnectProductPolicy) {
+  const std::set<std::string, std::less<>> expected {
+    "adapter_name",
+    "address_family",
+    "allow_root_login",
+    "audio_sink",
+    "bind_address",
+    "cert",
+    "fec_percentage",
+    "file_state",
+    "key_repeat_delay",
+    "key_repeat_frequency",
+    "keybindings",
+    "lan_encryption_mode",
+    "log_path",
+    "min_log_level",
+    "min_threads",
+    "minimum_fps_target",
+    "nvenc_h264_cavlc",
+    "nvenc_preset",
+    "nvenc_spatial_aq",
+    "nvenc_split_encode",
+    "nvenc_twopass",
+    "nvenc_vbv_increase",
+    "ping_timeout",
+    "pkey",
+    "port",
+    "startup_layout",
+    "stationconnect_mdns_discovery",
+    "sunshine_name",
+    "sw_preset",
+    "sw_scenecut",
+    "sw_tune",
+    "sw_vbv_buffer_frames",
+    "sw_vbv_maxrate_percentage",
+    "wan_encryption_mode",
+  };
+
+  const auto runtime = extract_runtime_options();
+  EXPECT_EQ(runtime, expected)
+    << "StationConnect runtime configuration drifted. Actual: " << join(runtime);
+}
+
 TEST(ConfigConsistencyTest, OmitsGlobalVideoBackendSelectors) {
   const auto runtime = extract_runtime_options();
   const auto documented = extract_documented_options();
