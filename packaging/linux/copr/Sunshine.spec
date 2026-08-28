@@ -61,7 +61,6 @@ BuildRequires: libatomic
 BuildRequires: libgudev
 BuildRequires: mesa-libGL-devel
 BuildRequires: mesa-libgbm-devel
-BuildRequires: miniupnpc-devel
 %if 0%{?fedora} < 44
 BuildRequires: nodejs-npm
 %endif
@@ -85,7 +84,6 @@ BuildRequires: appstream-glib
 BuildRequires: libgudev-1_0-devel
 BuildRequires: Mesa-libGL-devel
 BuildRequires: libgbm-devel
-BuildRequires: libminiupnpc-devel
 BuildRequires: libnuma-devel
 BuildRequires: libopus-devel
 BuildRequires: libpulse-devel
@@ -153,7 +151,6 @@ BuildRequires: libqt6-qtsvg-devel
 %global cuda_dir %{_builddir}/cuda
 
 # Common runtime requirements
-Requires: miniupnpc >= 2.2.4
 Requires: which >= 2.21
 
 %if 0%{?fedora}

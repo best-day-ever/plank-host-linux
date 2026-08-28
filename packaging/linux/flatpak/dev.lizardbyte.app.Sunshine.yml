@@ -46,7 +46,6 @@ modules:
   - "modules/avahi.json"
   - "modules/boost.json"
   - "modules/libevdev.json"
-  - "modules/miniupnpc.json"
   - "modules/numactl.json"
 
   # Caching is configured until here, not including CUDA, since it is too large for GitHub cache

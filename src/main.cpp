@@ -29,7 +29,6 @@
 #ifdef __linux__
   #include "session/session_context.h"
 #endif
-#include "upnp.h"
 #include "video.h"
 
 using namespace std::literals;
@@ -406,11 +405,6 @@ int main(int argc, char *argv[]) {
     if (mdns_discovery_enabled) {
       mDNS = platf::publish::start();
     }
-  });
-
-  std::unique_ptr<platf::deinit_t> upnp_unmap;
-  auto sync_upnp = std::async(std::launch::async, [&upnp_unmap]() {
-    upnp_unmap = upnp::start();
   });
 
   // FIXME: Temporary workaround: Simple-Web_server needs to be updated or replaced

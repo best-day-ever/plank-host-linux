@@ -289,7 +289,6 @@ namespace config {
     enum flag_e : std::size_t {
       FRESH_STATE = 0,  ///< Do not load or save state
       FORCE_VIDEO_HEADER_REPLACE,  ///< force replacing headers inside video data
-      UPNP,  ///< Try Universal Plug 'n Play
       FLAG_SIZE  ///< Number of flags
     };
   }  // namespace flag

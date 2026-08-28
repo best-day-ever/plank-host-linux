@@ -47,7 +47,6 @@ depends=(
   'libxfixes'
   'libxrandr'
   'libxtst'
-  'miniupnpc'
   'numactl'
   'openssl'
   'opus'

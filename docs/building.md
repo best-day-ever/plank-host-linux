@@ -36,7 +36,6 @@ pkg install -y \
   graphics/qt6-svg \
   graphics/wayland \
   multimedia/libva \
-  net/miniupnpc \
   ports-mgmt/pkg \
   security/openssl \
   shells/bash \
@@ -95,7 +94,6 @@ dependencies=(
   "doxygen"  # Optional, for docs
   "graphviz"  # Optional, for docs
   "icu4c"  # Optional, if boost is not installed
-  "miniupnpc"
   "ninja"
   "node"
   "openssl@3"
@@ -127,7 +125,6 @@ dependencies=(
   "doxygen"  # Optional, for docs
   "graphviz"  # Optional, for docs
   "libopus"
-  "miniupnpc"
   "ninja"
   "npm9"
   "pkgconfig"
@@ -172,7 +169,6 @@ dependencies=(
   "mingw-w64-${TOOLCHAIN}-curl-winssl"
   "mingw-w64-${TOOLCHAIN}-doxygen"  # Optional, for docs... better to install official Doxygen
   "mingw-w64-${TOOLCHAIN}-graphviz"  # Optional, for docs
-  "mingw-w64-${TOOLCHAIN}-miniupnpc"
   "mingw-w64-${TOOLCHAIN}-onevpl"
   "mingw-w64-${TOOLCHAIN}-openssl"
   "mingw-w64-${TOOLCHAIN}-opus"

@@ -33,7 +33,6 @@ required_formulas=(
   "node"
   "pkgconf"
   "icu4c@78"
-  "miniupnpc"
   "openssl@3"
   "opus"
   "llvm"

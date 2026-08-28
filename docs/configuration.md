@@ -1053,29 +1053,6 @@ The packaged profile contains the settings StationConnect currently overrides. E
 
 ## Network
 
-### upnp
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Sunshine will attempt to open ports for streaming over the internet.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            disabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            upnp = enabled
-            @endcode</td>
-    </tr>
-</table>
-
 ### address_family
 
 <table>

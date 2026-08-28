@@ -373,7 +373,6 @@ namespace logging {
       << "        -1 | Do not load previously saved state and do retain any state after shutdown"sv << std::endl
       << "           | Effectively start with a temporary workstation identity"sv << std::endl
       << "        -2 | Force replacement of headers in video stream"sv << std::endl
-      << "        -p | Enable/Disable UPnP"sv << std::endl
       << std::endl;
   }
 

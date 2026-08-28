@@ -38,7 +38,6 @@ apt-get install -y --no-install-recommends \
   libdrm-dev \
   libevdev-dev \
   libgbm-dev \
-  libminiupnpc-dev \
   libnuma-dev \
   libopus-dev \
   libpulse-dev \

@@ -1529,9 +1529,6 @@ namespace config {
         case '2':
           config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE].flip();
           break;
-        case 'p':
-          config::sunshine.flags[config::flag::UPNP].flip();
-          break;
         default:
           BOOST_LOG(warning) << "config: Unrecognized flag: ["sv << *line << ']' << std::endl;
           ret = -1;
@@ -1760,13 +1757,6 @@ namespace config {
 
     string_restricted_f(vars, "address_family", sunshine.address_family, {"ipv4"sv, "both"sv});
     string_f(vars, "bind_address", sunshine.bind_address);
-
-    bool upnp = false;
-    bool_f(vars, "upnp"s, upnp);
-
-    if (upnp) {
-      config::sunshine.flags[config::flag::UPNP].flip();
-    }
 
     string_restricted_f(vars, "locale", config::sunshine.locale, {
                                                                    "bg"sv,  // Bulgarian

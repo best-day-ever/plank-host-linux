@@ -55,7 +55,6 @@ class Sunshine < Formula
   depends_on "boost"
   depends_on "curl"
   depends_on "icu4c@78"
-  depends_on "miniupnpc"
   depends_on "openssl@3"
   depends_on "opus"
   depends_on "qtbase"
