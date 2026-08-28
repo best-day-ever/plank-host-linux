@@ -1177,7 +1177,11 @@ The packaged profile contains the settings StationConnect currently overrides. E
     <tr>
         <td>Description</td>
         <td colspan="2">
-            This determines when encryption will be used when streaming over your local network.
+            This determines when media encryption is used for loopback and
+            LAN-classified remote peer addresses. Classification uses the
+            connection's source IP address after IPv4-mapped IPv6
+            normalization; it does not inspect the route, interface, hostname,
+            latency, or physical distance.
             @warning{Encryption can reduce streaming performance, particularly on less powerful hosts and clients.}
         </td>
     </tr>
@@ -1214,7 +1218,12 @@ The packaged profile contains the settings StationConnect currently overrides. E
     <tr>
         <td>Description</td>
         <td colspan="2">
-            This determines when encryption will be used when streaming over the Internet.
+            This determines when media encryption is used for every remote
+            peer address not classified as loopback or LAN. Classification
+            uses the connection's source IP address, so a VPN peer with an
+            RFC1918 or other allowlisted private address uses
+            @code{}lan_encryption_mode@endcode even when the physical path
+            crosses the Internet.
             @warning{Encryption can reduce streaming performance, particularly on less powerful hosts and clients.}
         </td>
     </tr>
@@ -1244,6 +1253,14 @@ The packaged profile contains the settings StationConnect currently overrides. E
         <td>encryption is mandatory and unencrypted connections are rejected</td>
     </tr>
 </table>
+
+The LAN address set is IPv4 loopback @code{}127.0.0.0/8@endcode, private
+@code{}10.0.0.0/8@endcode, @code{}172.16.0.0/12@endcode, and
+@code{}192.168.0.0/16@endcode, carrier-grade NAT @code{}100.64.0.0/10@endcode,
+and link-local @code{}169.254.0.0/16@endcode. IPv6 loopback
+@code{}::1/128@endcode, unique-local @code{}fc00::/7@endcode, and the currently
+qualified link-local prefix @code{}fe80::/64@endcode also use the LAN policy.
+Every other peer address uses the WAN policy.
 
 ### ping_timeout
 
