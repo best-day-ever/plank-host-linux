@@ -470,8 +470,8 @@ namespace platf {
           BOOST_LOG(warning) << "GPU driver doesn't support atomic mode-setting: "sv << path;
 #if defined(SUNSHINE_BUILD_X11)
           // We won't be able to capture the mouse cursor with KMS on non-atomic drivers,
-          // so fall back to X11 if it's available and the user didn't explicitly force KMS.
-          if (window_system == window_system_e::X11 && config::video.capture != "kms") {
+          // so fall back to X11 when it is available.
+          if (window_system == window_system_e::X11) {
             BOOST_LOG(info) << "Avoiding KMS capture under X11 due to lack of atomic mode-setting"sv;
             return -1;
           }
@@ -915,13 +915,10 @@ namespace platf {
             continue;
           }
 
-          // Skip non-Nvidia cards if we're looking for CUDA devices
-          // unless NVENC is selected manually by the user
+          // Skip non-Nvidia cards when looking for CUDA devices.
           if (mem_type == mem_type_e::cuda && !card.is_nvidia()) {
             BOOST_LOG(debug) << file << " is not a CUDA device"sv;
-            if (config::video.encoder != "nvenc") {
-              continue;
-            }
+            continue;
           }
 
           // Skip Nvidia cards if we're looking for VAAPI devices
@@ -2055,15 +2052,10 @@ namespace platf {
         continue;
       }
 
-      // Skip non-Nvidia cards if we're looking for CUDA devices
-      // unless NVENC is selected manually by the user
+      // Skip non-Nvidia cards when looking for CUDA devices.
       if (hwdevice_type == mem_type_e::cuda && !card.is_nvidia()) {
         BOOST_LOG(debug) << file << " is not a CUDA device"sv;
-        if (config::video.encoder == "nvenc") {
-          BOOST_LOG(warning) << "Using NVENC with your display connected to a different GPU may not work properly!"sv;
-        } else {
-          continue;
-        }
+        continue;
       }
 
       // Skip Nvidia cards if we're looking for VAAPI devices
@@ -2096,8 +2088,7 @@ namespace platf {
         if (!fb->handles[0]) {
           BOOST_LOG(error) << "Couldn't get handle for DRM Framebuffer ["sv << plane->fb_id << "]: Probably not permitted"sv;
 #if defined(SUNSHINE_BUILD_FLATPAK) || defined(SUNSHINE_BUILD_APPIMAGE)
-          BOOST_LOG((config::video.capture == "kms") ? fatal : error)
-            << "AppImage and Flatpak do not support KMS capture. Use another capture method."sv;
+          BOOST_LOG(error) << "AppImage and Flatpak do not support KMS capture."sv;
 #endif
           break;
         }

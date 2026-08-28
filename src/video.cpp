@@ -1732,6 +1732,14 @@ namespace video {
     return false;
   }
 
+  bool capture_source_available(std::string_view source) {
+#if defined(__linux__)
+    return platf::stationconnect_capture_source_available(source);
+#else
+    return false;
+#endif
+  }
+
   bool select_encoder_backend_for_session(std::string_view backend) {
     if (!encoder_backend_available(backend)) {
       return false;
@@ -3885,54 +3893,41 @@ namespace video {
     last_encoder_probe_supported_h264_8bit_422 = false;
     last_encoder_probe_supported_h264_10bit_422 = false;
 
-    if (!config::video.encoder.empty()) {
-      // If there is a specific encoder specified, use it if it passes validation
-      KITTY_WHILE_LOOP(auto pos = std::begin(encoder_list), pos != std::end(encoder_list), {
-        auto encoder = *pos;
-
-        if (encoder->name == config::video.encoder) {
-          // Remove the encoder from the list entirely if it fails validation
-          if (!validate_encoder(*encoder,
-                                previous_encoder && previous_encoder != encoder,
-                                false, false)) {
-            pos = encoder_list.erase(pos);
-            break;
-          }
-
-          chosen_encoder = encoder;
-          break;
-        }
-
-        pos++;
-      });
-
-      if (chosen_encoder == nullptr) {
-        BOOST_LOG(error) << "Couldn't find any working encoder matching ["sv << config::video.encoder << ']';
-      }
-    }
-
     BOOST_LOG(info) << "// Testing for available encoders, this may generate errors. You can safely ignore those errors. //"sv;
 
-    // If no encoder was specified or the specified encoder was unusable, keep trying
-    // the remaining encoders until we find one that passes validation.
-    if (chosen_encoder == nullptr) {
-      KITTY_WHILE_LOOP(auto pos = std::begin(encoder_list), pos != std::end(encoder_list), {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    // StationConnect profiles select their backend per session. Qualify both
+    // exact product backends independently instead of using Sunshine's
+    // inherited global encoder selector or generic fallback order.
+    const bool software_cuda_qualified =
+      validate_encoder(software_cuda, previous_encoder && previous_encoder != &software_cuda,
+                       false, false);
+    nvenc_direct_qualified =
+      validate_encoder(nvenc_direct, previous_encoder && previous_encoder != &nvenc_direct,
+                       true, false);
+    if (!software_cuda_qualified && !nvenc_direct_qualified) {
+      BOOST_LOG(fatal) << "No exact StationConnect encoder backend is available."sv;
+      return -1;
+    }
+    chosen_encoder = software_cuda_qualified ? &software_cuda : &nvenc_direct;
+#else
+    KITTY_WHILE_LOOP(auto pos = std::begin(encoder_list), pos != std::end(encoder_list), {
         auto encoder = *pos;
 
-        // If we've used a previous encoder and it's not this one, we expect this encoder to
-        // fail to validate. It will use a slightly different order of checks to more quickly
-        // eliminate failing encoders.
-        if (!validate_encoder(*encoder,
-                              previous_encoder && previous_encoder != encoder,
-                              false, false)) {
-          pos = encoder_list.erase(pos);
-          continue;
-        }
+      // If we've used a previous encoder and it's not this one, we expect this encoder to
+      // fail to validate. It will use a slightly different order of checks to more quickly
+      // eliminate failing encoders.
+      if (!validate_encoder(*encoder,
+                            previous_encoder && previous_encoder != encoder,
+                            false, false)) {
+        pos = encoder_list.erase(pos);
+        continue;
+      }
 
-        chosen_encoder = encoder;
-        break;
-      });
-    }
+      chosen_encoder = encoder;
+      break;
+    });
+#endif
 
     if (chosen_encoder == nullptr) {
       BOOST_LOG(fatal) << "Unable to find display or encoder during startup."sv;
@@ -3995,12 +3990,24 @@ namespace video {
     }
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    if (chosen_encoder != &nvenc_direct) {
-      BOOST_LOG(info) << "Qualifying StationConnect per-session encoder [nvenc-direct]"sv;
-      nvenc_direct_qualified = validate_encoder(nvenc_direct, false, true, false);
-    } else {
-      nvenc_direct_qualified = true;
-    }
+    // Advertise the union of exact per-session capabilities rather than the
+    // capabilities of whichever backend was used for display enumeration.
+    last_encoder_probe_supported_ref_frames_invalidation =
+      (software_cuda_qualified && (software_cuda.flags & REF_FRAMES_INVALIDATION)) ||
+      (nvenc_direct_qualified && (nvenc_direct.flags & REF_FRAMES_INVALIDATION));
+    last_encoder_probe_supported_yuv444_for_codec[0] =
+      (software_cuda.h264[encoder_t::PASSED] && software_cuda.h264[encoder_t::YUV444]) ||
+      (nvenc_direct.h264[encoder_t::PASSED] && nvenc_direct.h264[encoder_t::YUV444]);
+    last_encoder_probe_supported_h264_10bit_444 =
+      (software_cuda.h264[encoder_t::PASSED] && software_cuda.h264[encoder_t::DYNAMIC_RANGE_YUV444]) ||
+      (nvenc_direct.h264[encoder_t::PASSED] && nvenc_direct.h264[encoder_t::DYNAMIC_RANGE_YUV444]);
+    last_encoder_probe_supported_h264_8bit_422 =
+      software_cuda.h264[encoder_t::PASSED] && software_cuda.h264[encoder_t::YUV422];
+    last_encoder_probe_supported_h264_10bit_422 =
+      software_cuda.h264[encoder_t::PASSED] && software_cuda.h264[encoder_t::DYNAMIC_RANGE_YUV422];
+    last_encoder_probe_supported_yuv444_for_codec[1] =
+      nvenc_direct.hevc[encoder_t::PASSED] && nvenc_direct.hevc[encoder_t::YUV444];
+    last_encoder_probe_supported_yuv444_for_codec[2] = false;
     BOOST_LOG(info) << "StationConnect nvenc-direct modes: h264-444-8="sv
                     << nvenc_direct_supports_h264_444_8bit()
                     << " hevc-444-8="sv << nvenc_direct_supports_hevc_444_8bit()

@@ -769,8 +769,6 @@ namespace config {
       2,  // vk.rc_mode (default: cbr)
     },
 
-    {},  // capture
-    {},  // encoder
     {},  // adapter_name
 
     {
@@ -1609,8 +1607,6 @@ namespace config {
     int_f(vars, "vk_tune", video.vk.tune);
     int_f(vars, "vk_rc_mode", video.vk.rc_mode);
 
-    string_f(vars, "capture", video.capture);
-    string_f(vars, "encoder", video.encoder);
     string_f(vars, "adapter_name", video.adapter_name);
 
     generic_f(vars, "dd_configuration_option", video.dd.configuration_option, dd::config_option_from_view);

@@ -112,3 +112,13 @@ TEST(ConfigConsistencyTest, RuntimeAndDocumentedOptionsMatch) {
   EXPECT_TRUE(missing.empty()) << "Undocumented runtime options: " << join(missing);
   EXPECT_TRUE(obsolete.empty()) << "Documented but unsupported options: " << join(obsolete);
 }
+
+TEST(ConfigConsistencyTest, OmitsGlobalVideoBackendSelectors) {
+  const auto runtime = extract_runtime_options();
+  const auto documented = extract_documented_options();
+
+  EXPECT_FALSE(runtime.contains("capture"));
+  EXPECT_FALSE(runtime.contains("encoder"));
+  EXPECT_FALSE(documented.contains("capture"));
+  EXPECT_FALSE(documented.contains("encoder"));
+}

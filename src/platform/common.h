@@ -946,6 +946,14 @@ namespace platf {
   std::vector<display_info_t> display_infos(mem_type_e hwdevice_type);
 
   /**
+   * @brief Report whether an exact StationConnect capture source was discovered.
+   *
+   * @param source StationConnect protocol capture-source name.
+   * @return `true` when the source is available for a negotiated session.
+   */
+  bool stationconnect_capture_source_available(std::string_view source);
+
+  /**
    * @brief Check if GPUs/drivers have changed since the last call to this function.
    * @return `true` if a change has occurred or if it is unknown whether a change occurred.
    */
