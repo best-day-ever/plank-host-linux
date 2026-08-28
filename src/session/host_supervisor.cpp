@@ -962,10 +962,9 @@ int main(int argc, char **argv) {
   const bool physical_startup =
     startup_layout == stationconnect::session::startup_layout_t::physical;
   const bool virtual_startup =
-    startup_layout == stationconnect::session::startup_layout_t::single ||
-    startup_layout == stationconnect::session::startup_layout_t::dual_horizontal;
+    startup_layout == stationconnect::session::startup_layout_t::virtual_display;
   if (startup_layout == stationconnect::session::startup_layout_t::invalid) {
-    std::cerr << "StationConnect startup display layout is invalid; display transitions are disabled\n";
+    std::cerr << "StationConnect startup display policy is invalid; display transitions are disabled\n";
   }
   bool recover_stale_runtime_state = physical_startup &&
     stationconnect::session::read_runtime_display_state(

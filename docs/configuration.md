@@ -2680,25 +2680,9 @@ chroma format.
 ### startup_layout
 
 <table>
-    <tr><td>Description</td><td colspan="2">Administrator-owned boot display layout. Physical startup permits a temporary bookmark-selected layout that is restored at disconnect.</td></tr>
+    <tr><td>Description</td><td colspan="2">Administrator-owned boot display policy. @code{}physical@endcode preserves connected monitors and permits a temporary bookmark-selected layout that is restored at disconnect. @code{}virtual@endcode initializes one internal 1920x1080 output for headless login; the authenticated bookmark then selects the active one- or two-output layout and exact resolutions.</td></tr>
     <tr><td>Default</td><td colspan="2">@code{}physical@endcode</td></tr>
-    <tr><td>Choices</td><td colspan="2">@code{}physical@endcode, @code{}single@endcode, or @code{}dual-horizontal@endcode</td></tr>
-</table>
-
-### virtual_mode_1
-
-<table>
-    <tr><td>Description</td><td colspan="2">Resolution of the first StationConnect virtual output prepared before GDM.</td></tr>
-    <tr><td>Default</td><td colspan="2">@code{}1920x1080@endcode</td></tr>
-    <tr><td>Choices</td><td colspan="2">@code{}1024x2160@endcode, @code{}1280x2160@endcode, @code{}1920x1080@endcode, @code{}1920x1200@endcode, @code{}2560x1440@endcode, @code{}2560x1600@endcode, @code{}2560x2160@endcode, @code{}3440x1440@endcode, @code{}3840x1600@endcode, @code{}3840x2160@endcode, @code{}4096x2160@endcode, or @code{}5120x2160@endcode</td></tr>
-</table>
-
-### virtual_mode_2
-
-<table>
-    <tr><td>Description</td><td colspan="2">Resolution of the second StationConnect virtual output in @code{}dual-horizontal@endcode mode.</td></tr>
-    <tr><td>Default</td><td colspan="2">@code{}1920x1080@endcode</td></tr>
-    <tr><td>Choices</td><td colspan="2">The same qualified modes as @code{}virtual_mode_1@endcode. The two outputs may use different resolutions.</td></tr>
+    <tr><td>Choices</td><td colspan="2">@code{}physical@endcode or @code{}virtual@endcode</td></tr>
 </table>
 
 ### sw_vbv_maxrate_percentage
