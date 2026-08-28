@@ -316,6 +316,15 @@ namespace stream {
   }
 
   /**
+   * @brief Delivery policies for host-to-client control messages.
+   */
+  enum class control_delivery_e {
+    reliable,  ///< Ordered delivery with retransmission.
+    unsequenced,  ///< Latest-value delivery subject to ENet congestion throttling.
+    unsequenced_unthrottled,  ///< Latest-value delivery that bypasses ENet sender throttling.
+  };
+
+  /**
    * @brief ENet control server that routes incoming control packets to stream sessions.
    */
   class control_server_t {
@@ -381,12 +390,28 @@ namespace stream {
      *
      * @param payload Optional payload body to include in the response.
      * @param peer Remote endpoint associated with the socket.
+     * @param delivery Reliability, sequencing, and sender-throttle policy.
      * @return Network operation status.
      */
-    int send(const std::string_view &payload, net::peer_t peer, bool reliable = true) {
+    int send(
+      const std::string_view &payload,
+      net::peer_t peer,
+      control_delivery_e delivery = control_delivery_e::reliable
+    ) {
+      const auto packet_flags = [delivery]() -> enet_uint32 {
+        switch (delivery) {
+          case control_delivery_e::reliable:
+            return ENET_PACKET_FLAG_RELIABLE;
+          case control_delivery_e::unsequenced:
+            return ENET_PACKET_FLAG_UNSEQUENCED;
+          case control_delivery_e::unsequenced_unthrottled:
+            return ENET_PACKET_FLAG_UNSEQUENCED | ENET_PACKET_FLAG_UNTHROTTLED;
+        }
+
+        return ENET_PACKET_FLAG_RELIABLE;
+      }();
       auto packet = enet_packet_create(
-        payload.data(), payload.size(),
-        reliable ? ENET_PACKET_FLAG_RELIABLE : ENET_PACKET_FLAG_UNSEQUENCED
+        payload.data(), payload.size(), packet_flags
       );
       if (enet_peer_send(peer, 0, packet)) {
         enet_packet_destroy(packet);
@@ -1037,7 +1062,9 @@ namespace stream {
       crypto::cipher::tag_size> encrypted_payload;
     const auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
     return session->broadcast_ref->control_server.send(
-      payload, session->control.peer, false
+      payload,
+      session->control.peer,
+      control_delivery_e::unsequenced_unthrottled
     );
   }
 
