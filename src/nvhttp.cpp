@@ -428,10 +428,11 @@ namespace nvhttp {
     const std::vector<platf::display_info_t> &outputs
   ) {
     live_layout_t result;
-    result.startup_kind = config::sunshine.startup_layout;
-    if (!stationconnect::topology::valid_layout(result.startup_kind)) {
-      result.startup_kind = "physical";
-    }
+    // The protocol field describes the concrete boot topology, while the
+    // administrator setting is now a physical/virtual policy. Virtual hosts
+    // always initialize one 1920x1080 output before bookmark negotiation.
+    result.startup_kind = config::sunshine.startup_layout == "virtual" ?
+      "single" : "physical";
     if (const auto runtime = stationconnect::session::read_runtime_display_state(
           runtime_display_state
         )) {

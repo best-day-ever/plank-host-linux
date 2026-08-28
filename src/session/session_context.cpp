@@ -559,12 +559,8 @@ namespace stationconnect::session {
         layout = startup_layout_t::physical;
         continue;
       }
-      if (value == "single") {
-        layout = startup_layout_t::single;
-        continue;
-      }
-      if (value == "dual-horizontal") {
-        layout = startup_layout_t::dual_horizontal;
+      if (value == "virtual") {
+        layout = startup_layout_t::virtual_display;
         continue;
       }
       return startup_layout_t::invalid;

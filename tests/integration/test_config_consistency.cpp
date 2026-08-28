@@ -69,7 +69,7 @@ TEST(ConfigParserTest, AcceptsIniSectionsAndGlobalKeys) {
 address_family = both
 stationconnect_mdns_discovery = false
 
-[software-encoder]
+[x264-encoder]
 sw_vbv_maxrate_percentage = 150
 sw_vbv_buffer_frames = 4
 )");
@@ -80,7 +80,7 @@ sw_vbv_buffer_frames = 4
   EXPECT_EQ(values.at("sw_vbv_maxrate_percentage"), "150");
   EXPECT_EQ(values.at("sw_vbv_buffer_frames"), "4");
   EXPECT_FALSE(values.contains("network"));
-  EXPECT_FALSE(values.contains("software-encoder"));
+  EXPECT_FALSE(values.contains("x264-encoder"));
 }
 
 TEST(ConfigParserTest, IgnoresCommentsAndEmptySections) {

@@ -865,9 +865,7 @@ namespace config {
     platf::appdata().string() + "/sunshine.log",  // log file
     false,  // notify_pre_releases
     false,  // StationConnect mDNS advertisement
-    "physical",  // StationConnect startup display layout
-    "1920x1080",  // StationConnect virtual output 1 mode
-    "1920x1080",  // StationConnect virtual output 2 mode
+    "physical",  // StationConnect startup display policy
   };
 
   /**
@@ -1695,9 +1693,7 @@ namespace config {
 
     bool_f(vars, "notify_pre_releases", sunshine.notify_pre_releases);
     bool_f(vars, "stationconnect_mdns_discovery", sunshine.stationconnect_mdns_discovery);
-    string_f(vars, "startup_layout", sunshine.startup_layout);
-    string_f(vars, "virtual_mode_1", sunshine.virtual_mode_1);
-    string_f(vars, "virtual_mode_2", sunshine.virtual_mode_2);
+    string_restricted_f(vars, "startup_layout", sunshine.startup_layout, {"physical"sv, "virtual"sv});
 
     int port = sunshine.port;
     int_between_f(vars, "port"s, port, {1024 + nvhttp::PORT_HTTPS, 65535 - rtsp_stream::RTSP_SETUP_PORT});

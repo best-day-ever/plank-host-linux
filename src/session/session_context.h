@@ -68,8 +68,7 @@ namespace stationconnect::session {
 
   enum class startup_layout_t {
     physical,
-    single,
-    dual_horizontal,
+    virtual_display,
     invalid,
   };
 
@@ -116,7 +115,7 @@ namespace stationconnect::session {
   /** Read the intended secondary-monitor visibility from an owned Xorg overlay. */
   std::optional<bool> secondary_output_visible_from_overlay(std::string_view overlay);
 
-  /** Read the administrator-owned startup display layout; malformed input fails closed. */
+  /** Read the administrator-owned startup display policy; malformed input fails closed. */
   startup_layout_t configured_startup_layout(std::string_view config_path);
 
   /** Request a display transition from GDM or the authenticated user's desktop. */
