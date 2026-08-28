@@ -20,7 +20,6 @@
 #include <vector>
 
 #include <fcntl.h>
-#include <grp.h>
 #include <security/pam_appl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -32,8 +31,7 @@ namespace auth = stationconnect::auth;
 
 namespace {
   constexpr std::string_view default_socket_path = "/run/stationconnect/pam/auth.sock";
-  constexpr std::string_view default_socket_group = "stationconnect-auth";
-  constexpr std::string_view pam_service = "remote-desktop";
+  constexpr std::string_view pam_service = "stationconnect-host";
 
   volatile std::sig_atomic_t stopping = 0;  ///< Set by termination signals.
   volatile std::sig_atomic_t listening_descriptor = -1;  ///< Listener closed by the signal handler.
@@ -388,34 +386,17 @@ namespace {
   }
 
   /**
-   * @brief Resolve a Unix group name.
-   *
-   * @param name Group name.
-   * @return Group ID, or `-1` when absent.
-   */
-  gid_t resolve_group(std::string_view name) {
-    const auto *group = getgrnam(std::string {name}.c_str());
-    return group == nullptr ? static_cast<gid_t>(-1) : group->gr_gid;
-  }
-
-  /**
    * @brief Create the broker Unix listener with restrictive ownership.
    *
    * @param path Socket filesystem path.
-   * @param group Group permitted to connect.
    * @return Listening descriptor, or `-1` on error.
    */
-  int create_listener(const std::filesystem::path &path, std::string_view group) {
+  int create_listener(const std::filesystem::path &path) {
     const auto parent = path.parent_path();
     if (!path.is_absolute() || path.filename().empty() || parent.filename().empty() ||
         parent.parent_path().filename().empty() ||
         path.string().size() >= sizeof(sockaddr_un::sun_path)) {
       std::cerr << "PAM broker socket must use a dedicated absolute runtime directory\n";
-      return -1;
-    }
-    const gid_t group_id = resolve_group(group);
-    if (group_id == static_cast<gid_t>(-1)) {
-      std::cerr << "PAM broker group does not exist: " << group << '\n';
       return -1;
     }
     std::error_code error;
@@ -437,8 +418,8 @@ namespace {
       std::cerr << "PAM broker runtime directory must be owned by root\n";
       return -1;
     }
-    if (chown(path.parent_path().c_str(), 0, group_id) < 0 ||
-        chmod(path.parent_path().c_str(), 0750) < 0) {
+    if (chown(path.parent_path().c_str(), 0, 0) < 0 ||
+        chmod(path.parent_path().c_str(), 0700) < 0) {
       std::cerr << "Unable to secure PAM broker runtime directory: "
                 << std::strerror(errno) << '\n';
       return -1;
@@ -469,7 +450,7 @@ namespace {
     address.sun_family = AF_UNIX;
     std::memcpy(address.sun_path, path.c_str(), path.string().size() + 1);
     if (bind(listener.get(), reinterpret_cast<const sockaddr *>(&address), sizeof(address)) < 0 ||
-        chown(path.c_str(), 0, group_id) < 0 || chmod(path.c_str(), 0660) < 0 ||
+        chown(path.c_str(), 0, 0) < 0 || chmod(path.c_str(), 0600) < 0 ||
         listen(listener.get(), 16) < 0) {
       std::cerr << "Unable to bind PAM broker socket: " << std::strerror(errno) << '\n';
       unlink(path.c_str());
@@ -521,7 +502,7 @@ namespace {
    * @param program Program path.
    */
   void usage(const char *program) {
-    std::cerr << "usage: " << program << " [--socket PATH] [--group GROUP]\n";
+    std::cerr << "usage: " << program << " [--socket PATH]\n";
   }
 }  // namespace
 
@@ -534,13 +515,10 @@ namespace {
  */
 int main(int argc, char **argv) {
   std::filesystem::path socket_path {default_socket_path};
-  std::string socket_group {default_socket_group};
   for (int index = 1; index < argc; ++index) {
     const std::string_view argument {argv[index]};
     if (argument == "--socket" && index + 1 < argc) {
       socket_path = argv[++index];
-    } else if (argument == "--group" && index + 1 < argc) {
-      socket_group = argv[++index];
     } else {
       usage(argv[0]);
       return 2;
@@ -551,7 +529,7 @@ int main(int argc, char **argv) {
     return 3;
   }
 
-  const int listener = create_listener(socket_path, socket_group);
+  const int listener = create_listener(socket_path);
   if (listener < 0) {
     return 4;
   }
