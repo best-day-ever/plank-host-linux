@@ -1167,19 +1167,11 @@ namespace nvhttp {
 
     apps.put("<xmlattr>.status_code", 200);
 
-    for (auto &proc : proc::proc.get_apps()) {
-      if (proc.name != "Desktop") {
-        continue;
-      }
-
-      pt::ptree app;
-
-      app.put("IsHdrSupported"s, 0);
-      app.put("AppTitle"s, proc.name);
-      app.put("ID", proc.id);
-
-      apps.push_back(std::make_pair("App", std::move(app)));
-    }
+    pt::ptree app;
+    app.put("IsHdrSupported"s, 0);
+    app.put("AppTitle"s, proc::desktop_app_name);
+    app.put("ID", proc::desktop_app_id);
+    apps.push_back(std::make_pair("App", std::move(app)));
   }
 
   /**
@@ -1236,12 +1228,7 @@ namespace nvhttp {
       return;
     }
 
-    const auto &apps = proc::proc.get_apps();
-    const auto requested_app_id = std::to_string(appid);
-    const bool is_desktop = std::any_of(apps.begin(), apps.end(), [&requested_app_id](const auto &app) {
-      return app.name == "Desktop" && app.id == requested_app_id;
-    });
-    if (!is_desktop) {
+    if (!proc::is_desktop_app((int) appid)) {
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
       tree.put("root.<xmlattr>.status_message", "StationConnect permits only the Desktop session");
@@ -1318,7 +1305,7 @@ namespace nvhttp {
     }
 
     if (appid > 0) {
-      auto err = proc::proc.execute((int) appid, launch_session);
+      auto err = proc::proc.execute((int) appid);
       if (err) {
         tree.put("root.<xmlattr>.status_code", err);
         tree.put("root.<xmlattr>.status_message", "Failed to start the specified application");
@@ -1399,12 +1386,7 @@ namespace nvhttp {
       return;
     }
 
-    const auto &apps = proc::proc.get_apps();
-    const auto current_app_id = std::to_string(current_appid);
-    const bool is_desktop = std::any_of(apps.begin(), apps.end(), [&current_app_id](const auto &app) {
-      return app.name == "Desktop" && app.id == current_app_id;
-    });
-    if (!is_desktop) {
+    if (!proc::is_desktop_app(current_appid)) {
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
       tree.put("root.<xmlattr>.status_message", "StationConnect permits only the Desktop session");
@@ -1508,10 +1490,7 @@ namespace nvhttp {
   void appasset(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
-    auto args = request->parse_query_string();
-    auto app_image = proc::proc.get_app_image((int) util::from_view(get_arg(args, "appid")));
-
-    std::ifstream in(app_image, std::ios::binary);
+    std::ifstream in(proc::desktop_image_path, std::ios::binary);
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "image/png");
     response->write(SimpleWeb::StatusCode::success_ok, in, headers);

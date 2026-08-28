@@ -24,7 +24,7 @@ concerns about using Sunshine in a commercial setting, we recommend consulting w
 
 | Previous                                        |                              Next |
 |:------------------------------------------------|----------------------------------:|
-| [Gamestream Migration](gamestream_migration.md) | [Configuration](configuration.md) |
+| [Third-Party Packages](third_party_packages.md) | [Configuration](configuration.md) |
 
 </div>
 

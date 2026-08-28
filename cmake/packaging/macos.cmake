@@ -30,7 +30,7 @@ else()
             DESTINATION "${MAC_BUNDLE_RESOURCES}"
             COMPONENT Runtime)
 
-    # macOS-specific assets (apps.json, etc.)
+    # macOS-specific assets
     install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/assets/"
             DESTINATION "${MAC_BUNDLE_RESOURCES}/assets"
             COMPONENT Runtime

@@ -589,31 +589,15 @@ All shortcuts start with `Ctrl+Alt+Shift`, just like Moonlight.
 * `Ctrl+Alt+Shift+N`: Hide/Unhide the cursor (This may be useful for Remote Desktop Mode for Moonlight)
 * `Ctrl+Alt+Shift+F1/F12`: Switch to different monitor for Streaming
 
-### Application List
-* Applications should be configured via the web UI
-* A basic understanding of working directories and commands is required
-* You can use Environment variables in place of values
-* `$(HOME)` will be replaced by the value of `$HOME`
-* `$$` will be replaced by `$`, e.g. `$$(HOME)` will be become `$(HOME)`
-* `env` - Adds or overwrites Environment variables for the commands/applications run by Sunshine.
-  This can only be changed by modifying the `apps.json` file directly.
+### StationConnect Desktop
+StationConnect exposes one fixed, process-less Desktop stream. Application
+catalogs, command launchers, and per-application environment overrides are not
+part of the product.
 
 ### Considerations
 * On Windows, Sunshine uses the Desktop Duplication API which only supports capturing from the GPU used for display.
   If you want to capture and encode on the eGPU, connect a display or HDMI dummy display dongle to it and run the games
   on that display.
-* When an application is started, if there is an application already running, it will be terminated.
-* If any of the prep-commands fail, starting the application is aborted.
-* When the application has been shutdown, the stream shuts down as well.
-
-  * For example, if you attempt to run `steam` as a `cmd` instead of `detached` the stream will immediately fail.
-    This is due to the method in which the steam process is executed. Other applications may behave similarly.
-  * This does not apply to `detached` applications.
-
-* The "Desktop" app works the same as any other application except it has no commands. It does not start an application,
-  instead it simply starts a stream. If you removed it and would like to get it back, just add a new application with
-  the name "Desktop" and "desktop.png" as the image path.
-* For the Linux flatpak you must prepend commands with `flatpak-spawn --host`.
 * If inputs (mouse, keyboard, gamepads...) aren't working after connecting:
 
   * On FreeBSD/Linux, add the user running sunshine to the `input` group.

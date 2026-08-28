@@ -231,8 +231,6 @@ namespace config {
   struct stream_t {
     std::chrono::milliseconds ping_timeout;  ///< Timeout used when waiting for client ping responses.
 
-    std::string file_apps;  ///< Path to the configured applications file.
-
     int fec_percentage;  ///< Percentage of forward-error-correction packets to add to the stream.
 
     // Video encryption settings for LAN and WAN streams
@@ -294,39 +292,6 @@ namespace config {
   }  // namespace flag
 
   /**
-   * @brief External preparation command plus its privilege requirement.
-   */
-  struct prep_cmd_t {
-    /**
-     * @brief Build a preparation command entry from parsed configuration data.
-     *
-     * @param do_cmd Command to run before the application starts.
-     * @param undo_cmd Command to run after the application exits.
-     * @param elevated Whether the command should run with elevated privileges.
-     */
-    prep_cmd_t(std::string &&do_cmd, std::string &&undo_cmd, bool &&elevated):
-        do_cmd(std::move(do_cmd)),
-        undo_cmd(std::move(undo_cmd)),
-        elevated(std::move(elevated)) {
-    }
-
-    /**
-     * @brief Build a preparation command entry from parsed configuration data.
-     *
-     * @param do_cmd Command to run before the application starts.
-     * @param elevated Whether the command should run with elevated privileges.
-     */
-    explicit prep_cmd_t(std::string &&do_cmd, bool &&elevated):
-        do_cmd(std::move(do_cmd)),
-        elevated(std::move(elevated)) {
-    }
-
-    std::string do_cmd;  ///< Command to run before the application starts.
-    std::string undo_cmd;  ///< Command to run after the application exits.
-    bool elevated;  ///< Whether the process should be launched elevated.
-  };
-
-  /**
    * @brief Top-level Sunshine configuration and credential state.
    */
   struct sunshine_t {
@@ -354,7 +319,6 @@ namespace config {
     std::string startup_layout;  ///< StationConnect display layout prepared before the display manager starts.
     std::string virtual_mode_1;  ///< Qualified resolution of StationConnect virtual output 1.
     std::string virtual_mode_2;  ///< Qualified resolution of StationConnect virtual output 2.
-    std::vector<prep_cmd_t> prep_cmds;  ///< Preparation commands executed around application launch.
   };
 
   extern video_t video;

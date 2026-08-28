@@ -58,8 +58,6 @@ using namespace std::literals;
 constexpr auto CA_DIR = "credentials";  ///< Subdirectory under app data that stores Sunshine credentials.
 const std::string PRIVATE_KEY_FILE = std::string(CA_DIR) + "/cakey.pem";  ///< Relative path to the persisted private key PEM file.
 const std::string CERTIFICATE_FILE = std::string(CA_DIR) + "/cacert.pem";  ///< Relative path to the persisted certificate PEM file.
-const std::string APPS_JSON_PATH = platf::appdata().string() + "/apps.json";  ///< Default path to the applications JSON file.
-
 namespace config {
 
   namespace nv {
@@ -808,8 +806,6 @@ namespace config {
   stream_t stream {
     10s,  // ping_timeout
 
-    APPS_JSON_PATH,
-
     20,  // fecPercentage
 
     ENCRYPTION_MODE_NEVER,  // lan_encryption_mode
@@ -874,7 +870,6 @@ namespace config {
     "physical",  // StationConnect startup display layout
     "1920x1080",  // StationConnect virtual output 1 mode
     "1920x1080",  // StationConnect virtual output 2 mode
-    {},  // prep commands
   };
 
   /**
@@ -1415,39 +1410,6 @@ namespace config {
   }
 
   /**
-   * @brief Consume the JSON preparation-command list setting.
-   *
-   * @param vars Parsed configuration entries; consumed keys are erased.
-   * @param name Configuration key to consume.
-   * @param input Destination field updated when the setting exists and parses successfully.
-   */
-  void list_prep_cmd_f(std::unordered_map<std::string, std::string> &vars, const std::string &name, std::vector<prep_cmd_t> &input) {
-    std::string string;
-    string_f(vars, name, string);
-
-    std::stringstream jsonStream;
-
-    // check if string is empty, i.e. when the value doesn't exist in the config file
-    if (string.empty()) {
-      return;
-    }
-
-    // We need to add a wrapping object to make it valid JSON, otherwise ptree cannot parse it.
-    jsonStream << "{\"prep_cmd\":" << string << "}";
-
-    boost::property_tree::ptree jsonTree;
-    boost::property_tree::read_json(jsonStream, jsonTree);
-
-    for (auto &[_, prep_cmd] : jsonTree.get_child("prep_cmd"s)) {
-      auto do_cmd = prep_cmd.get_optional<std::string>("do"s);
-      auto undo_cmd = prep_cmd.get_optional<std::string>("undo"s);
-      auto elevated = prep_cmd.get_optional<bool>("elevated"s);
-
-      input.emplace_back(do_cmd.value_or(""), undo_cmd.value_or(""), elevated.value_or(false));
-    }
-  }
-
-  /**
    * @brief Consume an integer list setting from decimal or hexadecimal configuration text.
    *
    * @param vars Parsed configuration entries; consumed keys are erased.
@@ -1687,8 +1649,6 @@ namespace config {
     bool_f(vars, "allow_root_login", broker_allow_root_login);
 
     string_f(vars, "external_ip", nvhttp.external_ip);
-    list_prep_cmd_f(vars, "global_prep_cmd", config::sunshine.prep_cmds);
-
     string_f(vars, "audio_sink", audio.sink);
     string_f(vars, "virtual_sink", audio.virtual_sink);
     bool_f(vars, "stream_audio", audio.stream);
@@ -1703,19 +1663,6 @@ namespace config {
     int_between_f(vars, "lan_encryption_mode", stream.lan_encryption_mode, {0, 2});
     int_between_f(vars, "wan_encryption_mode", stream.wan_encryption_mode, {0, 2});
     int_between_f(vars, "packetsize", stream.packetsize, {0, PACKETSIZE_MAX});
-
-    path_f(vars, "file_apps", stream.file_apps);
-#ifndef __ANDROID__
-    // TODO: Android can possibly support this
-    if (!fs::exists(stream.file_apps.c_str())) {
-      fs::copy_file(SUNSHINE_ASSETS_DIR "/apps.json", stream.file_apps);
-      fs::permissions(
-        stream.file_apps,
-        fs::perms::owner_read | fs::perms::owner_write,
-        fs::perm_options::add
-      );
-    }
-#endif
 
     int_between_f(vars, "fec_percentage", stream.fec_percentage, {1, 255});
 

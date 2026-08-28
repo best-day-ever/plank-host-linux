@@ -13,7 +13,7 @@
 
 | Previous                        |                Next |
 |:--------------------------------|--------------------:|
-| [App Examples](app_examples.md) | [Guides](guides.md) |
+| [Configuration](configuration.md) | [Guides](guides.md) |
 
 </div>
 

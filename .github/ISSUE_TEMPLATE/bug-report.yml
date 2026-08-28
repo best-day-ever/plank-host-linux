@@ -158,15 +158,6 @@ body:
     validations:
       required: false
   - type: textarea
-    id: apps
-    attributes:
-      label: Apps
-      description: |
-        If this is an issue with launching a game or app, please copy and paste your `apps.json` file.
-      render: json
-    validations:
-      required: false
-  - type: textarea
     id: logs
     attributes:
       label: Log output

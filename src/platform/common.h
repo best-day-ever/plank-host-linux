@@ -16,7 +16,6 @@
 #include <boost/core/noncopyable.hpp>
 #ifndef _WIN32
   #include <boost/asio.hpp>
-  #include <boost/process/v1.hpp>
 #endif
 
 // local includes
@@ -953,21 +952,6 @@ namespace platf {
   bool needs_encoder_reenumeration();
 
   /**
-   * @brief Launch a configured preparation or application command.
-   *
-   * @param elevated Whether the command should run with elevated privileges.
-   * @param interactive Whether the command should run in an interactive session.
-   * @param cmd Command line to execute or inspect.
-   * @param working_dir Working directory for the child process.
-   * @param env Environment variables for the child process.
-   * @param file Optional stdio file handle connected to the child process.
-   * @param ec Error code returned by the asynchronous operation.
-   * @param group Process group used when launching the command.
-   * @return Child process handle for the launched command.
-   */
-  boost::process::v1::child run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const boost::process::v1::environment &env, FILE *file, std::error_code &ec, boost::process::v1::group *group);
-
-  /**
    * @brief Enumerates supported thread priority options.
    */
   enum class thread_priority_e : int {
@@ -1120,26 +1104,6 @@ namespace platf {
    * @return Cleanup handle that restores or releases QoS state when destroyed.
    */
   std::unique_ptr<deinit_t> enable_socket_qos(uintptr_t native_socket, boost::asio::ip::address &address, uint16_t port, qos_data_type_e data_type, bool dscp_tagging);
-
-  /**
-   * @brief Open a url in the default web browser.
-   * @param url The url to open.
-   */
-  void open_url(const std::string &url);
-
-  /**
-   * @brief Attempt to gracefully terminate a process group.
-   * @param native_handle The native handle of the process group.
-   * @return `true` if termination was successfully requested.
-   */
-  bool request_process_group_exit(std::uintptr_t native_handle);
-
-  /**
-   * @brief Check if a process group still has running children.
-   * @param native_handle The native handle of the process group.
-   * @return `true` if processes are still running.
-   */
-  bool process_group_running(std::uintptr_t native_handle);
 
   /**
    * @brief Create the platform input backend for a stream.

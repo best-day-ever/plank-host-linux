@@ -26,6 +26,7 @@
 #include "main.h"
 #include "nvhttp.h"
 #include "process.h"
+#include "rtsp.h"
 #ifdef __linux__
   #include "session/session_context.h"
 #endif
@@ -363,8 +364,6 @@ int main(int argc, char *argv[]) {
   // Terminate gracefully on Windows when console window is closed
   SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 #endif
-
-  proc::refresh(config::stream.file_apps);
 
   // If any of the following fail, log an error and continue so the failure is diagnosable.
 
