@@ -87,6 +87,14 @@ if(NOT Boost_FOUND)
     FetchContent_MakeAvailable(Boost)
     set(FETCH_CONTENT_BOOST_USED TRUE)
 
+    # Boost's CMake package renamed the header-only compatibility target in
+    # 1.89.0, while Simple-Web-Server still consumes the established name.
+    if(TARGET Boost::headers AND NOT TARGET Boost::boost)
+        add_library(Boost::boost INTERFACE IMPORTED)
+        set_property(TARGET Boost::boost PROPERTY
+                INTERFACE_LINK_LIBRARIES Boost::headers)
+    endif()
+
     set(Boost_FOUND TRUE)  # cmake-lint: disable=C0103
     set(Boost_INCLUDE_DIRS  # cmake-lint: disable=C0103
             "$<BUILD_INTERFACE:${Boost_SOURCE_DIR}/libs/headers/include>")
