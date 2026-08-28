@@ -8,13 +8,15 @@
 
 namespace topology = stationconnect::topology;
 
-TEST(StationConnectTopology, PublishesVersionSevenFeatureContract) {
-  EXPECT_EQ(topology::protocol_version, 7U);
+TEST(StationConnectTopology, PublishesVersionEightFeatureContract) {
+  EXPECT_EQ(topology::protocol_version, 8U);
   EXPECT_EQ(topology::feature_flags, 0x1FFFU);
   EXPECT_TRUE(topology::valid_virtual_mode("1024x2160"));
   EXPECT_TRUE(topology::valid_virtual_mode("2560x2160"));
   EXPECT_TRUE(topology::valid_virtual_mode("4096x2160"));
-  EXPECT_FALSE(topology::valid_virtual_mode("5120x2160"));
+  EXPECT_TRUE(topology::valid_virtual_mode("5120x2160"));
+  EXPECT_FALSE(topology::valid_virtual_mode("1280x720"));
+  EXPECT_FALSE(topology::valid_virtual_mode("1280x1024"));
   EXPECT_TRUE(topology::valid_virtual_layout_modes(
     "dual-horizontal", "4096x2160", "1024x2160"
   ));

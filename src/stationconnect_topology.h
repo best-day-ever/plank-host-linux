@@ -10,7 +10,7 @@
 
 namespace stationconnect::topology {
   constexpr int maximum_virtual_canvas_width = 8192;
-  constexpr std::uint32_t protocol_version = 7;
+  constexpr std::uint32_t protocol_version = 8;
   constexpr std::uint32_t feature_output_topology = 0x1;
   constexpr std::uint32_t feature_selected_output = 0x2;
   constexpr std::uint32_t feature_unified_absolute_input = 0x4;
@@ -53,8 +53,6 @@ namespace stationconnect::topology {
 
   constexpr mode_size virtual_mode_size(std::string_view mode) {
     if (mode == "1024x2160") return {1024, 2160};
-    if (mode == "1280x720") return {1280, 720};
-    if (mode == "1280x1024") return {1280, 1024};
     if (mode == "1280x2160") return {1280, 2160};
     if (mode == "1920x1080") return {1920, 1080};
     if (mode == "1920x1200") return {1920, 1200};
@@ -65,6 +63,7 @@ namespace stationconnect::topology {
     if (mode == "3840x1600") return {3840, 1600};
     if (mode == "3840x2160") return {3840, 2160};
     if (mode == "4096x2160") return {4096, 2160};
+    if (mode == "5120x2160") return {5120, 2160};
     return {0, 0};
   }
 
