@@ -42,7 +42,6 @@
 // lib includes
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/host_name.hpp>
-#include <boost/process/v1.hpp>
 #include <fcntl.h>
 #include <lizardbyte/common/env.h>
 #include <unistd.h>
@@ -97,7 +96,6 @@
 
 using namespace std::literals;
 namespace fs = std::filesystem;
-namespace bp = boost::process::v1;
 
 window_system_e window_system;  ///< Window system.
 
@@ -357,47 +355,6 @@ namespace platf {
     return {port, std::string {data}};
   }
 
-  bp::child run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group) {
-    // clang-format off
-    if (!group) {
-      if (!file) {
-        return bp::child(cmd, env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > bp::null, bp::std_err > bp::null, bp::limit_handles, ec);
-      }
-      else {
-        return bp::child(cmd, env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > file, bp::std_err > file, bp::limit_handles, ec);
-      }
-    }
-    else {
-      if (!file) {
-        return bp::child(cmd, env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > bp::null, bp::std_err > bp::null, bp::limit_handles, ec, *group);
-      }
-      else {
-        return bp::child(cmd, env, bp::start_dir(working_dir), bp::std_in < bp::null, bp::std_out > file, bp::std_err > file, bp::limit_handles, ec, *group);
-      }
-    }
-    // clang-format on
-  }
-
-  /**
-   * @brief Open a url in the default web browser.
-   * @param url The url to open.
-   */
-  void open_url(const std::string &url) {
-    // set working dir to user home directory
-    auto working_dir = boost::filesystem::path(lizardbyte::common::get_env("HOME"));
-    std::string cmd = R"(xdg-open ")" + url + R"(")";
-
-    boost::process::v1::environment _env = boost::this_process::environment();
-    std::error_code ec;
-    auto child = run_command(false, false, cmd, working_dir, _env, nullptr, ec, nullptr);
-    if (ec) {
-      BOOST_LOG(warning) << "Couldn't open url ["sv << url << "]: System: "sv << ec.message();
-    } else {
-      BOOST_LOG(info) << "Opened url ["sv << url << "]"sv;
-      child.detach();
-    }
-  }
-
   /**
    * @brief Apply the requested scheduling priority to the current thread.
    */
@@ -523,20 +480,6 @@ namespace platf {
     // Gracefully clean up and restart ourselves instead of exiting
     atexit(restart_on_exit);
     lifetime::exit_sunshine(0, true);
-  }
-
-  bool request_process_group_exit(std::uintptr_t native_handle) {
-    if (kill(-((pid_t) native_handle), SIGTERM) == 0 || errno == ESRCH) {
-      BOOST_LOG(debug) << "Successfully sent SIGTERM to process group: "sv << native_handle;
-      return true;
-    } else {
-      BOOST_LOG(warning) << "Unable to send SIGTERM to process group ["sv << native_handle << "]: "sv << errno;
-      return false;
-    }
-  }
-
-  bool process_group_running(std::uintptr_t native_handle) {
-    return waitpid(-((pid_t) native_handle), nullptr, WNOHANG) >= 0;
   }
 
   /**

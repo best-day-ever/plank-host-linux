@@ -33,6 +33,7 @@ extern "C" {
 #include "platform/common.h"
 #include "process.h"
 #include "raw_hid_tablet.h"
+#include "rtsp.h"
 #include "session/session_context.h"
 #include "stream.h"
 #include "stationconnect_bitrate.h"

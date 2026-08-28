@@ -185,30 +185,6 @@ The packaged profile contains the settings StationConnect currently overrides. E
     </tr>
 </table>
 
-### global_prep_cmd
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            A list of commands to be run before/after all applications.
-            If any of the prep-commands fail, starting the application is aborted.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            []
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            global_prep_cmd = [{"do":"nircmd.exe setdisplay 1280 720 32 144","elevated":true,"undo":"nircmd.exe setdisplay 2560 1440 32 144"}]
-            @endcode</td>
-    </tr>
-</table>
-
 ### notify_pre_releases
 
 <table>
@@ -1355,27 +1331,23 @@ The packaged profile contains the settings StationConnect currently overrides. E
 
 ## Config Files
 
-### file_apps
+### allow_root_login
 
 <table>
     <tr>
         <td>Description</td>
         <td colspan="2">
-            The application configuration file path. The file contains a JSON formatted list of applications that
-            can be started by Moonlight.
+            Allow the PAM broker to attempt authentication for the root account.
+            This remains subject to PAM/SSSD/HBAC policy and active-desktop ownership.
         </td>
     </tr>
     <tr>
         <td>Default</td>
-        <td colspan="2">@code{}
-            apps.json
-            @endcode</td>
+        <td colspan="2">@code{}false@endcode</td>
     </tr>
     <tr>
         <td>Example</td>
-        <td colspan="2">@code{}
-            file_apps = apps.json
-            @endcode</td>
+        <td colspan="2">@code{}allow_root_login = false@endcode</td>
     </tr>
 </table>
 
@@ -2873,7 +2845,7 @@ The packaged profile contains the settings StationConnect currently overrides. E
 
 | Previous          |                            Next |
 |:------------------|--------------------------------:|
-| [Legal](legal.md) | [App Examples](app_examples.md) |
+| [Legal](legal.md) | [Awesome Sunshine](awesome_sunshine.md) |
 
 </div>
 
