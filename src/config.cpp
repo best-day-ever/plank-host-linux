@@ -1681,6 +1681,11 @@ namespace config {
     path_f(vars, "log_path", config::sunshine.log_file);
     path_f(vars, "file_state", nvhttp.file_state);
 
+    // The root-owned PAM broker enforces this setting. Consume it here so the
+    // media worker accepts the shared configuration without owning auth policy.
+    bool broker_allow_root_login = false;
+    bool_f(vars, "allow_root_login", broker_allow_root_login);
+
     string_f(vars, "external_ip", nvhttp.external_ip);
     list_prep_cmd_f(vars, "global_prep_cmd", config::sunshine.prep_cmds);
 

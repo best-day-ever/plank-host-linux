@@ -4,6 +4,7 @@
  */
 
 #include "pam_broker_protocol.h"
+#include "pam_broker_policy.h"
 
 #include <cerrno>
 #include <csignal>
@@ -31,6 +32,7 @@ namespace auth = stationconnect::auth;
 
 namespace {
   constexpr std::string_view default_socket_path = "/run/stationconnect/pam/auth.sock";
+  constexpr std::string_view default_config_path = "/etc/stationconnect/stationconnect.conf";
   constexpr std::string_view pam_service = "stationconnect-host";
 
   volatile std::sig_atomic_t stopping = 0;  ///< Set by termination signals.
@@ -306,7 +308,7 @@ namespace {
    * @param descriptor Connected Unix socket.
    * @param peer_uid Authenticated local peer UID.
    */
-  void serve_client(int descriptor, uid_t peer_uid) {
+  void serve_client(int descriptor, uid_t peer_uid, bool allow_root_login) {
     descriptor_t connection {descriptor};
     auth::message_t begin;
     if (!auth::read_message(connection.get(), begin) ||
@@ -321,7 +323,7 @@ namespace {
       send_result(connection.get(), begin.transaction_id, auth::phase_e::protocol, PAM_SYSTEM_ERR);
       return;
     }
-    if (username == "root") {
+    if (username == "root" && !allow_root_login) {
       send_result(connection.get(), begin.transaction_id, auth::phase_e::account, PAM_PERM_DENIED);
       std::clog << "StationConnect PAM denied root request from uid " << peer_uid << '\n';
       return;
@@ -502,7 +504,8 @@ namespace {
    * @param program Program path.
    */
   void usage(const char *program) {
-    std::cerr << "usage: " << program << " [--socket PATH]\n";
+    std::cerr << "usage: " << program
+              << " [--socket PATH] [--config PATH] [--check-config]\n";
   }
 }  // namespace
 
@@ -515,10 +518,16 @@ namespace {
  */
 int main(int argc, char **argv) {
   std::filesystem::path socket_path {default_socket_path};
+  std::string config_path {default_config_path};
+  bool check_config = false;
   for (int index = 1; index < argc; ++index) {
     const std::string_view argument {argv[index]};
     if (argument == "--socket" && index + 1 < argc) {
       socket_path = argv[++index];
+    } else if (argument == "--config" && index + 1 < argc) {
+      config_path = argv[++index];
+    } else if (argument == "--check-config") {
+      check_config = true;
     } else {
       usage(argv[0]);
       return 2;
@@ -529,9 +538,21 @@ int main(int argc, char **argv) {
     return 3;
   }
 
+  std::string policy_error;
+  const auto policy = auth::load_broker_policy(config_path, policy_error);
+  if (!policy) {
+    std::cerr << "Unable to load PAM broker policy: " << policy_error << '\n';
+    return 4;
+  }
+  if (check_config) {
+    std::cout << "allow_root_login="
+              << (policy->allow_root_login ? "true" : "false") << '\n';
+    return 0;
+  }
+
   const int listener = create_listener(socket_path);
   if (listener < 0) {
-    return 4;
+    return 5;
   }
   listening_descriptor = listener;
   std::signal(SIGINT, stop);
@@ -541,7 +562,8 @@ int main(int argc, char **argv) {
   sigemptyset(&child_action.sa_mask);
   child_action.sa_flags = 0;
   sigaction(SIGCHLD, &child_action, nullptr);
-  std::clog << "StationConnect PAM broker listening on " << socket_path << '\n';
+  std::clog << "StationConnect PAM broker listening on " << socket_path
+            << "; root login " << (policy->allow_root_login ? "allowed" : "denied") << '\n';
 
   while (!stopping) {
     if (child_exited) {
@@ -585,7 +607,7 @@ int main(int argc, char **argv) {
       std::signal(SIGTERM, SIG_DFL);
       std::signal(SIGCHLD, SIG_DFL);
       sigprocmask(SIG_SETMASK, &previous_signals, nullptr);
-      serve_client(client, credentials.uid);
+      serve_client(client, credentials.uid, policy->allow_root_login);
       std::_Exit(0);
     }
 
