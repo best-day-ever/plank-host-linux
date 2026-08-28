@@ -760,6 +760,12 @@ namespace nvhttp {
                "Unsupported StationConnect capture source");
       return false;
     }
+    if (!video::capture_source_available(session.capture_source)) {
+      tree.put("root.<xmlattr>.status_code", 503);
+      tree.put("root.<xmlattr>.status_message",
+               "Requested StationConnect capture source is unavailable");
+      return false;
+    }
     return true;
   }
 

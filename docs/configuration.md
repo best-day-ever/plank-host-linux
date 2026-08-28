@@ -1527,113 +1527,15 @@ The packaged profile contains the settings StationConnect currently overrides. E
     </tr>
 </table>
 
-### capture
+## StationConnect capture and encoder selection
 
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Force specific screen capture method.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">Automatic.
-            Sunshine will use the first capture method available in the order of the table above.</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            capture = kms
-            @endcode</td>
-    </tr>
-    <tr>
-        <td rowspan="6">Choices</td>
-        <td>nvfbc</td>
-        <td>Use NVIDIA Frame Buffer Capture to capture direct to GPU memory. This is usually the fastest method for
-            NVIDIA cards. NvFBC does not have native Wayland support and does not work with XWayland.
-            @note{Applies to Linux only.}</td>
-    </tr>
-    <tr>
-        <td>wlr</td>
-        <td>Capture for wlroots based Wayland compositors via wlr-screencopy-unstable-v1. It is possible to capture
-            virtual displays in e.g. Hyprland using this method.
-            @note{Applies to Linux only.}</td>
-    </tr>
-    <tr>
-        <td>kms</td>
-        <td>DRM/KMS screen capture from the kernel. This requires that Sunshine has `cap_sys_admin` capability.
-            @note{Applies to Linux only.}</td>
-    </tr>
-    <tr>
-        <td>kwin</td>
-        <td>Capture with KDE/KWin Wayland compositor via KDE screencasting.
-            @note{Applies to Linux only.}</td>
-    </tr>
-    <tr>
-        <td>x11</td>
-        <td>Uses XCB. This is the slowest and most CPU intensive so should be avoided if possible.
-            @note{Applies to FreeBSD and Linux only.}</td>
-    </tr>
-    <tr>
-        <td>ddx</td>
-        <td>Use DirectX Desktop Duplication API to capture the display. This is well-supported on Windows machines.
-            @note{Applies to Windows only.}</td>
-    </tr>
-    <tr>
-        <td>wgc</td>
-        <td>(beta feature) Use Windows.Graphics.Capture to capture the display.
-            @note{Applies to Windows only.}
-            @attention{This capture method is not compatible with the Sunshine service.}</td>
-    </tr>
-</table>
-
-### encoder
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Force a specific encoder.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">Sunshine will use the first encoder that is available.</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            encoder = nvenc
-            @endcode</td>
-    </tr>
-    <tr>
-        <td rowspan="5">Choices</td>
-        <td>nvenc</td>
-        <td>For NVIDIA graphics cards</td>
-    </tr>
-    <tr>
-        <td>quicksync</td>
-        <td>For Intel graphics cards</td>
-    </tr>
-    <tr>
-        <td>amdvce</td>
-        <td>For AMD graphics cards</td>
-    </tr>
-    <tr>
-        <td>vaapi</td>
-        <td>Use VA-API (AMD, Intel)</td>
-    </tr>
-    <tr>
-        <td>vulkan</td>
-        <td>Use Vulkan encoder (AMD, Intel, NVIDIA).
-            @note{Applies to Linux only.}</td>
-    </tr>
-    <tr>
-        <td>software</td>
-        <td>Encoding occurs on the CPU</td>
-    </tr>
-</table>
+StationConnect does not expose host-global capture-source or encoder-backend
+configuration. The host independently discovers NvFBC and Native X11/XShm and
+qualifies the exact `software-cuda` and `nvenc-direct` backends at startup.
+Each authenticated bookmark request selects one supported source/profile tuple
+for its session. If that exact tuple is unavailable, the connection fails
+clearly instead of substituting another source, encoder, codec, bit depth, or
+chroma format.
 
 ## NVIDIA NVENC Encoder
 

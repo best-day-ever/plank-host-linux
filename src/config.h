@@ -40,7 +40,7 @@ namespace config {
   void log_config_settings(const std::unordered_map<std::string, std::string> &vars, bool save);
 
   /**
-   * @brief Video encoder, capture, and color settings loaded from configuration.
+   * @brief Video encoder tuning and color settings loaded from configuration.
    */
   struct video_t {
     // ffmpeg params
@@ -115,8 +115,6 @@ namespace config {
       int rc_mode;  // 0=driver, 1=cqp, 2=cbr, 4=vbr
     } vk;  ///< Vulkan encoder options.
 
-    std::string capture;  ///< Capture backend name selected by configuration.
-    std::string encoder;  ///< Encoder backend name selected by configuration.
     std::string adapter_name;  ///< Display adapter name selected in configuration.
 
     /**

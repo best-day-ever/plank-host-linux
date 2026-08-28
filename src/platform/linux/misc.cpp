@@ -1026,6 +1026,20 @@ namespace platf {
 
   static std::bitset<source::MAX_FLAGS> sources;
 
+  bool stationconnect_capture_source_available(std::string_view source_name) {
+#ifdef SUNSHINE_BUILD_CUDA
+    if (source_name == "nvfbc"sv) {
+      return sources[source::NVFBC];
+    }
+#endif
+#ifdef SUNSHINE_BUILD_X11
+    if (source_name == "x11-native10"sv) {
+      return sources[source::X11];
+    }
+#endif
+    return false;
+  }
+
 #ifdef SUNSHINE_BUILD_CUDA
   std::vector<std::string> nvfbc_display_names();
   std::shared_ptr<display_t> nvfbc_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
@@ -1274,37 +1288,36 @@ namespace platf {
 #endif
 
 #ifdef SUNSHINE_BUILD_CUDA
-    if (((config::video.capture.empty() && sources.none()) ||
-         config::video.capture == "nvfbc" ||
-         config::video.capture == "x11-native10") && verify_nvfbc()) {
+    // StationConnect bookmarks select NvFBC per session. Discover it
+    // independently instead of allowing a host-global selector to hide it.
+    if (verify_nvfbc()) {
       sources[source::NVFBC] = true;
     }
 #endif
 #ifdef SUNSHINE_BUILD_WAYLAND
-    if (((config::video.capture.empty() && sources.none()) || config::video.capture == "wlr") && verify_wl()) {
+    if (sources.none() && verify_wl()) {
       sources[source::WAYLAND] = true;
     }
 #endif
 #ifdef SUNSHINE_BUILD_DRM
-    if (((config::video.capture.empty() && sources.none()) || config::video.capture == "kms") && verify_kms()) {
+    if (sources.none() && verify_kms()) {
       sources[source::KMS] = true;
     }
 #endif
 #ifdef SUNSHINE_BUILD_X11
-    // We enumerate this capture backend regardless of other suitable sources,
-    // since it may be needed as a NvFBC fallback for software encoding on X11.
-    if ((config::video.capture.empty() || config::video.capture == "x11" ||
-         config::video.capture == "x11-native10") && verify_x11()) {
+    // Native X11/XShm is an independent per-bookmark source and may also be
+    // needed as a software-encoder fallback. Always discover it on X11.
+    if (verify_x11()) {
       sources[source::X11] = true;
     }
 #endif
 #ifdef SUNSHINE_BUILD_PORTAL
-    if ((config::video.capture.empty() || config::video.capture == "portal") && verify_portal()) {
+    if (verify_portal()) {
       sources[source::PORTAL] = true;
     }
 #endif
 #ifdef SUNSHINE_BUILD_KWIN
-    if (((config::video.capture.empty() && sources.none()) || config::video.capture == "kwin") && verify_kwin()) {
+    if (sources.none() && verify_kwin()) {
       sources[source::KWIN] = true;
     }
 #endif
