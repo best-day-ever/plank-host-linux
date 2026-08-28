@@ -1134,10 +1134,6 @@ namespace nvhttp {
     const uint32_t codec_mode_flags = get_codec_mode_flags();
     tree.put("root.ServerCodecModeSupport", codec_mode_flags);
 
-    if (!config::nvhttp.external_ip.empty()) {
-      tree.put("root.ExternalIP", config::nvhttp.external_ip);
-    }
-
     auto current_appid = authorization_status == 1 ? proc::proc.running() : 0;
     // This compatibility-shaped field reports PAM bearer authorization.
     tree.put("root.PairStatus", authorization_status);

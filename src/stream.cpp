@@ -1256,9 +1256,7 @@ namespace stream {
       return -1;
     }
 
-    const int applied_kbps = config::video.max_bitrate > 0 ?
-                               std::min(requested_kbps, config::video.max_bitrate) :
-                               requested_kbps;
+    const int applied_kbps = requested_kbps;
     const int peak_kbps = applied_kbps * config::video.sw.vbv_maxrate_percentage / 100;
 
     control_video_bitrate_applied_t plaintext {};
