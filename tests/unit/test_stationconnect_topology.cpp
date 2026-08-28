@@ -8,9 +8,10 @@
 
 namespace topology = stationconnect::topology;
 
-TEST(StationConnectTopology, PublishesVersionEightFeatureContract) {
-  EXPECT_EQ(topology::protocol_version, 8U);
-  EXPECT_EQ(topology::feature_flags, 0x1FFFU);
+TEST(StationConnectTopology, PublishesVersionNineFeatureContract) {
+  EXPECT_EQ(topology::protocol_version, 9U);
+  EXPECT_EQ(topology::feature_flags, 0x3FFFU);
+  EXPECT_NE(topology::feature_flags & topology::feature_nvfbc_hevc10_nvenc, 0U);
   EXPECT_TRUE(topology::valid_virtual_mode("1024x2160"));
   EXPECT_TRUE(topology::valid_virtual_mode("2560x2160"));
   EXPECT_TRUE(topology::valid_virtual_mode("4096x2160"));
@@ -39,6 +40,9 @@ TEST(StationConnectTopology, AcceptsOnlyExactEncodingTuples) {
     "nvfbc", "nvenc-direct", "hevc-8-444-nvenc"
   ));
   EXPECT_TRUE(topology::valid_encoding_tuple(
+    "nvfbc", "nvenc-direct", "hevc-10-444-nvenc"
+  ));
+  EXPECT_TRUE(topology::valid_encoding_tuple(
     "x11-native10", "software-cuda", "h264-10-444-software"
   ));
   EXPECT_TRUE(topology::valid_encoding_tuple(
@@ -50,9 +54,6 @@ TEST(StationConnectTopology, AcceptsOnlyExactEncodingTuples) {
   ));
   EXPECT_FALSE(topology::valid_encoding_tuple(
     "x11-native10", "software-cuda", "h264-8-444-software"
-  ));
-  EXPECT_FALSE(topology::valid_encoding_tuple(
-    "nvfbc", "nvenc-direct", "hevc-10-444-nvenc"
   ));
   EXPECT_FALSE(topology::valid_encoding_tuple(
     "nvfbc", "software-cuda", "hevc-8-444-nvenc"

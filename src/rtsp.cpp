@@ -30,6 +30,7 @@ extern "C" {
 #include "network.h"
 #include "rtsp.h"
 #include "stationconnect_bitrate.h"
+#include "stationconnect_topology.h"
 #include "stream.h"
 #include "sync.h"
 #include "video.h"
@@ -1270,8 +1271,12 @@ namespace rtsp_stream {
     if (session.encoder_backend == "nvenc-direct") {
       const bool nvfbc_mode =
         config.monitor.capture_source == video::capture_source_e::nvfbc_8bit &&
-        config.monitor.dynamicRange == 0 && exact_identity_444 &&
-        (config.monitor.videoFormat == 0 || config.monitor.videoFormat == 1);
+        exact_identity_444 &&
+        ((config.monitor.dynamicRange == 0 &&
+          (config.monitor.videoFormat == 0 || config.monitor.videoFormat == 1)) ||
+         (config.monitor.dynamicRange == 1 && config.monitor.videoFormat == 1 &&
+          (session.stationconnect_feature_flags &
+           stationconnect::topology::feature_nvfbc_hevc10_nvenc) != 0));
       const bool native10_mode =
         config.monitor.capture_source == video::capture_source_e::x11_native10 &&
         config.monitor.videoFormat == 1 &&

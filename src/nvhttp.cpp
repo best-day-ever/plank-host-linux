@@ -81,6 +81,8 @@ namespace nvhttp {
     stationconnect::topology::feature_capture_source_selection;
   constexpr auto stationconnect_feature_encoder_backend_selection =
     stationconnect::topology::feature_encoder_backend_selection;
+  constexpr auto stationconnect_feature_nvfbc_hevc10_nvenc =
+    stationconnect::topology::feature_nvfbc_hevc10_nvenc;
   constexpr auto stationconnect_topology_features = stationconnect::topology::feature_flags;
 
   /**
@@ -786,6 +788,14 @@ namespace nvhttp {
       tree.put("root.<xmlattr>.status_code", 400);
       tree.put("root.<xmlattr>.status_message",
                "Unsupported StationConnect capture and encoding mode combination");
+      return false;
+    }
+    if (session.capture_source == "nvfbc" && nvenc_hevc10_mode &&
+        (session.stationconnect_feature_flags &
+         stationconnect_feature_nvfbc_hevc10_nvenc) == 0) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message",
+               "NvFBC HEVC 10-bit NVENC negotiation is required");
       return false;
     }
     const bool exact_mode_available =
