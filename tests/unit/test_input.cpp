@@ -177,3 +177,36 @@ TEST_F(InputRetainedSessionTest, ExactRawTabletSuppressesNormalizedFallbackUntil
                                                       )));
   EXPECT_TRUE(input::testing::normalized_pen_enabled(session));
 }
+
+TEST_F(InputRetainedSessionTest, NormalizedPenReleasesRetainedRawTabletEndpoints) {
+  if (!raw_hid::available()) {
+    GTEST_SKIP() << "/dev/uhid is unavailable to the test process";
+  }
+
+  const std::string session_id = "raw-to-normalized-tablet";
+  std::uint64_t connection_id = 0;
+  auto session = input::alloc(std::make_shared<safe::mail_raw_t>(), session_id, connection_id);
+
+  constexpr std::uint16_t generation = 12;
+  ASSERT_TRUE(input::testing::handle_raw_hid(session, make_raw_hid_device_frame(generation, 0x0357)));
+  const std::uint8_t descriptor[] {
+    0x05, 0x01,
+    0x09, 0x02,
+    0xa1, 0x01,
+    0xc0,
+  };
+  ASSERT_TRUE(input::testing::handle_raw_hid(session, make_raw_hid_frame(
+                                                        SC_RAW_HID_DESCRIPTOR,
+                                                        0,
+                                                        generation,
+                                                        descriptor,
+                                                        sizeof(descriptor)
+                                                      )));
+  ASSERT_FALSE(input::testing::normalized_pen_enabled(session));
+  ASSERT_EQ(input::testing::raw_hid_generation(session), generation);
+
+  input::testing::select_normalized_pen(session);
+
+  EXPECT_TRUE(input::testing::normalized_pen_enabled(session));
+  EXPECT_EQ(input::testing::raw_hid_generation(session), 0);
+}

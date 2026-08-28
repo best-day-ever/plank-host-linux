@@ -92,6 +92,11 @@ namespace input {
     bool normalized_pen_enabled(const std::shared_ptr<input_t> &input);
 
     /**
+     * @brief Select normalized pen ownership directly for lifecycle tests.
+     */
+    void select_normalized_pen(const std::shared_ptr<input_t> &input);
+
+    /**
      * @brief Submit one keyboard transition directly for policy tests.
      */
     void handle_keyboard(const std::shared_ptr<input_t> &input, std::uint16_t key_code, bool release);

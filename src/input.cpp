@@ -319,6 +319,25 @@ namespace input {
   }
 
   /**
+   * @brief Make a normalized pen packet authoritative for tablet ownership.
+   *
+   * A client may reconnect with a first-generation Intuos Pro after a newer
+   * Wacom session left resumable UHID endpoints on the host. The normalized
+   * client deliberately sends no raw-HID attachment, so its first pen packet
+   * is the explicit transport transition that releases those stale endpoints
+   * and restores the generic pen before the packet is delivered.
+   */
+  void select_normalized_pen_backend(const std::shared_ptr<input_t> &input) {
+    if (!input->raw_hid_tablet->has_endpoints()) {
+      return;
+    }
+
+    input->raw_hid_tablet->reset();
+    sync_tablet_backend(input);
+    BOOST_LOG(info) << "Normalized pen transport selected; released retained exact raw HID tablet endpoints"sv;
+  }
+
+  /**
    * @brief Process one raw-HID frame and synchronize tablet backend ownership.
    */
   bool handle_raw_hid_frame(const std::shared_ptr<input_t> &input, const std::vector<std::uint8_t> &frame) {
@@ -1345,6 +1364,7 @@ namespace input {
         passthrough(static_cast<const NV_UNICODE_PACKET *>(static_cast<const void *>(payload)));
         break;
       case SS_PEN_MAGIC:
+        select_normalized_pen_backend(input);
         passthrough(input, (PSS_PEN_PACKET) payload);
         break;
       case SS_RAW_HID_MAGIC: {
@@ -1554,6 +1574,12 @@ namespace input {
 
     bool normalized_pen_enabled(const std::shared_ptr<input_t> &input) {
       return input && platf::normalized_pen_enabled(input->client_context.get());
+    }
+
+    void select_normalized_pen(const std::shared_ptr<input_t> &input) {
+      if (input) {
+        select_normalized_pen_backend(input);
+      }
     }
 
     void handle_keyboard(const std::shared_ptr<input_t> &input, const std::uint16_t key_code, const bool release) {
