@@ -50,8 +50,14 @@ if(NOT Boost_FOUND)
             asio
             crc
             format
-            process
             property_tree)
+
+    # StationConnect's qualified Linux host has no arbitrary command-launch
+    # surface. Retain Boost.Process only for dormant upstream platform code
+    # that is not part of the Linux product build.
+    if(WIN32 OR APPLE)
+        list(APPEND BOOST_COMPONENTS process)
+    endif()
 
     set(BOOST_ENABLE_CMAKE ON)
 
