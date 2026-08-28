@@ -410,33 +410,90 @@ namespace cuda {
     dstV[0] = to_msb_aligned_10bit(calcV(rgb, color_matrix));
   }
 
+  __device__ __forceinline__ std::uint32_t bilinear_xrgb10_channel(
+    std::uint32_t top_left,
+    std::uint32_t top_right,
+    std::uint32_t bottom_left,
+    std::uint32_t bottom_right,
+    std::uint32_t shift,
+    float x_weight,
+    float y_weight
+  ) {
+    const float top = static_cast<float>((top_left >> shift) & 0x3ffU) +
+      (static_cast<float>((top_right >> shift) & 0x3ffU) -
+       static_cast<float>((top_left >> shift) & 0x3ffU)) * x_weight;
+    const float bottom = static_cast<float>((bottom_left >> shift) & 0x3ffU) +
+      (static_cast<float>((bottom_right >> shift) & 0x3ffU) -
+       static_cast<float>((bottom_left >> shift) & 0x3ffU)) * x_weight;
+    return __float2uint_rn(top + (bottom - top) * y_weight);
+  }
+
   __global__ void XRGB10_to_identity_YUV444_10bit(
     const std::uint8_t *source,
     std::uint32_t source_pitch,
+    int source_width,
+    int source_height,
     std::uint8_t *dstYBytes,
     std::uint8_t *dstUBytes,
     std::uint8_t *dstVBytes,
     std::uint32_t destination_pitch,
-    int width,
-    int height
+    int destination_width,
+    int destination_height
   ) {
     const int x = threadIdx.x + blockDim.x * blockIdx.x;
     const int y = threadIdx.y + blockDim.y * blockIdx.y;
-    if (x >= width || y >= height) {
+    if (x >= destination_width || y >= destination_height) {
       return;
     }
 
-    const auto pixel = reinterpret_cast<const std::uint32_t *>(
-      source + static_cast<std::size_t>(y) * source_pitch)[x];
-    auto *green = reinterpret_cast<std::uint16_t *>(
+    std::uint32_t red_value;
+    std::uint32_t green_value;
+    std::uint32_t blue_value;
+    if (source_width == destination_width && source_height == destination_height) {
+      const auto pixel = reinterpret_cast<const std::uint32_t *>(
+        source + static_cast<std::size_t>(y) * source_pitch)[x];
+      red_value = pixel & 0x3ffU;
+      green_value = (pixel >> 10U) & 0x3ffU;
+      blue_value = (pixel >> 20U) & 0x3ffU;
+    } else {
+      // Center-aligned bilinear sampling keeps Scaled-Span on the GPU while
+      // preserving the packed depth-30 X11 source and identity-GBR output.
+      const float source_x = fmaxf(
+        0.0f,
+        (static_cast<float>(x) + 0.5f) * source_width / destination_width - 0.5f);
+      const float source_y = fmaxf(
+        0.0f,
+        (static_cast<float>(y) + 0.5f) * source_height / destination_height - 0.5f);
+      const int x0 = min(static_cast<int>(source_x), source_width - 1);
+      const int y0 = min(static_cast<int>(source_y), source_height - 1);
+      const int x1 = min(x0 + 1, source_width - 1);
+      const int y1 = min(y0 + 1, source_height - 1);
+      const float x_weight = source_x - x0;
+      const float y_weight = source_y - y0;
+      const auto *top = reinterpret_cast<const std::uint32_t *>(
+        source + static_cast<std::size_t>(y0) * source_pitch);
+      const auto *bottom = reinterpret_cast<const std::uint32_t *>(
+        source + static_cast<std::size_t>(y1) * source_pitch);
+      red_value = bilinear_xrgb10_channel(
+        top[x0], top[x1], bottom[x0], bottom[x1], 0U,
+        x_weight, y_weight);
+      green_value = bilinear_xrgb10_channel(
+        top[x0], top[x1], bottom[x0], bottom[x1], 10U,
+        x_weight, y_weight);
+      blue_value = bilinear_xrgb10_channel(
+        top[x0], top[x1], bottom[x0], bottom[x1], 20U,
+        x_weight, y_weight);
+    }
+
+    auto *green_plane = reinterpret_cast<std::uint16_t *>(
       dstYBytes + static_cast<std::size_t>(y) * destination_pitch);
-    auto *blue = reinterpret_cast<std::uint16_t *>(
+    auto *blue_plane = reinterpret_cast<std::uint16_t *>(
       dstUBytes + static_cast<std::size_t>(y) * destination_pitch);
-    auto *red = reinterpret_cast<std::uint16_t *>(
+    auto *red_plane = reinterpret_cast<std::uint16_t *>(
       dstVBytes + static_cast<std::size_t>(y) * destination_pitch);
-    red[x] = static_cast<std::uint16_t>((pixel & 0x3ffU) << 6U);
-    green[x] = static_cast<std::uint16_t>(((pixel >> 10U) & 0x3ffU) << 6U);
-    blue[x] = static_cast<std::uint16_t>(((pixel >> 20U) & 0x3ffU) << 6U);
+    red_plane[x] = static_cast<std::uint16_t>(red_value << 6U);
+    green_plane[x] = static_cast<std::uint16_t>(green_value << 6U);
+    blue_plane[x] = static_cast<std::uint16_t>(blue_value << 6U);
   }
 
   int tex_t::copy(std::uint8_t *src, int height, int pitch) {
@@ -640,22 +697,25 @@ namespace cuda {
     return convert_yuv444_10bit(Y, U, V, pitch, texture, stream, viewport);
   }
 
-  int unpack_xrgb10_to_yuv444_10bit(std::uintptr_t source,
-                                    std::uint32_t source_pitch,
-                                    std::uint8_t *Y,
-                                    std::uint8_t *U,
-                                    std::uint8_t *V,
-                                    std::uint32_t destination_pitch,
-                                    int width,
-                                    int height,
-                                    stream_t::pointer stream) {
+  int scale_xrgb10_to_yuv444_10bit(std::uintptr_t source,
+                                   std::uint32_t source_pitch,
+                                   int source_width,
+                                   int source_height,
+                                   std::uint8_t *Y,
+                                   std::uint8_t *U,
+                                   std::uint8_t *V,
+                                   std::uint32_t destination_pitch,
+                                   int destination_width,
+                                   int destination_height,
+                                   stream_t::pointer stream) {
     constexpr int threads_per_block = 16;
     const dim3 block(threads_per_block, threads_per_block);
-    const dim3 grid(div_align(width, threads_per_block),
-                    div_align(height, threads_per_block));
+    const dim3 grid(div_align(destination_width, threads_per_block),
+                    div_align(destination_height, threads_per_block));
     XRGB10_to_identity_YUV444_10bit<<<grid, block, 0, stream>>>(
       reinterpret_cast<const std::uint8_t *>(source), source_pitch,
-      Y, U, V, destination_pitch, width, height);
+      source_width, source_height, Y, U, V, destination_pitch,
+      destination_width, destination_height);
     return CU_CHECK_IGNORE(cudaGetLastError(),
                            "XRGB10_to_identity_YUV444_10bit failed");
   }

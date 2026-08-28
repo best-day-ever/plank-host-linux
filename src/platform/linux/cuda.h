@@ -86,15 +86,17 @@ namespace cuda {
 
   stream_t make_stream(int flags = 0);
 
-  int unpack_xrgb10_to_yuv444_10bit(std::uintptr_t source,
-                                    std::uint32_t source_pitch,
-                                    std::uint8_t *Y,
-                                    std::uint8_t *U,
-                                    std::uint8_t *V,
-                                    std::uint32_t destination_pitch,
-                                    int width,
-                                    int height,
-                                    stream_t::pointer stream);
+  int scale_xrgb10_to_yuv444_10bit(std::uintptr_t source,
+                                   std::uint32_t source_pitch,
+                                   int source_width,
+                                   int source_height,
+                                   std::uint8_t *Y,
+                                   std::uint8_t *U,
+                                   std::uint8_t *V,
+                                   std::uint32_t destination_pitch,
+                                   int destination_width,
+                                   int destination_height,
+                                   stream_t::pointer stream);
 
   struct viewport_t {
     int width;

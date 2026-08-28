@@ -844,11 +844,16 @@ namespace cuda {
       }
       if (native10_input &&
           (buffer_format != platf::pix_fmt_e::yuv444p16 ||
-           output_width != input_width || output_height != input_height ||
            colorspace.colorspace != video::colorspace_e::identity_gbr ||
            colorspace.bit_depth != 10)) {
-        BOOST_LOG(error) << "Native X11 direct NVENC requires 1:1 10-bit 4:4:4 identity input"sv;
+        BOOST_LOG(error) << "Native X11 direct NVENC requires 10-bit 4:4:4 identity input"sv;
         return false;
+      }
+      if (native10_input &&
+          (output_width != input_width || output_height != input_height)) {
+        BOOST_LOG(info) << "Native X11 direct NVENC CUDA scaling: "sv
+                        << input_width << 'x' << input_height << " -> "sv
+                        << output_width << 'x' << output_height;
       }
 
       const std::size_t row_bytes = static_cast<std::size_t>(output_width) * (ten_bit ? 2U : 1U);
@@ -916,9 +921,9 @@ namespace cuda {
         copy.Height = input_height;
         CU_CHECK(cdf->cuMemcpy2DAsync(&copy, stream.get()),
                  "Couldn't upload native X11 RGB10 frame");
-        status = unpack_xrgb10_to_yuv444_10bit(
+        status = scale_xrgb10_to_yuv444_10bit(
           static_cast<std::uintptr_t>(native10_source), native10_source_pitch,
-          base, base + pitch * output_height,
+          input_width, input_height, base, base + pitch * output_height,
           base + pitch * output_height * 2, pitch,
           output_width, output_height, stream.get());
       } else {
