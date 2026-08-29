@@ -1279,6 +1279,26 @@ namespace stream {
     std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
       encrypted_payload;
     const auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
+#ifdef STATIONCONNECT_DATASMASH
+    if (session->datasmash_endpoint) {
+      auto *endpoint = static_cast<ScDatasmashEndpoint *>(session->datasmash_endpoint.get());
+      const auto result = sc_datasmash_control_send(
+        endpoint,
+        reinterpret_cast<const std::uint8_t *>(payload.data()),
+        payload.size()
+      );
+      if (result != SC_DATASMASH_OK) {
+        BOOST_LOG(error) << "Datasmash bitrate acknowledgement failed with result "sv
+                         << result;
+        session::stop(*session);
+        return -1;
+      }
+      BOOST_LOG(info) << "Confirmed StationConnect encoder target over Datasmash: requested="sv
+                      << requested_kbps << " Kbps, applied="sv << applied_kbps
+                      << " Kbps, peak="sv << peak_kbps << " Kbps"sv;
+      return 0;
+    }
+#endif
     const auto result = session->broadcast_ref->control_server.send(payload, session->control.peer);
     if (!result) {
       BOOST_LOG(info) << "Confirmed StationConnect encoder target: requested="sv
@@ -2515,7 +2535,7 @@ namespace stream {
         stats.abi_version = SC_DATASMASH_ABI_VERSION;
         auto *endpoint = static_cast<ScDatasmashEndpoint *>(session.datasmash_endpoint.get());
         if (sc_datasmash_endpoint_stats(endpoint, &stats) == SC_DATASMASH_OK) {
-          BOOST_LOG(info) << "Datasmash media transport: video_sent="sv
+        BOOST_LOG(info) << "Datasmash media transport: video_sent="sv
                           << stats.video_packets_sent << " packets/"sv
                           << stats.video_bytes_sent << " bytes, send_queue_drops="sv
                           << stats.video_send_queue_drops << ", transport_send_drops="sv
@@ -2527,7 +2547,11 @@ namespace stream {
                           << stats.audio_transport_send_drops << ", send_queue_high_water="sv
                           << stats.audio_send_queue_high_water << "; QUIC_packets_lost="sv
                           << stats.media_quic_packets_lost << ", RTT="sv
-                          << stats.media_quic_rtt_us << " us; control_received="sv
+                          << stats.media_quic_rtt_us << " us; control_sent="sv
+                          << stats.control_packets_sent << " packets/"sv
+                          << stats.control_bytes_sent << " bytes, send_queue_full="sv
+                          << stats.control_send_queue_full << ", send_queue_high_water="sv
+                          << stats.control_send_queue_high_water << "; control_received="sv
                           << stats.control_packets_received << " packets/"sv
                           << stats.control_bytes_received << " bytes, receive_queue_overflow="sv
                           << stats.control_receive_queue_overflow
