@@ -44,6 +44,7 @@ extern "C" {
 
 #ifdef STATIONCONNECT_DATASMASH
   #include <stationconnect_datasmash.h>
+  #include <stationconnect_datasmash_control.h>
 #endif
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
@@ -72,7 +73,6 @@ constexpr int IDX_VIDEO_BITRATE_APPLIED = 18;  ///< Control-stream message index
 constexpr int IDX_CURSOR_SHAPE = 19;  ///< Control-stream message index for StationConnect local cursor chunks.
 constexpr int IDX_CURSOR_POSITION = 20;  ///< Control-stream message index for StationConnect cursor positions.
 #ifdef STATIONCONNECT_DATASMASH
-constexpr std::size_t DATASMASH_CONTROL_PACKET_MAX_SIZE = 64 * 1024;
 constexpr int DATASMASH_CONTROL_DRAIN_LIMIT = 16;
 #endif
 
@@ -1262,31 +1262,25 @@ namespace stream {
    * @brief Confirm an accepted StationConnect encoder target to the client.
    */
   int send_video_bitrate_applied(session_t *session, const int requested_kbps) {
-    if (!session->control.peer) {
-      return -1;
-    }
-
     const int applied_kbps = requested_kbps;
     const int peak_kbps = applied_kbps * config::video.sw.vbv_maxrate_percentage / 100;
 
-    control_video_bitrate_applied_t plaintext {};
-    plaintext.header.type = packetTypes[IDX_VIDEO_BITRATE_APPLIED];
-    plaintext.header.payloadLength = sizeof(plaintext) - sizeof(control_header_v2);
-    plaintext.requested_kbps = requested_kbps;
-    plaintext.applied_kbps = applied_kbps;
-    plaintext.peak_kbps = peak_kbps;
-
-    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
-      encrypted_payload;
-    const auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
 #ifdef STATIONCONNECT_DATASMASH
     if (session->datasmash_endpoint) {
-      auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
-      const auto result = sc_datasmash_native_data_send(
-        endpoint,
-        reinterpret_cast<const std::uint8_t *>(payload.data()),
-        payload.size()
+      const std::uint32_t values[] {
+        static_cast<std::uint32_t>(requested_kbps),
+        static_cast<std::uint32_t>(applied_kbps),
+        static_cast<std::uint32_t>(peak_kbps),
+      };
+      std::array<std::uint8_t, SC_DATASMASH_CONTROL_MAX_PACKET_SIZE> packet {};
+      std::size_t packet_size = 0;
+      const auto encode_result = sc_datasmash_control_encode(
+        SC_DATASMASH_CONTROL_VIDEO_BITRATE_APPLIED, values, std::size(values),
+        packet.data(), packet.size(), &packet_size
       );
+      auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
+      const auto result = encode_result != 0 ? SC_DATASMASH_ERROR_INVALID_ARGUMENT :
+        sc_datasmash_native_data_send(endpoint, packet.data(), packet_size);
       if (result != SC_DATASMASH_OK) {
         BOOST_LOG(error) << "Datasmash bitrate acknowledgement failed with result "sv
                          << result;
@@ -1299,6 +1293,20 @@ namespace stream {
       return 0;
     }
 #endif
+    if (!session->control.peer) {
+      return -1;
+    }
+
+    control_video_bitrate_applied_t plaintext {};
+    plaintext.header.type = packetTypes[IDX_VIDEO_BITRATE_APPLIED];
+    plaintext.header.payloadLength = sizeof(plaintext) - sizeof(control_header_v2);
+    plaintext.requested_kbps = requested_kbps;
+    plaintext.applied_kbps = applied_kbps;
+    plaintext.peak_kbps = peak_kbps;
+
+    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+      encrypted_payload;
+    const auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
     const auto result = session->broadcast_ref->control_server.send(payload, session->control.peer);
     if (!result) {
       BOOST_LOG(info) << "Confirmed StationConnect encoder target: requested="sv
@@ -1309,8 +1317,8 @@ namespace stream {
   }
 
 #ifdef STATIONCONNECT_DATASMASH
-  void drain_datasmash_control(control_server_t *server, session_t *session,
-                               std::array<std::uint8_t, DATASMASH_CONTROL_PACKET_MAX_SIZE> &packet) {
+  void drain_datasmash_control(session_t *session,
+                               std::array<std::uint8_t, SC_DATASMASH_CONTROL_MAX_PACKET_SIZE> &packet) {
     if (!session->datasmash_endpoint) {
       return;
     }
@@ -1323,21 +1331,73 @@ namespace stream {
       if (result == SC_DATASMASH_TIMEOUT) {
         return;
       }
-      if (result != SC_DATASMASH_OK || packet_size < sizeof(std::uint16_t) ||
-          packet_size > packet.size()) {
-        BOOST_LOG(error) << "Datasmash control receive failed: result="sv << result
-                         << ", packet_size="sv << packet_size;
+      if (result != SC_DATASMASH_OK || packet_size > packet.size()) {
+        const auto state = sc_datasmash_native_endpoint_state(endpoint);
+        if (result == SC_DATASMASH_ERROR_INVALID_STATE || state != SC_DATASMASH_STATE_READY) {
+          BOOST_LOG(info) << "Datasmash peer closed its native control channel"sv;
+        } else {
+          BOOST_LOG(error) << "Datasmash control receive failed: result="sv << result
+                           << ", packet_size="sv << packet_size;
+        }
         session::stop(*session);
         return;
       }
 
-      std::uint16_t type;
-      std::memcpy(&type, packet.data(), sizeof(type));
-      const std::string_view payload {
-        reinterpret_cast<const char *>(packet.data() + sizeof(type)),
-        packet_size - sizeof(type),
-      };
-      server->call(type, session, payload, false);
+      ScDatasmashControlPacket control {};
+      if (sc_datasmash_control_decode(packet.data(), packet_size, &control)) {
+        BOOST_LOG(error) << "Rejected malformed Datasmash control packet"sv;
+        session::stop(*session);
+        return;
+      }
+      switch (control.type) {
+        case SC_DATASMASH_CONTROL_CLIENT_DISCONNECT:
+          if (control.payload_size != 0) {
+            BOOST_LOG(error) << "Rejected malformed Datasmash disconnect"sv;
+          } else {
+            BOOST_LOG(info) << "Datasmash client requested a clean disconnect"sv;
+          }
+          session::stop(*session);
+          return;
+        case SC_DATASMASH_CONTROL_REQUEST_IDR:
+          if (control.payload_size != 0) {
+            BOOST_LOG(error) << "Rejected malformed Datasmash IDR request"sv;
+            session::stop(*session);
+            return;
+          }
+          session->video.idr_events->raise(true);
+          break;
+        case SC_DATASMASH_CONTROL_INVALIDATE_REFERENCE_FRAMES:
+          if (control.payload_size != 2 * sizeof(std::uint32_t) ||
+              sc_datasmash_control_read_u32(control.payload) >
+                sc_datasmash_control_read_u32(control.payload + 4)) {
+            BOOST_LOG(error) << "Rejected malformed Datasmash reference-frame request"sv;
+            session::stop(*session);
+            return;
+          }
+          session->video.invalidate_ref_frames_events->raise(
+            std::make_pair(sc_datasmash_control_read_u32(control.payload),
+                           sc_datasmash_control_read_u32(control.payload + 4))
+          );
+          break;
+        case SC_DATASMASH_CONTROL_SET_VIDEO_BITRATE: {
+          const auto bitrate = control.payload_size == sizeof(std::uint32_t) ?
+            stationconnect::bitrate::validate_target(
+              sc_datasmash_control_read_u32(control.payload)) : std::nullopt;
+          if (!bitrate) {
+            BOOST_LOG(error) << "Rejected malformed Datasmash bitrate request"sv;
+            session::stop(*session);
+            return;
+          }
+          session->mail->event<int>(mail::video_bitrate)->raise(*bitrate);
+          send_video_bitrate_applied(session, *bitrate);
+          break;
+        }
+        default:
+          BOOST_LOG(error) << "Rejected unexpected client Datasmash control type "sv
+                           << control.type;
+          session::stop(*session);
+          return;
+      }
       if (session->state.load(std::memory_order_acquire) == session::state_e::STOPPING) {
         return;
       }
@@ -1511,7 +1571,7 @@ namespace stream {
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
     auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
 #ifdef STATIONCONNECT_DATASMASH
-    std::array<std::uint8_t, DATASMASH_CONTROL_PACKET_MAX_SIZE> datasmash_control_packet;
+    std::array<std::uint8_t, SC_DATASMASH_CONTROL_MAX_PACKET_SIZE> datasmash_control_packet;
 #endif
     while (!shutdown_event->peek() && !broadcast_shutdown_event->peek()) {
       bool has_session_awaiting_peer = false;
@@ -1530,7 +1590,7 @@ namespace stream {
           auto session = *pos;
 
 #ifdef STATIONCONNECT_DATASMASH
-          drain_datasmash_control(server, session, datasmash_control_packet);
+          drain_datasmash_control(session, datasmash_control_packet);
 #endif
 
           if (now > session->pingTimeout) {
@@ -1628,6 +1688,22 @@ namespace stream {
     for (auto pos = std::begin(*server->_sessions); pos != std::end(*server->_sessions); ++pos) {
       auto session = *pos;
 
+#ifdef STATIONCONNECT_DATASMASH
+      if (session->datasmash_endpoint) {
+        const std::uint32_t values[] {reason};
+        std::array<std::uint8_t, SC_DATASMASH_CONTROL_MAX_PACKET_SIZE> packet {};
+        std::size_t packet_size = 0;
+        const auto encode_result = sc_datasmash_control_encode(
+          SC_DATASMASH_CONTROL_HOST_TERMINATE, values, std::size(values),
+          packet.data(), packet.size(), &packet_size
+        );
+        auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
+        if (encode_result != 0 || sc_datasmash_native_data_send(
+              endpoint, packet.data(), packet_size) != SC_DATASMASH_OK) {
+          BOOST_LOG(warning) << "Couldn't send Datasmash termination code"sv;
+        }
+      }
+#endif
       // We may not have gotten far enough to have an ENet connection yet
       if (session->control.peer) {
         auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
@@ -1858,8 +1934,13 @@ namespace stream {
           payload.size()
         );
         if (result < SC_DATASMASH_OK) {
-          BOOST_LOG(error) << "Datasmash native video submission failed with result "sv
-                           << result;
+          const auto state = sc_datasmash_native_endpoint_state(endpoint);
+          if (result == SC_DATASMASH_ERROR_INVALID_STATE || state != SC_DATASMASH_STATE_READY) {
+            BOOST_LOG(info) << "Datasmash native video peer has closed"sv;
+          } else {
+            BOOST_LOG(error) << "Datasmash native video submission failed with result "sv
+                             << result;
+          }
           session::stop(*session);
         } else if (result == SC_DATASMASH_DROPPED) {
           BOOST_LOG(warning) << "Datasmash native video queue replaced an old frame"sv;
@@ -2191,8 +2272,13 @@ namespace stream {
           packet_data.size()
         );
         if (result < SC_DATASMASH_OK) {
-          BOOST_LOG(error) << "Datasmash native audio submission failed with result "sv
-                           << result;
+          const auto state = sc_datasmash_native_endpoint_state(endpoint);
+          if (result == SC_DATASMASH_ERROR_INVALID_STATE || state != SC_DATASMASH_STATE_READY) {
+            BOOST_LOG(info) << "Datasmash native audio peer has closed"sv;
+          } else {
+            BOOST_LOG(error) << "Datasmash native audio submission failed with result "sv
+                             << result;
+          }
           session::stop(*session);
         } else if (result == SC_DATASMASH_DROPPED) {
           BOOST_LOG(warning) << "Datasmash native audio queue replaced an old packet"sv;
