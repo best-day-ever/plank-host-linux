@@ -2126,7 +2126,7 @@ namespace stream {
             return;
           }
 #endif
-          platf::send(platf::send_info_t {
+          auto send_info = platf::send_info_t {
             static_cast<const char *>(header),
             header_size,
             static_cast<const char *>(payload),
@@ -2135,7 +2135,8 @@ namespace stream {
             peer_address,
             session->audio.peer.port(),
             session->localAddress,
-          });
+          };
+          platf::send(send_info);
         };
         send_audio_packet(
           &audio_packet,
