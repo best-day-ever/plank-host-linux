@@ -2460,15 +2460,17 @@ namespace stream {
 
     while_starting_do_nothing(session->state);
 
-    auto ref = broadcast.ref();
-    auto error = recv_ping(session, ref, socket_e::video, session->video.ping_payload, session->video.peer, config::stream.ping_timeout);
-    if (error < 0) {
-      return;
-    }
+    if (!session->datasmash_endpoint) {
+      auto ref = broadcast.ref();
+      auto error = recv_ping(session, ref, socket_e::video, session->video.ping_payload, session->video.peer, config::stream.ping_timeout);
+      if (error < 0) {
+        return;
+      }
 
-    // Enable local prioritization and QoS tagging on video traffic if requested by the client
-    auto address = session->video.peer.address();
-    session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
+      // Enable local prioritization and QoS tagging on video traffic requested by legacy clients.
+      auto address = session->video.peer.address();
+      session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
+    }
 
     BOOST_LOG(debug) << "Start capturing Video"sv;
     video::capture(session->mail, session->config.monitor, session);
@@ -2487,15 +2489,17 @@ namespace stream {
 
     while_starting_do_nothing(session->state);
 
-    auto ref = broadcast.ref();
-    auto error = recv_ping(session, ref, socket_e::audio, session->audio.ping_payload, session->audio.peer, config::stream.ping_timeout);
-    if (error < 0) {
-      return;
-    }
+    if (!session->datasmash_endpoint) {
+      auto ref = broadcast.ref();
+      auto error = recv_ping(session, ref, socket_e::audio, session->audio.ping_payload, session->audio.peer, config::stream.ping_timeout);
+      if (error < 0) {
+        return;
+      }
 
-    // Enable local prioritization and QoS tagging on audio traffic if requested by the client
-    auto address = session->audio.peer.address();
-    session->audio.qos = platf::enable_socket_qos(ref->audio_sock.native_handle(), address, session->audio.peer.port(), platf::qos_data_type_e::audio, session->config.audioQosType != 0);
+      // Enable local prioritization and QoS tagging on audio traffic requested by legacy clients.
+      auto address = session->audio.peer.address();
+      session->audio.qos = platf::enable_socket_qos(ref->audio_sock.native_handle(), address, session->audio.peer.port(), platf::qos_data_type_e::audio, session->config.audioQosType != 0);
+    }
 
     BOOST_LOG(debug) << "Start capturing Audio"sv;
     audio::capture(session->mail, session->config.audio, session);
