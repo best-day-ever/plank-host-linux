@@ -47,7 +47,8 @@ if(STATIONCONNECT_ENABLE_DATASMASH)
     endif()
     if(NOT EXISTS "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/Cargo.toml" OR
        NOT EXISTS "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/include/stationconnect_datasmash.h" OR
-       NOT EXISTS "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/include/stationconnect_datasmash_control.h")
+       NOT EXISTS "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/include/stationconnect_datasmash_control.h" OR
+       NOT EXISTS "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/include/stationconnect_datasmash_input.h")
         message(FATAL_ERROR
                 "StationConnect datasmash transport source is incomplete: "
                 "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}")

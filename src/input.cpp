@@ -42,6 +42,10 @@ extern "C" {
 #include "thread_pool.h"
 #include "utility.h"
 
+#ifdef STATIONCONNECT_DATASMASH
+  #include <stationconnect_datasmash_input.h>
+#endif
+
 // Win32 WHEEL_DELTA constant
 #ifndef WHEEL_DELTA
 constexpr int WHEEL_DELTA = 120;  ///< Standard Windows wheel delta used to normalize scroll events.
@@ -158,6 +162,10 @@ namespace input {
    */
   float from_netfloat(netfloat f) {
     return boost::endian::endian_load<float, sizeof(float), boost::endian::order::little>(f);
+  }
+
+  void to_netfloat(float value, netfloat output) {
+    boost::endian::endian_store<float, sizeof(float), boost::endian::order::little>(output, value);
   }
 
   /**
@@ -1394,6 +1402,135 @@ namespace input {
     }
     task_pool.push(passthrough_next_message, input);
   }
+
+#ifdef STATIONCONNECT_DATASMASH
+  bool native(std::shared_ptr<input_t> &input, std::uint8_t type,
+              const std::uint8_t *payload, std::size_t payload_size) {
+    if (!input || !payload || payload_size == 0) {
+      return false;
+    }
+
+    switch (type) {
+      case SC_DATASMASH_INPUT_ABSOLUTE_MOUSE: {
+        if (payload_size != SC_DATASMASH_INPUT_ABSOLUTE_MOUSE_SIZE) {
+          return false;
+        }
+        NV_ABS_MOUSE_MOVE_PACKET packet {};
+        packet.header.magic = util::endian::little<std::uint32_t>(MOUSE_MOVE_ABS_MAGIC);
+        packet.x = util::endian::big(sc_datasmash_input_read_u16(payload));
+        packet.y = util::endian::big(sc_datasmash_input_read_u16(payload + 2));
+        packet.width = util::endian::big(sc_datasmash_input_read_u16(payload + 4));
+        packet.height = util::endian::big(sc_datasmash_input_read_u16(payload + 6));
+        passthrough(input, &packet);
+        return true;
+      }
+      case SC_DATASMASH_INPUT_MOUSE_BUTTON: {
+        if (payload_size != SC_DATASMASH_INPUT_MOUSE_BUTTON_SIZE ||
+            (payload[1] != SC_DATASMASH_INPUT_ACTION_PRESS &&
+             payload[1] != SC_DATASMASH_INPUT_ACTION_RELEASE)) {
+          return false;
+        }
+        NV_MOUSE_BUTTON_PACKET packet {};
+        packet.header.magic = util::endian::little<std::uint32_t>(
+          payload[1] == SC_DATASMASH_INPUT_ACTION_PRESS ?
+            MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5 : MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5
+        );
+        packet.button = payload[0];
+        passthrough(input, &packet);
+        return true;
+      }
+      case SC_DATASMASH_INPUT_VERTICAL_SCROLL: {
+        if (payload_size != SC_DATASMASH_INPUT_SCROLL_SIZE) {
+          return false;
+        }
+        NV_SCROLL_PACKET packet {};
+        packet.scrollAmt1 = util::endian::big(
+          static_cast<std::int16_t>(sc_datasmash_input_read_u16(payload))
+        );
+        passthrough(input, &packet);
+        return true;
+      }
+      case SC_DATASMASH_INPUT_HORIZONTAL_SCROLL: {
+        if (payload_size != SC_DATASMASH_INPUT_SCROLL_SIZE) {
+          return false;
+        }
+        SS_HSCROLL_PACKET packet {};
+        packet.scrollAmount = util::endian::big(
+          static_cast<std::int16_t>(sc_datasmash_input_read_u16(payload))
+        );
+        passthrough(input, &packet);
+        return true;
+      }
+      case SC_DATASMASH_INPUT_KEYBOARD: {
+        if (payload_size != SC_DATASMASH_INPUT_KEYBOARD_SIZE ||
+            (payload[2] != SC_DATASMASH_INPUT_ACTION_PRESS &&
+             payload[2] != SC_DATASMASH_INPUT_ACTION_RELEASE)) {
+          return false;
+        }
+        NV_KEYBOARD_PACKET packet {};
+        packet.header.magic = util::endian::little<std::uint32_t>(
+          payload[2] == SC_DATASMASH_INPUT_ACTION_PRESS ?
+            KEY_DOWN_EVENT_MAGIC : KEY_UP_EVENT_MAGIC
+        );
+        packet.keyCode = util::endian::little(
+          static_cast<std::int16_t>(sc_datasmash_input_read_u16(payload))
+        );
+        packet.modifiers = static_cast<char>(payload[3]);
+        packet.flags = static_cast<char>(payload[4]);
+        passthrough(input, &packet);
+        return true;
+      }
+      case SC_DATASMASH_INPUT_UTF8_TEXT: {
+        if (payload_size > UTF8_TEXT_EVENT_MAX_COUNT) {
+          return false;
+        }
+        std::vector<std::uint8_t> packet_storage(
+          sizeof(NV_INPUT_HEADER) + payload_size
+        );
+        auto *packet = reinterpret_cast<NV_UNICODE_PACKET *>(packet_storage.data());
+        packet->header.size = util::endian::big(
+          static_cast<std::uint32_t>(sizeof(packet->header.magic) + payload_size)
+        );
+        std::copy_n(payload, payload_size, packet->text);
+        passthrough(packet);
+        return true;
+      }
+      case SC_DATASMASH_INPUT_PEN: {
+        if (payload_size != SC_DATASMASH_INPUT_PEN_SIZE ||
+            payload[6] != 0 || payload[7] != 0 ||
+            sc_datasmash_input_read_u32(payload + 28) != 0) {
+          return false;
+        }
+        SS_PEN_PACKET packet {};
+        packet.eventType = payload[0];
+        packet.toolType = payload[1];
+        packet.penButtons = payload[2];
+        packet.tilt = payload[3];
+        packet.rotation = util::endian::little(
+          sc_datasmash_input_read_u16(payload + 4)
+        );
+        to_netfloat(sc_datasmash_input_read_float(payload + 8), packet.x);
+        to_netfloat(sc_datasmash_input_read_float(payload + 12), packet.y);
+        to_netfloat(sc_datasmash_input_read_float(payload + 16), packet.pressureOrDistance);
+        to_netfloat(sc_datasmash_input_read_float(payload + 20), packet.contactAreaMajor);
+        to_netfloat(sc_datasmash_input_read_float(payload + 24), packet.contactAreaMinor);
+        select_normalized_pen_backend(input);
+        passthrough(input, &packet);
+        return true;
+      }
+      case SC_DATASMASH_INPUT_RAW_HID_WACOM: {
+        if (payload_size < sizeof(SC_RAW_HID_WIRE_HEADER) ||
+            payload_size > sizeof(SC_RAW_HID_WIRE_HEADER) + SC_RAW_HID_MAX_PAYLOAD_SIZE) {
+          return false;
+        }
+        std::vector<std::uint8_t> frame(payload, payload + payload_size);
+        return handle_raw_hid_frame(input, frame);
+      }
+      default:
+        return false;
+    }
+  }
+#endif
 
   /**
    * @brief Release every pressed mouse button tracked by Sunshine.

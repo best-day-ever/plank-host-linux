@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string_view>
@@ -49,6 +50,16 @@ namespace input {
    * @brief Queue a raw input message for platform passthrough.
    */
   void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data);
+
+#ifdef STATIONCONNECT_DATASMASH
+  /**
+   * @brief Validate and inject one native KyProto input message.
+   *
+   * @return true when the typed StationConnect message was accepted.
+   */
+  bool native(std::shared_ptr<input_t> &input, std::uint8_t type,
+              const std::uint8_t *payload, std::size_t payload_size);
+#endif
 
   /**
    * @brief Initialize global input resources and platform backends.

@@ -45,6 +45,7 @@ extern "C" {
 #ifdef STATIONCONNECT_DATASMASH
   #include <stationconnect_datasmash.h>
   #include <stationconnect_datasmash_control.h>
+  #include <stationconnect_datasmash_input.h>
 #endif
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
@@ -485,6 +486,7 @@ namespace stream {
     std::jthread audioThread;  ///< Audio thread.
     std::jthread videoThread;  ///< Video thread.
     std::jthread cursorThread;  ///< XFixes cursor-shape monitor for local-cursor clients.
+    std::jthread inputThread;  ///< Native KyProto input receiver for StationConnect sessions.
 
     std::chrono::steady_clock::time_point pingTimeout;  ///< Deadline for receiving the next client ping.
 
@@ -2591,6 +2593,46 @@ namespace stream {
     audio::capture(session->mail, session->config.audio, session);
   }
 
+#ifdef STATIONCONNECT_DATASMASH
+  void nativeInputThread(std::stop_token stop_token, session_t *session) {
+    platf::set_thread_name("session::input");
+    platf::adjust_thread_priority(platf::thread_priority_e::critical);
+    auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
+    std::array<std::uint8_t, SC_DATASMASH_INPUT_MAX_PAYLOAD_SIZE> payload {};
+
+    while_starting_do_nothing(session->state);
+    while (!stop_token.stop_requested() && !session->shutdown_event->peek()) {
+      std::uint8_t type = 0;
+      std::size_t payload_size = 0;
+      const auto result = sc_datasmash_native_input_receive(
+        endpoint, &type, payload.data(), payload.size(), &payload_size, 50
+      );
+      if (result == SC_DATASMASH_TIMEOUT) {
+        continue;
+      }
+      if (result != SC_DATASMASH_OK) {
+        const auto state = sc_datasmash_native_endpoint_state(endpoint);
+        if (!stop_token.stop_requested() && !session->shutdown_event->peek()) {
+          if (result == SC_DATASMASH_ERROR_INVALID_STATE || state != SC_DATASMASH_STATE_READY) {
+            BOOST_LOG(info) << "KyProto native input peer closed"sv;
+          } else {
+            BOOST_LOG(error) << "KyProto native input receive failed: result="sv << result;
+          }
+          session::stop(*session);
+        }
+        return;
+      }
+      if (payload_size > payload.size() ||
+          !input::native(session->input, type, payload.data(), payload_size)) {
+        BOOST_LOG(error) << "Rejected malformed KyProto native input message: type="sv
+                         << static_cast<unsigned>(type) << ", size="sv << payload_size;
+        session::stop(*session);
+        return;
+      }
+    }
+  }
+#endif
+
   namespace session {
     std::atomic_uint running_sessions;  ///< Running sessions.
 
@@ -2614,6 +2656,7 @@ namespace stream {
 
       session.shutdown_event->raise(true);
       session.cursorThread.request_stop();
+      session.inputThread.request_stop();
     }
 
     /**
@@ -2642,6 +2685,10 @@ namespace stream {
       if (session.cursorThread.joinable()) {
         session.cursorThread.join();
       }
+      BOOST_LOG(debug) << "Waiting for native input to end..."sv;
+      if (session.inputThread.joinable()) {
+        session.inputThread.join();
+      }
       BOOST_LOG(debug) << "Waiting for control to end..."sv;
       session.controlEnd.view();
       // Reset input on session stop to avoid stuck repeated keys
@@ -2660,7 +2707,8 @@ namespace stream {
                           << stats.video_send_drops << "; audio_sent="sv
                           << stats.audio_packets_sent << " packets/"sv
                           << stats.audio_bytes_sent << " bytes, send_queue_drops="sv
-                          << stats.audio_send_drops << "; data_sent="sv
+                          << stats.audio_send_drops << "; input_received="sv
+                          << stats.input_packets_received << "; data_sent="sv
                           << stats.data_packets_sent << " packets, data_received="sv
                           << stats.data_packets_received << " packets, QUIC_packets_lost="sv
                           << stats.quic_packets_lost << ", RTT="sv
@@ -2729,6 +2777,11 @@ namespace stream {
 
       session.audioThread = std::jthread {audioThread, &session};
       session.videoThread = std::jthread {videoThread, &session};
+#ifdef STATIONCONNECT_DATASMASH
+      if (session.datasmash_endpoint) {
+        session.inputThread = std::jthread {nativeInputThread, &session};
+      }
+#endif
 
       session.state.store(state_e::RUNNING, std::memory_order_relaxed);
 
