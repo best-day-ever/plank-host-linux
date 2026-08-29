@@ -2187,7 +2187,7 @@ namespace stream {
         const auto result = sc_datasmash_native_audio_send(
           endpoint,
           &packet_info,
-          packet_data.data(),
+          packet_data.begin(),
           packet_data.size()
         );
         if (result < SC_DATASMASH_OK) {
