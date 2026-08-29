@@ -122,9 +122,12 @@ namespace nvhttp {
     if (!success) {
       return std::nullopt;
     }
+    // util::hex_vec() defaults to the little-endian representation used by
+    // legacy GameStream fields. Certificate pins use the conventional byte
+    // order emitted by TLS implementations and openssl x509 -fingerprint.
     return util::hex_vec(std::vector<std::uint8_t>(
       digest.begin(), digest.begin() + digest_size
-    ));
+    ), true);
   }
 
   bool start_datasmash_data_plane(rtsp_stream::launch_session_t &session,
