@@ -71,6 +71,10 @@ constexpr int IDX_SET_VIDEO_BITRATE = 17;  ///< Control-stream message index for
 constexpr int IDX_VIDEO_BITRATE_APPLIED = 18;  ///< Control-stream message index for StationConnect bitrate acknowledgements.
 constexpr int IDX_CURSOR_SHAPE = 19;  ///< Control-stream message index for StationConnect local cursor chunks.
 constexpr int IDX_CURSOR_POSITION = 20;  ///< Control-stream message index for StationConnect cursor positions.
+#ifdef STATIONCONNECT_DATASMASH
+constexpr std::size_t DATASMASH_CONTROL_PACKET_MAX_SIZE = 64 * 1024;
+constexpr int DATASMASH_CONTROL_DRAIN_LIMIT = 16;
+#endif
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -1284,6 +1288,43 @@ namespace stream {
     return result;
   }
 
+#ifdef STATIONCONNECT_DATASMASH
+  void drain_datasmash_control(control_server_t *server, session_t *session,
+                               std::array<std::uint8_t, DATASMASH_CONTROL_PACKET_MAX_SIZE> &packet) {
+    if (!session->datasmash_endpoint) {
+      return;
+    }
+
+    auto *endpoint = static_cast<ScDatasmashEndpoint *>(session->datasmash_endpoint.get());
+    for (int drained = 0; drained < DATASMASH_CONTROL_DRAIN_LIMIT; ++drained) {
+      std::size_t packet_size = 0;
+      const auto result = sc_datasmash_control_receive(
+        endpoint, packet.data(), packet.size(), &packet_size, 0);
+      if (result == SC_DATASMASH_TIMEOUT) {
+        return;
+      }
+      if (result != SC_DATASMASH_OK || packet_size < sizeof(std::uint16_t) ||
+          packet_size > packet.size()) {
+        BOOST_LOG(error) << "Datasmash control receive failed: result="sv << result
+                         << ", packet_size="sv << packet_size;
+        session::stop(*session);
+        return;
+      }
+
+      std::uint16_t type;
+      std::memcpy(&type, packet.data(), sizeof(type));
+      const std::string_view payload {
+        reinterpret_cast<const char *>(packet.data() + sizeof(type)),
+        packet_size - sizeof(type),
+      };
+      server->call(type, session, payload, false);
+      if (session->state.load(std::memory_order_acquire) == session::state_e::STOPPING) {
+        return;
+      }
+    }
+  }
+#endif
+
   /**
    * @brief Run the broadcast control-channel worker thread.
    *
@@ -1449,6 +1490,9 @@ namespace stream {
     // termination when we shut down.
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
     auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
+#ifdef STATIONCONNECT_DATASMASH
+    std::array<std::uint8_t, DATASMASH_CONTROL_PACKET_MAX_SIZE> datasmash_control_packet;
+#endif
     while (!shutdown_event->peek() && !broadcast_shutdown_event->peek()) {
       bool has_session_awaiting_peer = false;
 
@@ -1464,6 +1508,10 @@ namespace stream {
           }
 
           auto session = *pos;
+
+#ifdef STATIONCONNECT_DATASMASH
+          drain_datasmash_control(server, session, datasmash_control_packet);
+#endif
 
           if (now > session->pingTimeout) {
             auto address = session->control.peer ? platf::from_sockaddr((sockaddr *) &session->control.peer->address.address) : session->control.expected_peer_address;
@@ -2479,7 +2527,15 @@ namespace stream {
                           << stats.audio_transport_send_drops << ", send_queue_high_water="sv
                           << stats.audio_send_queue_high_water << "; QUIC_packets_lost="sv
                           << stats.media_quic_packets_lost << ", RTT="sv
-                          << stats.media_quic_rtt_us << " us"sv;
+                          << stats.media_quic_rtt_us << " us; control_received="sv
+                          << stats.control_packets_received << " packets/"sv
+                          << stats.control_bytes_received << " bytes, receive_queue_overflow="sv
+                          << stats.control_receive_queue_overflow
+                          << ", receive_queue_high_water="sv
+                          << stats.control_receive_queue_high_water
+                          << ", interaction_QUIC_packets_lost="sv
+                          << stats.interaction_quic_packets_lost << ", interaction_RTT="sv
+                          << stats.interaction_quic_rtt_us << " us"sv;
         }
       }
 #endif
