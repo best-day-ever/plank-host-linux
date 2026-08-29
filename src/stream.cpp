@@ -1281,8 +1281,8 @@ namespace stream {
     const auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
 #ifdef STATIONCONNECT_DATASMASH
     if (session->datasmash_endpoint) {
-      auto *endpoint = static_cast<ScDatasmashEndpoint *>(session->datasmash_endpoint.get());
-      const auto result = sc_datasmash_control_send(
+      auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
+      const auto result = sc_datasmash_native_data_send(
         endpoint,
         reinterpret_cast<const std::uint8_t *>(payload.data()),
         payload.size()
@@ -1315,10 +1315,10 @@ namespace stream {
       return;
     }
 
-    auto *endpoint = static_cast<ScDatasmashEndpoint *>(session->datasmash_endpoint.get());
+    auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
     for (int drained = 0; drained < DATASMASH_CONTROL_DRAIN_LIMIT; ++drained) {
       std::size_t packet_size = 0;
-      const auto result = sc_datasmash_control_receive(
+      const auto result = sc_datasmash_native_data_receive(
         endpoint, packet.data(), packet.size(), &packet_size, 0);
       if (result == SC_DATASMASH_TIMEOUT) {
         return;
@@ -1825,6 +1825,43 @@ namespace stream {
         frame_header.frame_processing_latency = 0;
       }
 
+#ifdef STATIONCONNECT_DATASMASH
+      if (session->datasmash_endpoint) {
+        auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
+        ScDatasmashNativeVideoFrameInfo frame_info {};
+        frame_info.struct_size = sizeof(frame_info);
+        frame_info.codec = session->config.monitor.videoFormat == 0 ?
+                             SC_DATASMASH_NATIVE_VIDEO_CODEC_H264 :
+                             SC_DATASMASH_NATIVE_VIDEO_CODEC_HEVC;
+        frame_info.flags = packet->is_idr() ? SC_DATASMASH_NATIVE_VIDEO_FLAG_KEY : 0;
+        frame_info.frame_number = static_cast<std::uint64_t>(packet->frame_index());
+        const auto frame_time = packet->frame_timestamp.value_or(
+          std::chrono::steady_clock::now()
+        );
+        using native_video_tick = std::chrono::duration<std::uint64_t, std::ratio<1, 90000>>;
+        frame_info.pts = std::chrono::duration_cast<native_video_tick>(
+          frame_time - video_epoch
+        ).count();
+        frame_info.host_processing_latency = frame_header.frame_processing_latency;
+
+        const auto result = sc_datasmash_native_video_send(
+          endpoint,
+          &frame_info,
+          reinterpret_cast<const std::uint8_t *>(payload.data()),
+          payload.size()
+        );
+        if (result < SC_DATASMASH_OK) {
+          BOOST_LOG(error) << "Datasmash native video submission failed with result "sv
+                           << result;
+          session::stop(*session);
+        } else if (result == SC_DATASMASH_DROPPED) {
+          BOOST_LOG(warning) << "Datasmash native video queue replaced an old frame"sv;
+        }
+        frame_network_latency_logger.second_point_now_and_log();
+        continue;
+      }
+#endif
+
       auto fecPercentage = config::stream.fec_percentage;
 
       // Insert space for packet headers
@@ -2032,31 +2069,8 @@ namespace stream {
               batch_info.block_count = current_batch_size;
 
               frame_send_batch_latency_logger.first_point_now();
-              bool sent_over_datasmash = false;
-#ifdef STATIONCONNECT_DATASMASH
-              if (session->datasmash_endpoint) {
-                auto *endpoint = static_cast<ScDatasmashEndpoint *>(session->datasmash_endpoint.get());
-                for (auto y = 0; y < current_batch_size; y++) {
-                  const auto shard_index = next_shard_to_send + y;
-                  const auto result = sc_datasmash_video_send(
-                    endpoint,
-                    reinterpret_cast<const uint8_t *>(shards.prefix(shard_index)),
-                    shards.prefixsize,
-                    reinterpret_cast<const uint8_t *>(shards.data(shard_index)),
-                    shards.blocksize
-                  );
-                  if (result < SC_DATASMASH_OK) {
-                    throw std::runtime_error {
-                      "datasmash video submission failed with result " +
-                      std::to_string(result)
-                    };
-                  }
-                }
-                sent_over_datasmash = true;
-              }
-#endif
               // Use a batched UDP send if it's supported on this platform.
-              if (!sent_over_datasmash && !platf::send_batch(batch_info)) {
+              if (!platf::send_batch(batch_info)) {
                 // Batched send is not available, so send each packet individually
                 BOOST_LOG(verbose) << "Falling back to unbatched send"sv;
                 for (auto y = 0; y < current_batch_size; y++) {
@@ -2154,6 +2168,34 @@ namespace stream {
       auto sequenceNumber = session->audio.sequenceNumber;
       auto timestamp = session->audio.timestamp;
 
+#ifdef STATIONCONNECT_DATASMASH
+      if (session->datasmash_endpoint) {
+        auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
+        ScDatasmashNativeAudioPacketInfo packet_info {};
+        packet_info.struct_size = sizeof(packet_info);
+        packet_info.frame_samples = static_cast<std::uint16_t>(
+          session->config.audio.packetDuration * 48
+        );
+        packet_info.pts = timestamp;
+        const auto result = sc_datasmash_native_audio_send(
+          endpoint,
+          &packet_info,
+          packet_data.data(),
+          packet_data.size()
+        );
+        if (result < SC_DATASMASH_OK) {
+          BOOST_LOG(error) << "Datasmash native audio submission failed with result "sv
+                           << result;
+          session::stop(*session);
+        } else if (result == SC_DATASMASH_DROPPED) {
+          BOOST_LOG(warning) << "Datasmash native audio queue replaced an old packet"sv;
+        }
+        session->audio.sequenceNumber++;
+        session->audio.timestamp += session->config.audio.packetDuration;
+        continue;
+      }
+#endif
+
       *(std::uint32_t *) iv.data() = util::endian::big<std::uint32_t>(session->audio.avRiKeyId + sequenceNumber);
 
       auto &shards_p = session->audio.shards_p;
@@ -2175,25 +2217,6 @@ namespace stream {
       auto peer_address = session->audio.peer.address();
       try {
         const auto send_audio_packet = [&](const void *header, size_t header_size, const void *payload, size_t payload_size) {
-#ifdef STATIONCONNECT_DATASMASH
-          if (session->datasmash_endpoint) {
-            auto *endpoint = static_cast<ScDatasmashEndpoint *>(session->datasmash_endpoint.get());
-            const auto result = sc_datasmash_audio_send(
-              endpoint,
-              reinterpret_cast<const uint8_t *>(header),
-              header_size,
-              reinterpret_cast<const uint8_t *>(payload),
-              payload_size
-            );
-            if (result < SC_DATASMASH_OK) {
-              throw std::runtime_error {
-                "datasmash audio submission failed with result " +
-                std::to_string(result)
-              };
-            }
-            return;
-          }
-#endif
           auto send_info = platf::send_info_t {
             static_cast<const char *>(header),
             header_size,
@@ -2530,36 +2553,22 @@ namespace stream {
 
 #ifdef STATIONCONNECT_DATASMASH
       if (session.datasmash_endpoint) {
-        ScDatasmashStats stats {};
+        ScDatasmashNativeStats stats {};
         stats.struct_size = sizeof(stats);
-        stats.abi_version = SC_DATASMASH_ABI_VERSION;
-        auto *endpoint = static_cast<ScDatasmashEndpoint *>(session.datasmash_endpoint.get());
-        if (sc_datasmash_endpoint_stats(endpoint, &stats) == SC_DATASMASH_OK) {
-        BOOST_LOG(info) << "Datasmash media transport: video_sent="sv
-                          << stats.video_packets_sent << " packets/"sv
+        auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session.datasmash_endpoint.get());
+        if (sc_datasmash_native_endpoint_stats(endpoint, &stats) == SC_DATASMASH_OK) {
+        BOOST_LOG(info) << "Datasmash native transport: video_sent="sv
+                          << stats.video_frames_sent << " frames/"sv
                           << stats.video_bytes_sent << " bytes, send_queue_drops="sv
-                          << stats.video_send_queue_drops << ", transport_send_drops="sv
-                          << stats.video_transport_send_drops << ", send_queue_high_water="sv
-                          << stats.video_send_queue_high_water << "; audio_sent="sv
+                          << stats.video_send_drops << "; audio_sent="sv
                           << stats.audio_packets_sent << " packets/"sv
                           << stats.audio_bytes_sent << " bytes, send_queue_drops="sv
-                          << stats.audio_send_queue_drops << ", transport_send_drops="sv
-                          << stats.audio_transport_send_drops << ", send_queue_high_water="sv
-                          << stats.audio_send_queue_high_water << "; QUIC_packets_lost="sv
-                          << stats.media_quic_packets_lost << ", RTT="sv
-                          << stats.media_quic_rtt_us << " us; control_sent="sv
-                          << stats.control_packets_sent << " packets/"sv
-                          << stats.control_bytes_sent << " bytes, send_queue_full="sv
-                          << stats.control_send_queue_full << ", send_queue_high_water="sv
-                          << stats.control_send_queue_high_water << "; control_received="sv
-                          << stats.control_packets_received << " packets/"sv
-                          << stats.control_bytes_received << " bytes, receive_queue_overflow="sv
-                          << stats.control_receive_queue_overflow
-                          << ", receive_queue_high_water="sv
-                          << stats.control_receive_queue_high_water
-                          << ", interaction_QUIC_packets_lost="sv
-                          << stats.interaction_quic_packets_lost << ", interaction_RTT="sv
-                          << stats.interaction_quic_rtt_us << " us"sv;
+                          << stats.audio_send_drops << "; data_sent="sv
+                          << stats.data_packets_sent << " packets, data_received="sv
+                          << stats.data_packets_received << " packets, QUIC_packets_lost="sv
+                          << stats.quic_packets_lost << ", RTT="sv
+                          << stats.quic_rtt_us << " us, KyProto_drops="sv
+                          << stats.kyproto_packets_dropped;
         }
       }
 #endif

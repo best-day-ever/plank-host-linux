@@ -96,9 +96,9 @@ namespace nvhttp {
   constexpr auto stationconnect_topology_features = stationconnect::topology::feature_flags;
 
 #ifdef STATIONCONNECT_DATASMASH
-  std::string datasmash_last_error(ScDatasmashEndpoint *endpoint) {
+  std::string datasmash_last_error(ScDatasmashNativeEndpoint *endpoint) {
     std::array<char, 512> error {};
-    sc_datasmash_endpoint_last_error(endpoint, error.data(), error.size());
+    sc_datasmash_native_endpoint_last_error(endpoint, error.data(), error.size());
     return error.data();
   }
 
@@ -170,16 +170,16 @@ namespace nvhttp {
     endpoint_config.private_key_path = config::nvhttp.pkey.c_str();
     endpoint_config.session_token = token.c_str();
 
-    ScDatasmashEndpoint *endpoint = nullptr;
-    int result = sc_datasmash_endpoint_create(&endpoint_config, &endpoint);
+    ScDatasmashNativeEndpoint *endpoint = nullptr;
+    int result = sc_datasmash_native_endpoint_create(&endpoint_config, &endpoint);
     if (result == SC_DATASMASH_OK) {
-      result = sc_datasmash_endpoint_start(endpoint);
+      result = sc_datasmash_native_endpoint_start(endpoint);
     }
     if (result != SC_DATASMASH_OK) {
       const std::string error_message = endpoint == nullptr ?
         "endpoint creation failed" : datasmash_last_error(endpoint);
       if (endpoint != nullptr) {
-        sc_datasmash_endpoint_destroy(endpoint);
+        sc_datasmash_native_endpoint_destroy(endpoint);
       }
       OPENSSL_cleanse(token.data(), token.size());
       BOOST_LOG(error) << "Unable to start experimental datasmash listener: "sv
@@ -191,9 +191,9 @@ namespace nvhttp {
     }
 
     session.datasmash_endpoint = std::shared_ptr<void>(endpoint, [](void *raw_endpoint) {
-      auto *endpoint = static_cast<ScDatasmashEndpoint *>(raw_endpoint);
-      sc_datasmash_endpoint_stop(endpoint);
-      sc_datasmash_endpoint_destroy(endpoint);
+      auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(raw_endpoint);
+      sc_datasmash_native_endpoint_stop(endpoint);
+      sc_datasmash_native_endpoint_destroy(endpoint);
     });
     tree.put("root.StationConnectDatasmashPort", port);
     tree.put("root.StationConnectDatasmashCertificateSha256", *fingerprint);
