@@ -294,4 +294,33 @@ namespace cbs {
 
     return ((CodedBitstreamH265Context *) ctx->priv_data)->active_sps->vui_parameters_present_flag;
   }
+
+  bool validate_h264_high10_444_identity(const AVPacket *packet) {
+    cbs::ctx_t ctx;
+    if (ff_cbs_init(&ctx, AV_CODEC_ID_H264, nullptr)) {
+      return false;
+    }
+
+    cbs::frag_t frag;
+    if (ff_cbs_read_packet(ctx.get(), &frag, packet) < 0) {
+      return false;
+    }
+
+    const auto *h264 = reinterpret_cast<const CodedBitstreamH264Context *>(
+      ctx->priv_data);
+    const auto *sps = h264 ? h264->active_sps : nullptr;
+    if (!sps || sps->profile_idc != AV_PROFILE_H264_HIGH_444_PREDICTIVE ||
+        sps->chroma_format_idc != 3 || sps->separate_colour_plane_flag != 0 ||
+        sps->bit_depth_luma_minus8 != 2 || sps->bit_depth_chroma_minus8 != 2 ||
+        !sps->vui_parameters_present_flag) {
+      return false;
+    }
+
+    const auto &vui = sps->vui;
+    return vui.video_signal_type_present_flag && vui.video_full_range_flag &&
+           vui.colour_description_present_flag &&
+           vui.colour_primaries == AVCOL_PRI_BT709 &&
+           vui.transfer_characteristics == AVCOL_TRC_IEC61966_2_1 &&
+           vui.matrix_coefficients == AVCOL_SPC_RGB;
+  }
 }  // namespace cbs

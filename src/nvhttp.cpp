@@ -7,6 +7,7 @@
 
 // standard includes
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <format>
 #include <functional>
@@ -780,13 +781,6 @@ namespace nvhttp {
                "StationConnect encoder-backend negotiation is required");
       return false;
     }
-    const bool software_mode =
-      session.encoding_mode == "h264-8-422-software" ||
-      session.encoding_mode == "h264-8-444-software" ||
-      session.encoding_mode == "h264-10-422-software" ||
-      session.encoding_mode == "h264-10-444-software";
-    const bool nvenc_h264_mode = session.encoding_mode == "h264-8-444-nvenc";
-    const bool nvenc_hevc8_mode = session.encoding_mode == "hevc-8-444-nvenc";
     const bool nvenc_hevc10_mode = session.encoding_mode == "hevc-10-444-nvenc";
     if (!stationconnect::topology::valid_encoding_tuple(
           session.capture_source,
@@ -806,10 +800,7 @@ namespace nvhttp {
       return false;
     }
     const bool exact_mode_available =
-      (software_mode && video::encoder_backend_available("software-cuda")) ||
-      (nvenc_h264_mode && video::nvenc_direct_supports_h264_444_8bit()) ||
-      (nvenc_hevc8_mode && video::nvenc_direct_supports_hevc_444_8bit()) ||
-      (nvenc_hevc10_mode && video::nvenc_direct_supports_hevc_444_10bit());
+      video::encoding_mode_available(session.encoding_mode);
     if (!exact_mode_available) {
       tree.put("root.<xmlattr>.status_code", 503);
       tree.put("root.<xmlattr>.status_message",
@@ -1073,6 +1064,29 @@ namespace nvhttp {
     return codec_mode_flags;
   }
 
+  std::string get_stationconnect_encoding_modes() {
+    static constexpr std::array modes {
+      "h264-8-422-software"sv,
+      "h264-8-444-software"sv,
+      "h264-10-422-software"sv,
+      "h264-10-444-software"sv,
+      "h264-8-444-nvenc"sv,
+      "hevc-8-444-nvenc"sv,
+      "hevc-10-444-nvenc"sv,
+    };
+    std::string result;
+    for (const auto mode : modes) {
+      if (!video::encoding_mode_available(mode)) {
+        continue;
+      }
+      if (!result.empty()) {
+        result += ',';
+      }
+      result += mode;
+    }
+    return result;
+  }
+
   /**
    * @brief Build the GameStream server-info response.
    *
@@ -1107,10 +1121,7 @@ namespace nvhttp {
     tree.put("root.StationConnectFeatureFlags", stationconnect_topology_features);
     tree.put("root.StationConnectCaptureSources", "nvfbc,x11-native10");
     tree.put("root.StationConnectEncoderBackends", "software-cuda,nvenc-direct");
-    tree.put("root.StationConnectEncodingModes",
-             "h264-8-422-software,h264-8-444-software,h264-10-422-software,"
-             "h264-10-444-software,h264-8-444-nvenc,hevc-8-444-nvenc,"
-             "hevc-10-444-nvenc");
+    tree.put("root.StationConnectEncodingModes", get_stationconnect_encoding_modes());
     tree.put("root.MaxLumaPixelsHEVC",
              video::nvenc_direct_supports_hevc_444_8bit() ||
                  video::nvenc_direct_supports_hevc_444_10bit() ?

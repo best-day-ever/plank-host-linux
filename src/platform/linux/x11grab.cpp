@@ -10,6 +10,7 @@
 #include <mutex>
 #include <ranges>
 #include <thread>
+#include <vector>
 
 // plaform includes
 #include <sys/ipc.h>
@@ -52,6 +53,128 @@ namespace platf {
       green[x] = static_cast<std::uint16_t>((pixel >> 10U) & 0x3ffU);
       blue[x] = static_cast<std::uint16_t>((pixel >> 20U) & 0x3ffU);
     }
+  }
+
+  namespace {
+    constexpr std::uint32_t bilinear_weight_one = 1U << 16U;
+
+    struct bilinear_axis_sample_t {
+      int lower;
+      int upper;
+      std::uint32_t upper_weight;
+    };
+
+    std::vector<bilinear_axis_sample_t> make_bilinear_axis_samples(
+      int source_size,
+      int destination_size
+    ) {
+      std::vector<bilinear_axis_sample_t> samples;
+      samples.reserve(static_cast<std::size_t>(destination_size));
+      for (int destination = 0; destination < destination_size; ++destination) {
+        const double source_position = std::max(
+          0.0,
+          (static_cast<double>(destination) + 0.5) * source_size /
+              destination_size -
+            0.5
+        );
+        const int lower = std::min(static_cast<int>(source_position), source_size - 1);
+        const int upper = std::min(lower + 1, source_size - 1);
+        const auto upper_weight = static_cast<std::uint32_t>(std::llround(
+          (source_position - lower) * bilinear_weight_one
+        ));
+        samples.push_back({lower, upper, upper_weight});
+      }
+      return samples;
+    }
+
+    std::uint16_t bilinear_xrgb10_channel(
+      std::uint32_t top_left,
+      std::uint32_t top_right,
+      std::uint32_t bottom_left,
+      std::uint32_t bottom_right,
+      unsigned int shift,
+      std::uint32_t x_weight,
+      std::uint32_t y_weight
+    ) {
+      const std::uint64_t x_inverse = bilinear_weight_one - x_weight;
+      const std::uint64_t y_inverse = bilinear_weight_one - y_weight;
+      const auto channel = [shift](std::uint32_t pixel) {
+        return static_cast<std::uint64_t>((pixel >> shift) & 0x3ffU);
+      };
+      const std::uint64_t weighted =
+        channel(top_left) * x_inverse * y_inverse +
+        channel(top_right) * x_weight * y_inverse +
+        channel(bottom_left) * x_inverse * y_weight +
+        channel(bottom_right) * x_weight * y_weight;
+      return static_cast<std::uint16_t>((weighted + (1ULL << 31U)) >> 32U);
+    }
+
+    void scale_xrgb10_to_gbr10_rows(
+      const std::uint8_t *source,
+      std::size_t source_pitch,
+      const std::vector<bilinear_axis_sample_t> &x_samples,
+      const std::vector<bilinear_axis_sample_t> &y_samples,
+      std::uint8_t *green,
+      std::size_t green_pitch,
+      std::uint8_t *blue,
+      std::size_t blue_pitch,
+      std::uint8_t *red,
+      std::size_t red_pitch,
+      unsigned int share_index,
+      unsigned int share_count
+    ) {
+      for (std::size_t y = share_index; y < y_samples.size(); y += share_count) {
+        const auto &y_sample = y_samples[y];
+        const auto *top = reinterpret_cast<const std::uint32_t *>(
+          source + static_cast<std::size_t>(y_sample.lower) * source_pitch);
+        const auto *bottom = reinterpret_cast<const std::uint32_t *>(
+          source + static_cast<std::size_t>(y_sample.upper) * source_pitch);
+        auto *green_row = reinterpret_cast<std::uint16_t *>(green + y * green_pitch);
+        auto *blue_row = reinterpret_cast<std::uint16_t *>(blue + y * blue_pitch);
+        auto *red_row = reinterpret_cast<std::uint16_t *>(red + y * red_pitch);
+        for (std::size_t x = 0; x < x_samples.size(); ++x) {
+          const auto &x_sample = x_samples[x];
+          const auto top_left = top[x_sample.lower];
+          const auto top_right = top[x_sample.upper];
+          const auto bottom_left = bottom[x_sample.lower];
+          const auto bottom_right = bottom[x_sample.upper];
+          red_row[x] = bilinear_xrgb10_channel(
+            top_left, top_right, bottom_left, bottom_right, 0U,
+            x_sample.upper_weight, y_sample.upper_weight);
+          green_row[x] = bilinear_xrgb10_channel(
+            top_left, top_right, bottom_left, bottom_right, 10U,
+            x_sample.upper_weight, y_sample.upper_weight);
+          blue_row[x] = bilinear_xrgb10_channel(
+            top_left, top_right, bottom_left, bottom_right, 20U,
+            x_sample.upper_weight, y_sample.upper_weight);
+        }
+      }
+    }
+  }  // namespace
+
+  void x11::scale_xrgb10_to_gbr10(const std::uint8_t *source,
+                                  std::size_t source_pitch,
+                                  int source_width,
+                                  int source_height,
+                                  std::uint16_t *green,
+                                  std::size_t green_pitch,
+                                  std::uint16_t *blue,
+                                  std::size_t blue_pitch,
+                                  std::uint16_t *red,
+                                  std::size_t red_pitch,
+                                  int destination_width,
+                                  int destination_height) {
+    if (!source || !green || !blue || !red || source_width <= 0 || source_height <= 0 ||
+        destination_width <= 0 || destination_height <= 0) {
+      return;
+    }
+    const auto x_samples = make_bilinear_axis_samples(source_width, destination_width);
+    const auto y_samples = make_bilinear_axis_samples(source_height, destination_height);
+    scale_xrgb10_to_gbr10_rows(
+      source, source_pitch, x_samples, y_samples,
+      reinterpret_cast<std::uint8_t *>(green), green_pitch,
+      reinterpret_cast<std::uint8_t *>(blue), blue_pitch,
+      reinterpret_cast<std::uint8_t *>(red), red_pitch, 0U, 1U);
   }
 
   /**
@@ -465,8 +588,8 @@ namespace platf {
   class native10_software_t final: public avcodec_encode_device_t {
   public:
     native10_software_t(int width, int height, pix_fmt_e requested_format):
-        width {width},
-        height {height},
+        source_width {width},
+        source_height {height},
         requested_format {requested_format} {
       data = reinterpret_cast<void *>(0x1);
     }
@@ -487,26 +610,29 @@ namespace platf {
         BOOST_LOG(error) << "Native X11 10-bit capture requires planar H.264 10-bit 4:4:4 software input"sv;
         return -1;
       }
-      if (frame->width != width || frame->height != height) {
-        BOOST_LOG(error)
-          << "Native X11 10-bit capture currently requires 1:1 source and encode dimensions: source="sv
-          << width << 'x' << height << " encode="sv << frame->width << 'x' << frame->height;
-        return -1;
-      }
+      output_width = frame->width;
+      output_height = frame->height;
       if (av_frame_get_buffer(frame, 64) < 0) {
         BOOST_LOG(error) << "Couldn't allocate native X11 10-bit software frame"sv;
         return -1;
       }
+      if (source_width != output_width || source_height != output_height) {
+        x_samples = make_bilinear_axis_samples(source_width, output_width);
+        y_samples = make_bilinear_axis_samples(source_height, output_height);
+        BOOST_LOG(info) << "Native X11 x264 10-bit scaling: "sv
+                        << source_width << 'x' << source_height << " -> "sv
+                        << output_width << 'x' << output_height;
+      }
       start_workers();
       BOOST_LOG(info)
-        << "Native X11 software identity input: packed RGB 10:10:10 -> planar GBR 10-bit, workers="sv
+        << "Native X11 x264 identity input: packed RGB 10:10:10 -> planar GBR 10-bit, workers="sv
         << workers.size() + 1U;
       return 0;
     }
 
     int convert(platf::img_t &img) override {
-      if (!frame || !img.data || img.width != width || img.height != height ||
-          img.pixel_pitch != 4 || img.row_pitch < width * 4 ||
+      if (!frame || !img.data || img.width != source_width || img.height != source_height ||
+          img.pixel_pitch != 4 || img.row_pitch < source_width * 4 ||
           colorspace.colorspace != video::colorspace_e::identity_gbr ||
           colorspace.bit_depth != 10) {
         BOOST_LOG(error) << "Native X11 10-bit capture received an incompatible frame or colorspace"sv;
@@ -569,7 +695,16 @@ namespace platf {
     }
 
     void unpack_rows(unsigned int share_index, unsigned int share_count) {
-      for (int y = static_cast<int>(share_index); y < height;
+      if (!x_samples.empty()) {
+        scale_xrgb10_to_gbr10_rows(
+          source, static_cast<std::size_t>(source_pitch), x_samples, y_samples,
+          frame->data[0], static_cast<std::size_t>(frame->linesize[0]),
+          frame->data[1], static_cast<std::size_t>(frame->linesize[1]),
+          frame->data[2], static_cast<std::size_t>(frame->linesize[2]),
+          share_index, share_count);
+        return;
+      }
+      for (int y = static_cast<int>(share_index); y < output_height;
            y += static_cast<int>(share_count)) {
         const auto *source_row = reinterpret_cast<const std::uint32_t *>(
           source + static_cast<std::size_t>(y) * source_pitch);
@@ -580,7 +715,7 @@ namespace platf {
         auto *red = reinterpret_cast<std::uint16_t *>(
           frame->data[2] + static_cast<std::size_t>(y) * frame->linesize[2]);
         x11::unpack_xrgb10_to_gbr10_row(
-          source_row, green, blue, red, static_cast<std::size_t>(width));
+          source_row, green, blue, red, static_cast<std::size_t>(output_width));
       }
     }
 
@@ -593,8 +728,12 @@ namespace platf {
     unsigned int workers_pending {0};  ///< Worker shares still active.
     const std::uint8_t *source {nullptr};  ///< Current packed XShm source.
     int source_pitch {0};  ///< Current packed source row stride.
-    int width;  ///< Source and encoder width.
-    int height;  ///< Source and encoder height.
+    std::vector<bilinear_axis_sample_t> x_samples;  ///< Horizontal scaling map, empty for 1:1.
+    std::vector<bilinear_axis_sample_t> y_samples;  ///< Vertical scaling map, empty for 1:1.
+    int source_width;  ///< Packed XShm source width.
+    int source_height;  ///< Packed XShm source height.
+    int output_width {0};  ///< Planar x264 destination width.
+    int output_height {0};  ///< Planar x264 destination height.
     pix_fmt_e requested_format;  ///< Negotiated StationConnect format.
   };
 

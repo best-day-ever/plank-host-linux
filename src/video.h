@@ -742,6 +742,9 @@ namespace video {
   /** Return whether a named StationConnect per-session encoder was qualified at startup. */
   bool encoder_backend_available(std::string_view backend);
 
+  /** Return whether one exact StationConnect encoding mode passed its real encoder probe. */
+  bool encoding_mode_available(std::string_view mode);
+
   /**
    * @brief Report whether a negotiated StationConnect capture source is available.
    *

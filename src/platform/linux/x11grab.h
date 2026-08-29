@@ -49,6 +49,39 @@ namespace platf::x11 {
                                   std::uint16_t *red,
                                   std::size_t pixel_count);
 
+  /**
+   * @brief Scale packed depth-30 X11 RGB directly into planar identity GBR.
+   *
+   * Center-aligned bilinear sampling preserves the full 10-bit component
+   * values and writes FFmpeg's native 0-1023 planar representation without an
+   * intermediate RGB or 8-bit surface.
+   *
+   * @param source Packed X11 image base.
+   * @param source_pitch Packed source row stride in bytes.
+   * @param source_width Source width in pixels.
+   * @param source_height Source height in pixels.
+   * @param green FFmpeg plane 0 destination.
+   * @param green_pitch Green-plane row stride in bytes.
+   * @param blue FFmpeg plane 1 destination.
+   * @param blue_pitch Blue-plane row stride in bytes.
+   * @param red FFmpeg plane 2 destination.
+   * @param red_pitch Red-plane row stride in bytes.
+   * @param destination_width Destination width in pixels.
+   * @param destination_height Destination height in pixels.
+   */
+  void scale_xrgb10_to_gbr10(const std::uint8_t *source,
+                             std::size_t source_pitch,
+                             int source_width,
+                             int source_height,
+                             std::uint16_t *green,
+                             std::size_t green_pitch,
+                             std::uint16_t *blue,
+                             std::size_t blue_pitch,
+                             std::uint16_t *red,
+                             std::size_t red_pitch,
+                             int destination_width,
+                             int destination_height);
+
   struct cursor_ctx_raw_t;
   /**
    * @brief Release cursor context resources.

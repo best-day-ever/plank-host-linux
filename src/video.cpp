@@ -1732,6 +1732,36 @@ namespace video {
     return false;
   }
 
+  bool encoding_mode_available(std::string_view mode) {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    const bool software_h264 = software_cuda.h264[encoder_t::PASSED];
+    if (mode == "h264-8-422-software"sv) {
+      return software_h264 && software_cuda.h264[encoder_t::YUV422];
+    }
+    if (mode == "h264-8-444-software"sv) {
+      return software_h264 && software_cuda.h264[encoder_t::YUV444];
+    }
+    if (mode == "h264-10-422-software"sv) {
+      return software_h264 && software_cuda.h264[encoder_t::DYNAMIC_RANGE_YUV422];
+    }
+    if (mode == "h264-10-444-software"sv) {
+      return software_h264 && software_cuda.h264[encoder_t::DYNAMIC_RANGE_YUV444];
+    }
+    if (mode == "h264-8-444-nvenc"sv) {
+      return nvenc_direct_supports_h264_444_8bit();
+    }
+    if (mode == "hevc-8-444-nvenc"sv) {
+      return nvenc_direct_supports_hevc_444_8bit();
+    }
+    if (mode == "hevc-10-444-nvenc"sv) {
+      return nvenc_direct_supports_hevc_444_10bit();
+    }
+#else
+    (void) mode;
+#endif
+    return false;
+  }
+
   bool capture_source_available(std::string_view source) {
 #if defined(__linux__)
     return platf::stationconnect_capture_source_available(source);
@@ -3623,8 +3653,21 @@ namespace video {
     // This check only applies for H.264 and HEVC
     if (config.videoFormat <= 1) {
       if (auto packet_avcodec = dynamic_cast<packet_raw_avcodec *>(packet.get())) {
-        if (cbs::validate_sps(packet_avcodec->av_packet, config.videoFormat ? AV_CODEC_ID_H265 : AV_CODEC_ID_H264)) {
+        const bool exact_h264_high10_identity =
+          config.videoFormat == 0 && config.dynamicRange == 1 &&
+          config.chromaSamplingType == 1 &&
+          (config.encoderCscMode >> 1) == COLORSPACE_IDENTITY_GBR &&
+          (config.encoderCscMode & 1) != 0;
+        const bool sps_valid = exact_h264_high10_identity ?
+          cbs::validate_h264_high10_444_identity(packet_avcodec->av_packet) :
+          cbs::validate_sps(
+            packet_avcodec->av_packet,
+            config.videoFormat ? AV_CODEC_ID_H265 : AV_CODEC_ID_H264);
+        if (sps_valid) {
           flag |= VUI_PARAMS;
+        } else if (exact_h264_high10_identity) {
+          BOOST_LOG(error)
+            << "H.264 encoder probe rejected a stream that was not exact High 10 4:4:4 identity GBR"sv;
         }
       } else {
         // Don't check it for non-avcodec encoders.

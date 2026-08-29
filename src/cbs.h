@@ -60,4 +60,13 @@ namespace cbs {
    * @return `true` when the packet's active SPS advertises VUI parameters.
    */
   bool validate_sps(const AVPacket *packet, int codec_id);
+
+  /**
+   * @brief Validate the exact StationConnect H.264 High 10 identity tuple.
+   *
+   * @param packet Encoded H.264 packet containing its active SPS.
+   * @return `true` only for High 4:4:4 Predictive, 10-bit 4:4:4, full-range
+   * identity GBR with BT.709 primaries and the sRGB transfer function.
+   */
+  bool validate_h264_high10_444_identity(const AVPacket *packet);
 }  // namespace cbs
