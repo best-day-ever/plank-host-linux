@@ -2106,17 +2106,43 @@ namespace stream {
 
       auto peer_address = session->audio.peer.address();
       try {
-        auto send_info = platf::send_info_t {
-          (const char *) &audio_packet,
-          sizeof(audio_packet),
-          (const char *) shards_p[sequenceNumber % RTPA_DATA_SHARDS],
-          (size_t) bytes,
-          (uintptr_t) sock.native_handle(),
-          peer_address,
-          session->audio.peer.port(),
-          session->localAddress,
+        const auto send_audio_packet = [&](const void *header, size_t header_size, const void *payload, size_t payload_size) {
+#ifdef STATIONCONNECT_DATASMASH
+          if (session->datasmash_endpoint) {
+            auto *endpoint = static_cast<ScDatasmashEndpoint *>(session->datasmash_endpoint.get());
+            const auto result = sc_datasmash_audio_send(
+              endpoint,
+              reinterpret_cast<const uint8_t *>(header),
+              header_size,
+              reinterpret_cast<const uint8_t *>(payload),
+              payload_size
+            );
+            if (result < SC_DATASMASH_OK) {
+              throw std::runtime_error {
+                "datasmash audio submission failed with result " +
+                std::to_string(result)
+              };
+            }
+            return;
+          }
+#endif
+          platf::send(platf::send_info_t {
+            static_cast<const char *>(header),
+            header_size,
+            static_cast<const char *>(payload),
+            payload_size,
+            (uintptr_t) sock.native_handle(),
+            peer_address,
+            session->audio.peer.port(),
+            session->localAddress,
+          });
         };
-        platf::send(send_info);
+        send_audio_packet(
+          &audio_packet,
+          sizeof(audio_packet),
+          shards_p[sequenceNumber % RTPA_DATA_SHARDS],
+          bytes
+        );
 
         auto &fec_packet = session->audio.fec_packet;
         // initialize the FEC header at the beginning of the FEC block
@@ -2133,17 +2159,12 @@ namespace stream {
             fec_packet.rtp.sequenceNumber = util::endian::big<std::uint16_t>(sequenceNumber + x + 1);
             fec_packet.fecHeader.fecShardIndex = x;
 
-            auto send_info = platf::send_info_t {
-              (const char *) &fec_packet,
+            send_audio_packet(
+              &fec_packet,
               sizeof(fec_packet),
-              (const char *) shards_p[RTPA_DATA_SHARDS + x],
-              (size_t) bytes,
-              (uintptr_t) sock.native_handle(),
-              peer_address,
-              session->audio.peer.port(),
-              session->localAddress,
-            };
-            platf::send(send_info);
+              shards_p[RTPA_DATA_SHARDS + x],
+              bytes
+            );
             BOOST_LOG(verbose) << "Audio FEC ["sv << (sequenceNumber & ~(RTPA_DATA_SHARDS - 1)) << ' ' << x << "] ::  send..."sv;
           }
         }
@@ -2445,12 +2466,17 @@ namespace stream {
         stats.abi_version = SC_DATASMASH_ABI_VERSION;
         auto *endpoint = static_cast<ScDatasmashEndpoint *>(session.datasmash_endpoint.get());
         if (sc_datasmash_endpoint_stats(endpoint, &stats) == SC_DATASMASH_OK) {
-          BOOST_LOG(info) << "Datasmash video transport: sent="sv
+          BOOST_LOG(info) << "Datasmash media transport: video_sent="sv
                           << stats.video_packets_sent << " packets/"sv
                           << stats.video_bytes_sent << " bytes, send_queue_drops="sv
                           << stats.video_send_queue_drops << ", transport_send_drops="sv
                           << stats.video_transport_send_drops << ", send_queue_high_water="sv
-                          << stats.video_send_queue_high_water << ", QUIC_packets_lost="sv
+                          << stats.video_send_queue_high_water << "; audio_sent="sv
+                          << stats.audio_packets_sent << " packets/"sv
+                          << stats.audio_bytes_sent << " bytes, send_queue_drops="sv
+                          << stats.audio_send_queue_drops << ", transport_send_drops="sv
+                          << stats.audio_transport_send_drops << ", send_queue_high_water="sv
+                          << stats.audio_send_queue_high_water << "; QUIC_packets_lost="sv
                           << stats.media_quic_packets_lost << ", RTT="sv
                           << stats.media_quic_rtt_us << " us"sv;
         }
