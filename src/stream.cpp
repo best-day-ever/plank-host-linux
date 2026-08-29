@@ -538,6 +538,7 @@ namespace stream {
     bool stationconnect_display_lease {};  ///< Whether this stream owns the temporary physical-display layout.
     uid_t stationconnect_display_lease_uid {};  ///< PAM account that owns the display lease.
     std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained until this stream is destroyed.
+    std::shared_ptr<void> datasmash_endpoint;  ///< Experimental QUIC handshake lifetime.
 
     safe::mail_raw_t::event_t<bool> shutdown_event;  ///< Event raised when the stream should shut down.
     safe::signal_t controlEnd;  ///< Signal raised when the control channel exits.
@@ -2489,6 +2490,7 @@ namespace stream {
       session->stationconnect_display_lease_uid =
         launch_session.stationconnect_display_lease_uid;
       session->authentication_session = launch_session.authentication_session;
+      session->datasmash_endpoint = launch_session.datasmash_endpoint;
 
       if (session->stationconnect_display_lease &&
           stationconnect::session::activate_display_lease(

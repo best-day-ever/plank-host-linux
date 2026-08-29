@@ -12,6 +12,7 @@
 #include <format>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -28,6 +29,14 @@
 #include <Simple-Web-Server/server_http.hpp>
 
 #include <unistd.h>
+
+#ifdef STATIONCONNECT_DATASMASH
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/rand.h>
+#include "stationconnect_datasmash.h"
+#endif
 
 // local includes
 #include "config.h"
@@ -85,6 +94,112 @@ namespace nvhttp {
   constexpr auto stationconnect_feature_nvfbc_hevc10_nvenc =
     stationconnect::topology::feature_nvfbc_hevc10_nvenc;
   constexpr auto stationconnect_topology_features = stationconnect::topology::feature_flags;
+
+#ifdef STATIONCONNECT_DATASMASH
+  std::string datasmash_last_error(ScDatasmashEndpoint *endpoint) {
+    std::array<char, 512> error {};
+    sc_datasmash_endpoint_last_error(endpoint, error.data(), error.size());
+    return error.data();
+  }
+
+  std::optional<std::string> certificate_sha256(const std::string &path) {
+    BIO *bio = BIO_new_file(path.c_str(), "r");
+    if (bio == nullptr) {
+      return std::nullopt;
+    }
+    X509 *certificate = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    if (certificate == nullptr) {
+      return std::nullopt;
+    }
+
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest {};
+    unsigned int digest_size = 0;
+    const bool success =
+      X509_digest(certificate, EVP_sha256(), digest.data(), &digest_size) == 1 &&
+      digest_size == 32;
+    X509_free(certificate);
+    if (!success) {
+      return std::nullopt;
+    }
+    return util::hex_vec(std::vector<std::uint8_t>(
+      digest.begin(), digest.begin() + digest_size
+    ));
+  }
+
+  bool start_datasmash_data_plane(rtsp_stream::launch_session_t &session,
+                                  pt::ptree &tree) {
+    if (session.data_plane != "datasmash") {
+      return true;
+    }
+
+    const auto fingerprint = certificate_sha256(config::nvhttp.cert);
+    if (!fingerprint) {
+      tree.put("root.<xmlattr>.status_code", 503);
+      tree.put("root.<xmlattr>.status_message",
+               "Unable to fingerprint the StationConnect data-plane certificate");
+      return false;
+    }
+
+    std::array<unsigned char, 32> token_bytes {};
+    if (RAND_bytes(token_bytes.data(), token_bytes.size()) != 1) {
+      tree.put("root.<xmlattr>.status_code", 503);
+      tree.put("root.<xmlattr>.status_message",
+               "Unable to create the StationConnect data-plane token");
+      return false;
+    }
+    std::string token = util::hex_vec(std::vector<std::uint8_t>(
+      token_bytes.begin(), token_bytes.end()
+    ));
+    OPENSSL_cleanse(token_bytes.data(), token_bytes.size());
+
+    const auto port = net::map_port(0);
+    const std::string bind_address = "0.0.0.0:" + std::to_string(port);
+    ScDatasmashConfig endpoint_config {};
+    endpoint_config.struct_size = sizeof(endpoint_config);
+    endpoint_config.abi_version = SC_DATASMASH_ABI_VERSION;
+    endpoint_config.mode = SC_DATASMASH_MODE_SERVER;
+    endpoint_config.handshake_timeout_ms = 10000;
+    endpoint_config.idle_timeout_ms = 30000;
+    endpoint_config.keep_alive_interval_ms = 5000;
+    endpoint_config.bind_address = bind_address.c_str();
+    endpoint_config.certificate_path = config::nvhttp.cert.c_str();
+    endpoint_config.private_key_path = config::nvhttp.pkey.c_str();
+    endpoint_config.session_token = token.c_str();
+
+    ScDatasmashEndpoint *endpoint = nullptr;
+    int result = sc_datasmash_endpoint_create(&endpoint_config, &endpoint);
+    if (result == SC_DATASMASH_OK) {
+      result = sc_datasmash_endpoint_start(endpoint);
+    }
+    if (result != SC_DATASMASH_OK) {
+      const std::string error_message = endpoint == nullptr ?
+        "endpoint creation failed" : datasmash_last_error(endpoint);
+      if (endpoint != nullptr) {
+        sc_datasmash_endpoint_destroy(endpoint);
+      }
+      OPENSSL_cleanse(token.data(), token.size());
+      BOOST_LOG(error) << "Unable to start experimental datasmash listener: "sv
+                       << error_message;
+      tree.put("root.<xmlattr>.status_code", 503);
+      tree.put("root.<xmlattr>.status_message",
+               "Unable to start the experimental StationConnect data plane");
+      return false;
+    }
+
+    session.datasmash_endpoint = std::shared_ptr<void>(endpoint, [](void *raw_endpoint) {
+      auto *endpoint = static_cast<ScDatasmashEndpoint *>(raw_endpoint);
+      sc_datasmash_endpoint_stop(endpoint);
+      sc_datasmash_endpoint_destroy(endpoint);
+    });
+    tree.put("root.StationConnectDatasmashPort", port);
+    tree.put("root.StationConnectDatasmashCertificateSha256", *fingerprint);
+    tree.put("root.StationConnectDatasmashToken", token);
+    OPENSSL_cleanse(token.data(), token.size());
+    BOOST_LOG(info) << "Experimental datasmash listener started on UDP port "sv << port;
+    return true;
+  }
+#endif
 
   /**
    * @brief HTTPS server backend that requires TLS 1.3.
@@ -771,6 +886,22 @@ namespace nvhttp {
     return true;
   }
 
+  bool validate_data_plane(rtsp_stream::launch_session_t &session,
+                           pt::ptree &tree) {
+    if (session.data_plane == "legacy") {
+      return true;
+    }
+#ifdef STATIONCONNECT_DATASMASH
+    if (session.data_plane == "datasmash") {
+      return true;
+    }
+#endif
+    tree.put("root.<xmlattr>.status_code", 400);
+    tree.put("root.<xmlattr>.status_message",
+             "Unsupported StationConnect data plane");
+    return false;
+  }
+
   bool validate_encoder_backend(rtsp_stream::launch_session_t &session,
                                 pt::ptree &tree) {
     if (session.stationconnect_protocol_version != stationconnect_topology_version ||
@@ -918,6 +1049,7 @@ namespace nvhttp {
     launch_session->host_layout = get_arg(args, "scHostLayout", "");
     launch_session->virtual_mode_1 = get_arg(args, "scVirtualMode1", "");
     launch_session->virtual_mode_2 = get_arg(args, "scVirtualMode2", "");
+    launch_session->data_plane = get_arg(args, "scDataPlane", "");
     launch_session->capture_source = get_arg(args, "scCaptureSource", "");
     launch_session->encoder_backend = get_arg(args, "scEncoderBackend", "");
     launch_session->encoding_mode = get_arg(args, "scEncodingMode", "");
@@ -1120,6 +1252,11 @@ namespace nvhttp {
     tree.put("root.StationConnectTopologyVersion", stationconnect_topology_version);
     tree.put("root.StationConnectFeatureFlags", stationconnect_topology_features);
     tree.put("root.StationConnectCaptureSources", "nvfbc,x11-native10");
+#ifdef STATIONCONNECT_DATASMASH
+    tree.put("root.StationConnectDataPlanes", "legacy,datasmash");
+#else
+    tree.put("root.StationConnectDataPlanes", "legacy");
+#endif
     tree.put("root.StationConnectEncoderBackends", "software-cuda,nvenc-direct");
     tree.put("root.StationConnectEncodingModes", get_stationconnect_encoding_modes());
     tree.put("root.MaxLumaPixelsHEVC",
@@ -1273,6 +1410,10 @@ namespace nvhttp {
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     auto launch_session = make_launch_session(host_audio, args);
+    if (!validate_data_plane(*launch_session, tree)) {
+      tree.put("root.gamesession", 0);
+      return;
+    }
     if (!validate_capture_source(*launch_session, tree)) {
       tree.put("root.gamesession", 0);
       return;
@@ -1337,6 +1478,13 @@ namespace nvhttp {
       return;
     }
 
+#ifdef STATIONCONNECT_DATASMASH
+    if (!start_datasmash_data_plane(*launch_session, tree)) {
+      tree.put("root.gamesession", 0);
+      return;
+    }
+#endif
+
     tree.put("root.<xmlattr>.status_code", 200);
     tree.put(
       "root.sessionUrl0",
@@ -1348,6 +1496,7 @@ namespace nvhttp {
       )
     );
     tree.put("root.gamesession", 1);
+    tree.put("root.StationConnectDataPlane", launch_session->data_plane);
     tree.put("root.StationConnectCaptureSource", launch_session->capture_source);
     tree.put("root.StationConnectEncoderBackend", launch_session->encoder_backend);
     tree.put("root.StationConnectEncodingMode", launch_session->encoding_mode);
@@ -1427,6 +1576,10 @@ namespace nvhttp {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
     const auto launch_session = make_launch_session(host_audio, args);
+    if (!validate_data_plane(*launch_session, tree)) {
+      tree.put("root.resume", 0);
+      return;
+    }
     if (!validate_capture_source(*launch_session, tree)) {
       tree.put("root.resume", 0);
       return;
@@ -1477,6 +1630,13 @@ namespace nvhttp {
       return;
     }
 
+#ifdef STATIONCONNECT_DATASMASH
+    if (!start_datasmash_data_plane(*launch_session, tree)) {
+      tree.put("root.resume", 0);
+      return;
+    }
+#endif
+
     tree.put("root.<xmlattr>.status_code", 200);
     tree.put(
       "root.sessionUrl0",
@@ -1488,6 +1648,7 @@ namespace nvhttp {
       )
     );
     tree.put("root.resume", 1);
+    tree.put("root.StationConnectDataPlane", launch_session->data_plane);
     tree.put("root.StationConnectCaptureSource", launch_session->capture_source);
     tree.put("root.StationConnectEncoderBackend", launch_session->encoder_backend);
     tree.put("root.StationConnectEncodingMode", launch_session->encoding_mode);
