@@ -45,6 +45,7 @@ extern "C" {
 #ifdef STATIONCONNECT_DATASMASH
   #include <stationconnect_datasmash.h>
   #include <stationconnect_datasmash_control.h>
+  #include <stationconnect_datasmash_event.h>
   #include <stationconnect_datasmash_input.h>
 #endif
 
@@ -975,7 +976,60 @@ namespace stream {
    * @param hdr_info HDR info.
    * @return 0 when the control message is queued; nonzero when no control peer is ready.
    */
+#ifdef STATIONCONNECT_DATASMASH
+  int send_datasmash_event(session_t *session, std::uint16_t type,
+                           const std::uint8_t *payload,
+                           std::size_t payload_size) {
+    if (!session->datasmash_endpoint || !payload || payload_size == 0 ||
+        payload_size > UINT16_MAX) {
+      return -1;
+    }
+    std::vector<std::uint8_t> packet(
+      SC_DATASMASH_EVENT_HEADER_SIZE + payload_size
+    );
+    std::size_t packet_size = 0;
+    if (sc_datasmash_event_encode(
+          type, payload, payload_size, packet.data(), packet.size(),
+          &packet_size) != 0) {
+      return -1;
+    }
+    auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(
+      session->datasmash_endpoint.get()
+    );
+    return sc_datasmash_native_data_send(
+      endpoint, packet.data(), packet_size
+    ) == SC_DATASMASH_OK ? 0 : -1;
+  }
+#endif
+
   int send_hdr_mode(session_t *session, video::hdr_info_t hdr_info) {
+#ifdef STATIONCONNECT_DATASMASH
+    if (session->datasmash_endpoint) {
+      std::array<std::uint8_t, SC_DATASMASH_EVENT_HDR_MODE_SIZE> payload {};
+      payload[0] = hdr_info->enabled ? 1 : 0;
+      std::size_t offset = 2;
+      for (const auto &primary : hdr_info->metadata.displayPrimaries) {
+        sc_datasmash_event_write_u16(payload.data() + offset, primary.x);
+        sc_datasmash_event_write_u16(payload.data() + offset + 2, primary.y);
+        offset += 4;
+      }
+      sc_datasmash_event_write_u16(payload.data() + offset, hdr_info->metadata.whitePoint.x);
+      sc_datasmash_event_write_u16(payload.data() + offset + 2, hdr_info->metadata.whitePoint.y);
+      offset += 4;
+      sc_datasmash_event_write_u16(payload.data() + offset, hdr_info->metadata.maxDisplayLuminance);
+      sc_datasmash_event_write_u16(payload.data() + offset + 2, hdr_info->metadata.minDisplayLuminance);
+      sc_datasmash_event_write_u16(payload.data() + offset + 4, hdr_info->metadata.maxContentLightLevel);
+      sc_datasmash_event_write_u16(payload.data() + offset + 6, hdr_info->metadata.maxFrameAverageLightLevel);
+      sc_datasmash_event_write_u16(payload.data() + offset + 8, hdr_info->metadata.maxFullFrameLuminance);
+      const auto result = send_datasmash_event(
+        session, SC_DATASMASH_EVENT_HDR_MODE, payload.data(), payload.size()
+      );
+      if (!result) {
+        BOOST_LOG(debug) << "Sent HDR mode over native KyProto: "sv << hdr_info->enabled;
+      }
+      return result;
+    }
+#endif
     if (!session->control.peer) {
       BOOST_LOG(warning) << "Couldn't send HDR mode, still waiting for PING from Moonlight"sv;
       // Still waiting for PING from Moonlight
@@ -1012,8 +1066,18 @@ namespace stream {
    * @return Zero when sent, otherwise a transport error.
    */
   int send_raw_hid_control(session_t *session, const std::vector<std::uint8_t> &frame) {
-    if (!session->control.peer || frame.size() < sizeof(SC_RAW_HID_WIRE_HEADER) ||
+    if (frame.size() < sizeof(SC_RAW_HID_WIRE_HEADER) ||
         frame.size() > sizeof(SC_RAW_HID_WIRE_HEADER) + SC_RAW_HID_MAX_PAYLOAD_SIZE) {
+      return -1;
+    }
+#ifdef STATIONCONNECT_DATASMASH
+    if (session->datasmash_endpoint) {
+      return send_datasmash_event(
+        session, SC_DATASMASH_EVENT_RAW_HID_WACOM, frame.data(), frame.size()
+      );
+    }
+#endif
+    if (!session->control.peer) {
       return -1;
     }
 
@@ -1031,8 +1095,18 @@ namespace stream {
   }
 
   int send_cursor_shape_control(session_t *session, const std::vector<std::uint8_t> &frame) {
-    if (!session->control.peer || frame.size() < sizeof(SC_CURSOR_WIRE_HEADER) ||
+    if (frame.size() < sizeof(SC_CURSOR_WIRE_HEADER) ||
         frame.size() > sizeof(SC_CURSOR_WIRE_HEADER) + SC_CURSOR_MAX_CHUNK_SIZE) {
+      return -1;
+    }
+#ifdef STATIONCONNECT_DATASMASH
+    if (session->datasmash_endpoint) {
+      return send_datasmash_event(
+        session, SC_DATASMASH_EVENT_CURSOR_SHAPE, frame.data(), frame.size()
+      );
+    }
+#endif
+    if (!session->control.peer) {
       return -1;
     }
 
@@ -1060,6 +1134,14 @@ namespace stream {
     session_t *session,
     const SC_CURSOR_POSITION_WIRE_MESSAGE &position
   ) {
+#ifdef STATIONCONNECT_DATASMASH
+    if (session->datasmash_endpoint) {
+      return send_datasmash_event(
+        session, SC_DATASMASH_EVENT_CURSOR_POSITION,
+        reinterpret_cast<const std::uint8_t *>(&position), sizeof(position)
+      );
+    }
+#endif
     if (!session->control.peer) {
       return -1;
     }
@@ -1622,26 +1704,27 @@ namespace stream {
           // the app terminates before they finish connecting.
           if (!session->control.peer) {
             has_session_awaiting_peer = true;
-          } else {
+          }
+          if (session->datasmash_endpoint || session->control.peer) {
             if (!session->cursorThread.joinable()) {
               session->cursorThread = std::jthread(localCursorThread, session);
             }
 
             auto &hdr_queue = session->control.hdr_queue;
-            while (session->control.peer && hdr_queue->peek()) {
+            while ((session->datasmash_endpoint || session->control.peer) && hdr_queue->peek()) {
               auto hdr_info = hdr_queue->pop();
 
               send_hdr_mode(session, std::move(hdr_info));
             }
 
             auto &raw_hid_feedback_queue = session->control.raw_hid_feedback_queue;
-            while (session->control.peer && raw_hid_feedback_queue->peek()) {
+            while ((session->datasmash_endpoint || session->control.peer) && raw_hid_feedback_queue->peek()) {
               const auto frame = raw_hid_feedback_queue->pop();
               send_raw_hid_control(session, *frame);
             }
 
             auto &cursor_shape_queue = session->control.cursor_shape_queue;
-            while (session->control.peer && cursor_shape_queue->peek()) {
+            while ((session->datasmash_endpoint || session->control.peer) && cursor_shape_queue->peek()) {
               const auto frames = cursor_shape_queue->pop();
               for (const auto &frame : *frames) {
                 if (send_cursor_shape_control(session, frame)) {
