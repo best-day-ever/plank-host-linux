@@ -1830,9 +1830,16 @@ namespace stream {
         auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
         ScDatasmashNativeVideoFrameInfo frame_info {};
         frame_info.struct_size = sizeof(frame_info);
-        frame_info.codec = session->config.monitor.videoFormat == 0 ?
-                             SC_DATASMASH_NATIVE_VIDEO_CODEC_H264 :
-                             SC_DATASMASH_NATIVE_VIDEO_CODEC_HEVC;
+        if (session->config.monitor.videoFormat == 0) {
+          frame_info.codec = SC_DATASMASH_NATIVE_VIDEO_CODEC_H264;
+        } else if (session->config.monitor.videoFormat == 1) {
+          frame_info.codec = SC_DATASMASH_NATIVE_VIDEO_CODEC_HEVC;
+        } else {
+          BOOST_LOG(error) << "Datasmash native transport cannot carry video format "sv
+                           << session->config.monitor.videoFormat;
+          session::stop(*session);
+          continue;
+        }
         frame_info.flags = packet->is_idr() ? SC_DATASMASH_NATIVE_VIDEO_FLAG_KEY : 0;
         frame_info.frame_number = static_cast<std::uint64_t>(packet->frame_index());
         const auto frame_time = packet->frame_timestamp.value_or(
