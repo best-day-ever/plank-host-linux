@@ -10,6 +10,10 @@ set(SUNSHINE_PUBLISHER_ISSUE_URL "https://app.lizardbyte.dev/support"
 option(BUILD_DOCS "Build documentation" ON)
 option(BUILD_TESTS "Build tests" ON)
 option(BUILD_WERROR "Enable -Werror flag." OFF)
+option(STATIONCONNECT_ENABLE_DATASMASH
+        "Link the experimental StationConnect datasmash transport boundary." OFF)
+set(STATIONCONNECT_DATASMASH_TRANSPORT_DIR "" CACHE PATH
+        "Path to the StationConnect datasmash Rust transport crate.")
 
 # if this option is set, the build will exit after configuring special package configuration files
 option(SUNSHINE_CONFIGURE_ONLY "Configure special files only, then exit." OFF)

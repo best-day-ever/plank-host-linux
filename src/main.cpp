@@ -32,6 +32,10 @@
 #endif
 #include "video.h"
 
+#ifdef STATIONCONNECT_DATASMASH
+  #include <stationconnect_datasmash.h>
+#endif
+
 using namespace std::literals;
 
 std::map<int, std::function<void()>> signal_handlers;  ///< Signal handlers.
@@ -191,6 +195,15 @@ int main(int argc, char *argv[]) {
   // the version should be printed to the log before anything else
   BOOST_LOG(info) << "StationConnect Host version: "sv << PROJECT_VERSION
                   << " commit: "sv << PROJECT_VERSION_COMMIT;
+
+#ifdef STATIONCONNECT_DATASMASH
+  if (sc_datasmash_abi_version() != SC_DATASMASH_ABI_VERSION) {
+    BOOST_LOG(fatal) << "StationConnect datasmash transport ABI mismatch"sv;
+    return 9;
+  }
+  BOOST_LOG(info) << "StationConnect datasmash transport ABI "sv
+                  << sc_datasmash_abi_version() << " is linked but inactive"sv;
+#endif
 
   // Log publisher metadata
   log_publisher_data();

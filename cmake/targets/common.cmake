@@ -31,6 +31,55 @@ endif()
 target_link_libraries(sunshine ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})
 target_compile_definitions(sunshine PUBLIC ${SUNSHINE_DEFINITIONS})
 
+if(STATIONCONNECT_ENABLE_DATASMASH)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR "The datasmash experiment is Linux-only")
+    endif()
+    if(NOT STATIONCONNECT_DATASMASH_TRANSPORT_DIR)
+        cmake_path(ABSOLUTE_PATH CMAKE_SOURCE_DIR
+                BASE_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                NORMALIZE
+                OUTPUT_VARIABLE STATIONCONNECT_HOST_SOURCE_DIR)
+        cmake_path(GET STATIONCONNECT_HOST_SOURCE_DIR PARENT_PATH STATIONCONNECT_HOST_PARENT_DIR)
+        cmake_path(GET STATIONCONNECT_HOST_PARENT_DIR PARENT_PATH STATIONCONNECT_ROOT_DIR)
+        set(STATIONCONNECT_DATASMASH_TRANSPORT_DIR
+                "${STATIONCONNECT_ROOT_DIR}/protocol/datasmash-transport")
+    endif()
+    if(NOT EXISTS "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/Cargo.toml" OR
+       NOT EXISTS "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/include/stationconnect_datasmash.h")
+        message(FATAL_ERROR
+                "StationConnect datasmash transport source is incomplete: "
+                "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}")
+    endif()
+
+    find_program(STATIONCONNECT_CARGO_EXECUTABLE NAMES cargo REQUIRED)
+    set(STATIONCONNECT_DATASMASH_CARGO_TARGET_DIR
+            "${CMAKE_BINARY_DIR}/stationconnect-datasmash-cargo")
+    set(STATIONCONNECT_DATASMASH_LIBRARY
+            "${STATIONCONNECT_DATASMASH_CARGO_TARGET_DIR}/release/libstationconnect_datasmash_transport.a")
+    add_custom_target(stationconnect-datasmash-transport-build
+            COMMAND ${CMAKE_COMMAND} -E env
+                    "CARGO_TARGET_DIR=${STATIONCONNECT_DATASMASH_CARGO_TARGET_DIR}"
+                    "${STATIONCONNECT_CARGO_EXECUTABLE}" build
+                    --locked --offline --release
+                    --manifest-path "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/Cargo.toml"
+            WORKING_DIRECTORY "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}"
+            COMMENT "Building StationConnect datasmash Rust transport"
+            VERBATIM)
+    add_dependencies(sunshine stationconnect-datasmash-transport-build)
+    target_include_directories(sunshine PRIVATE
+            "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/include")
+    target_compile_definitions(sunshine PRIVATE STATIONCONNECT_DATASMASH=1)
+    target_link_libraries(sunshine
+            "${STATIONCONNECT_DATASMASH_LIBRARY}"
+            ${CMAKE_DL_LIBS}
+            Threads::Threads
+            m
+            rt)
+    set_property(TARGET sunshine APPEND PROPERTY LINK_DEPENDS
+            "${STATIONCONNECT_DATASMASH_LIBRARY}")
+endif()
+
 # CLion complains about unknown flags after running cmake, and cannot add symbols to the index for cuda files
 if(CUDA_INHERIT_COMPILE_OPTIONS)
     foreach(flag IN LISTS SUNSHINE_COMPILE_OPTIONS)
