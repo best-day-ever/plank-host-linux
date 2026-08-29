@@ -60,7 +60,7 @@ namespace rtsp_stream {
     std::string rtsp_url_scheme;  ///< URL scheme selected by the RTSP SETUP flow.
     uint32_t rtsp_iv_counter;  ///< Counter value mixed into encrypted RTSP IVs.
     std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained by StationConnect streams.
-    std::shared_ptr<void> datasmash_endpoint;  ///< Experimental QUIC handshake lifetime.
+    std::shared_ptr<void> datasmash_endpoint;  ///< Experimental QUIC data-plane lifetime.
   };
 
   /**

@@ -202,7 +202,7 @@ int main(int argc, char *argv[]) {
     return 9;
   }
   BOOST_LOG(info) << "StationConnect datasmash transport ABI "sv
-                  << sc_datasmash_abi_version() << " is linked but inactive"sv;
+                  << sc_datasmash_abi_version() << " is available"sv;
 #endif
 
   // Log publisher metadata

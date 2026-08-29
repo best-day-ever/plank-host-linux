@@ -11,6 +11,7 @@
 #include <future>
 #include <limits>
 #include <queue>
+#include <stdexcept>
 
 // lib includes
 #include <boost/endian/arithmetic.hpp>
@@ -40,6 +41,10 @@ extern "C" {
 #include "sync.h"
 #include "thread_safe.h"
 #include "utility.h"
+
+#ifdef STATIONCONNECT_DATASMASH
+  #include <stationconnect_datasmash.h>
+#endif
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
   #include "platform/linux/graphics.h"
@@ -538,7 +543,7 @@ namespace stream {
     bool stationconnect_display_lease {};  ///< Whether this stream owns the temporary physical-display layout.
     uid_t stationconnect_display_lease_uid {};  ///< PAM account that owns the display lease.
     std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained until this stream is destroyed.
-    std::shared_ptr<void> datasmash_endpoint;  ///< Experimental QUIC handshake lifetime.
+    std::shared_ptr<void> datasmash_endpoint;  ///< Experimental QUIC data-plane lifetime.
 
     safe::mail_raw_t::event_t<bool> shutdown_event;  ///< Event raised when the stream should shut down.
     safe::signal_t controlEnd;  ///< Signal raised when the control channel exits.
@@ -1959,8 +1964,31 @@ namespace stream {
               batch_info.block_count = current_batch_size;
 
               frame_send_batch_latency_logger.first_point_now();
-              // Use a batched send if it's supported on this platform
-              if (!platf::send_batch(batch_info)) {
+              bool sent_over_datasmash = false;
+#ifdef STATIONCONNECT_DATASMASH
+              if (session->datasmash_endpoint) {
+                auto *endpoint = static_cast<ScDatasmashEndpoint *>(session->datasmash_endpoint.get());
+                for (auto y = 0; y < current_batch_size; y++) {
+                  const auto shard_index = next_shard_to_send + y;
+                  const auto result = sc_datasmash_video_send(
+                    endpoint,
+                    reinterpret_cast<const uint8_t *>(shards.prefix(shard_index)),
+                    shards.prefixsize,
+                    reinterpret_cast<const uint8_t *>(shards.data(shard_index)),
+                    shards.blocksize
+                  );
+                  if (result < SC_DATASMASH_OK) {
+                    throw std::runtime_error {
+                      "datasmash video submission failed with result " +
+                      std::to_string(result)
+                    };
+                  }
+                }
+                sent_over_datasmash = true;
+              }
+#endif
+              // Use a batched UDP send if it's supported on this platform.
+              if (!sent_over_datasmash && !platf::send_batch(batch_info)) {
                 // Batched send is not available, so send each packet individually
                 BOOST_LOG(verbose) << "Falling back to unbatched send"sv;
                 for (auto y = 0; y < current_batch_size; y++) {
@@ -2006,6 +2034,11 @@ namespace stream {
         session->video.lowseq = lowseq;
       } catch (const std::exception &e) {
         BOOST_LOG(error) << "Broadcast video failed "sv << e.what();
+#ifdef STATIONCONNECT_DATASMASH
+        if (session->datasmash_endpoint) {
+          session::stop(*session);
+        }
+#endif
         std::this_thread::sleep_for(100ms);
       }
     }
@@ -2404,6 +2437,25 @@ namespace stream {
       // Reset input on session stop to avoid stuck repeated keys
       BOOST_LOG(debug) << "Resetting Input..."sv;
       input::reset(session.input, session.input_connection_id);
+
+#ifdef STATIONCONNECT_DATASMASH
+      if (session.datasmash_endpoint) {
+        ScDatasmashStats stats {};
+        stats.struct_size = sizeof(stats);
+        stats.abi_version = SC_DATASMASH_ABI_VERSION;
+        auto *endpoint = static_cast<ScDatasmashEndpoint *>(session.datasmash_endpoint.get());
+        if (sc_datasmash_endpoint_stats(endpoint, &stats) == SC_DATASMASH_OK) {
+          BOOST_LOG(info) << "Datasmash video transport: sent="sv
+                          << stats.video_packets_sent << " packets/"sv
+                          << stats.video_bytes_sent << " bytes, send_queue_drops="sv
+                          << stats.video_send_queue_drops << ", transport_send_drops="sv
+                          << stats.video_transport_send_drops << ", send_queue_high_water="sv
+                          << stats.video_send_queue_high_water << ", QUIC_packets_lost="sv
+                          << stats.media_quic_packets_lost << ", RTT="sv
+                          << stats.media_quic_rtt_us << " us"sv;
+        }
+      }
+#endif
 
       // If this is the last session, invoke the platform callbacks
       if (--running_sessions == 0) {
