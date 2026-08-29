@@ -32,7 +32,7 @@ namespace auth = stationconnect::auth;
 
 namespace {
   constexpr std::string_view default_socket_path = "/run/stationconnect/pam/auth.sock";
-  constexpr std::string_view default_config_path = "/etc/stationconnect/stationconnect.conf";
+  constexpr std::string_view default_config_path = "/etc/stationconnect/stationconnect-host.conf";
   constexpr std::string_view pam_service = "stationconnect-host";
 
   volatile std::sig_atomic_t stopping = 0;  ///< Set by termination signals.

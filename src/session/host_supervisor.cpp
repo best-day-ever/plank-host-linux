@@ -50,7 +50,7 @@ namespace {
   constexpr std::string_view display_overlay_path =
     "/etc/X11/xorg.conf.d/99-stationconnect-headless.conf";
   constexpr std::string_view stationconnect_config_path =
-    "/etc/stationconnect/stationconnect.conf";
+    "/etc/stationconnect/stationconnect-host.conf";
   constexpr std::string_view runtime_display_state_path =
     "/run/stationconnect/host/display-state";
 

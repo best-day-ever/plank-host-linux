@@ -1,6 +1,6 @@
 # StationConnect host configuration
 
-The host reads `/etc/stationconnect/stationconnect.conf`. It uses INI-style
+The host reads `/etc/stationconnect/stationconnect-host.conf`. It uses INI-style
 section headings and globally scoped `key = value` entries. Section names are
 organizational only. Blank lines and text following `#` are ignored.
 

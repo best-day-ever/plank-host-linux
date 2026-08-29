@@ -418,7 +418,7 @@ int main(int argc, char *argv[]) {
   // If we're using the default port and GameStream is enabled, warn the user
   if (config::sunshine.port == 47989 && is_gamestream_enabled()) {
     BOOST_LOG(fatal) << "GameStream is still enabled in GeForce Experience and conflicts with the StationConnect streaming ports."sv;
-    BOOST_LOG(fatal) << "Disable GameStream on the SHIELD tab in GeForce Experience or change the StationConnect port in stationconnect.conf."sv;
+    BOOST_LOG(fatal) << "Disable GameStream on the SHIELD tab in GeForce Experience or change the StationConnect port in stationconnect-host.conf."sv;
   }
 #endif
 
