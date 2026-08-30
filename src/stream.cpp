@@ -1677,7 +1677,7 @@ namespace stream {
           drain_datasmash_control(session, datasmash_control_packet);
 #endif
 
-          if (now > session->pingTimeout) {
+          if (!session->datasmash_endpoint && now > session->pingTimeout) {
             auto address = session->control.peer ? platf::from_sockaddr((sockaddr *) &session->control.peer->address.address) : session->control.expected_peer_address;
             BOOST_LOG(info) << address << ": Ping Timeout"sv;
             session::stop(*session);
@@ -1702,7 +1702,7 @@ namespace stream {
           // Remember if we have a session that's waiting for a peer to connect to the
           // control stream. This ensures the clients are properly notified even when
           // the app terminates before they finish connecting.
-          if (!session->control.peer) {
+          if (!session->datasmash_endpoint && !session->control.peer) {
             has_session_awaiting_peer = true;
           }
           if (session->datasmash_endpoint || session->control.peer) {

@@ -8,6 +8,7 @@
 // standard includes
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <format>
 #include <functional>
@@ -163,8 +164,14 @@ namespace nvhttp {
     endpoint_config.abi_version = SC_DATASMASH_ABI_VERSION;
     endpoint_config.mode = SC_DATASMASH_MODE_SERVER;
     endpoint_config.handshake_timeout_ms = 10000;
-    endpoint_config.idle_timeout_ms = 30000;
-    endpoint_config.keep_alive_interval_ms = 5000;
+    const auto configured_idle_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        config::stream.ping_timeout
+      ).count();
+    const auto idle_ms = std::clamp<std::int64_t>(configured_idle_ms, 200, 120000);
+    const auto keep_alive_ms = std::clamp<std::int64_t>(idle_ms / 2, 100, 5000);
+    endpoint_config.idle_timeout_ms = static_cast<std::uint32_t>(idle_ms);
+    endpoint_config.keep_alive_interval_ms = static_cast<std::uint32_t>(keep_alive_ms);
     endpoint_config.bind_address = bind_address.c_str();
     endpoint_config.certificate_path = config::nvhttp.cert.c_str();
     endpoint_config.private_key_path = config::nvhttp.pkey.c_str();
@@ -199,7 +206,8 @@ namespace nvhttp {
     tree.put("root.StationConnectDatasmashCertificateSha256", *fingerprint);
     tree.put("root.StationConnectDatasmashToken", token);
     OPENSSL_cleanse(token.data(), token.size());
-    BOOST_LOG(info) << "Experimental datasmash listener started on UDP port "sv << port;
+    BOOST_LOG(info) << "Experimental datasmash listener started on UDP port "sv << port
+                    << " (idle timeout "sv << idle_ms << " ms)"sv;
     return true;
   }
 #endif
