@@ -5,24 +5,10 @@
 #pragma once
 
 // standard includes
-#include <tuple>
-#include <utility>
-
 // lib includes
 #include <boost/asio.hpp>
-#include <enet/enet.h>
-
-// local includes
-#include "utility.h"
 
 namespace net {
-  /**
-   * @brief Destroy an ENet host allocated by host_create().
-   *
-   * @param host Host name or address to resolve.
-   */
-  void free_host(ENetHost *host);
-
   /**
    * @brief Map a specified port based on the base port.
    * @param port The port to map as a difference from the base port.
@@ -33,19 +19,6 @@ namespace net {
    * @todo Ensure port is not already in use by another application.
    */
   std::uint16_t map_port(int port);
-
-  /**
-   * @brief Owning ENet host pointer released with `enet_host_destroy`.
-   */
-  using host_t = util::safe_ptr<ENetHost, free_host>;
-  /**
-   * @brief Raw ENet peer handle owned by an ENet host.
-   */
-  using peer_t = ENetPeer *;
-  /**
-   * @brief Owning ENet packet pointer released with `enet_packet_destroy`.
-   */
-  using packet_t = util::safe_ptr<ENetPacket, enet_packet_destroy>;
 
   /**
    * @brief Enumerates supported net options.
@@ -86,16 +59,6 @@ namespace net {
    * @return Value converted from address.
    */
   net_e from_address(const std::string_view &view);
-
-  /**
-   * @brief Create an ENet host with the requested address family.
-   *
-   * @param af Address family used for socket creation or binding.
-   * @param addr Network address to bind, parse, or format.
-   * @param port TCP or UDP port number.
-   * @return ENet host bound to the requested address and port, or an empty handle on failure.
-   */
-  host_t host_create(af_e af, ENetAddress &addr, std::uint16_t port);
 
   /**
    * @brief Convert a config address-family string to the matching enum.

@@ -14,9 +14,6 @@
   #include <mach-o/dyld.h>
 #endif
 
-// lib includes
-#include <rs.h>
-
 // local includes
 #include "display_device.h"
 #include "entry_handler.h"
@@ -390,7 +387,6 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(error) << "Proc failed to initialize"sv;
   }
 
-  reed_solomon_init();
   auto input_deinit_guard = input::init();
 
   if (video::probe_encoders()) {

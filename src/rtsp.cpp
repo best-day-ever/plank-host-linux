@@ -5,7 +5,7 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 extern "C" {
-#include <moonlight-common-c/src/Limelight-internal.h>
+#include <moonlight-common-c/src/Limelight.h>
 #include <moonlight-common-c/src/Rtsp.h>
 }
 
@@ -43,6 +43,13 @@ using asio::ip::udp;
 using namespace std::literals;
 
 namespace rtsp_stream {
+  // Encryption capability bits shared with the StationConnect Client's RTSP
+  // negotiation. Keep these local to setup instead of importing common-c's
+  // private control/media implementation header.
+  constexpr std::uint32_t encryption_control_v2 = 0x01;
+  constexpr std::uint32_t encryption_video = 0x02;
+  constexpr std::uint32_t encryption_audio = 0x04;
+
   /**
    * @brief Release msg resources.
    *
@@ -911,19 +918,19 @@ namespace rtsp_stream {
        << std::endl;
 
     // Always request new control stream encryption if the client supports it
-    uint32_t encryption_flags_supported = SS_ENC_CONTROL_V2 | SS_ENC_AUDIO;
-    uint32_t encryption_flags_requested = SS_ENC_CONTROL_V2;
+    uint32_t encryption_flags_supported = encryption_control_v2 | encryption_audio;
+    uint32_t encryption_flags_requested = encryption_control_v2;
 
     // Determine the encryption desired for this remote endpoint
     auto encryption_mode = net::encryption_mode_for_address(sock.remote_endpoint().address());
     if (encryption_mode != config::ENCRYPTION_MODE_NEVER) {
       // Advertise support for video encryption if it's not disabled
-      encryption_flags_supported |= SS_ENC_VIDEO;
+      encryption_flags_supported |= encryption_video;
 
       // If it's mandatory, also request it to enable use if the client
       // didn't explicitly opt in, but it otherwise has support.
       if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY) {
-        encryption_flags_requested |= SS_ENC_VIDEO | SS_ENC_AUDIO;
+        encryption_flags_requested |= encryption_video | encryption_audio;
       }
     }
 
@@ -1158,7 +1165,7 @@ namespace rtsp_stream {
 
       // Legacy clients use nvFeatureFlags to indicate support for audio encryption
       if (util::from_view(args.at("x-nv-general.featureFlags"sv)) & 0x20) {
-        config.encryptionFlagsEnabled |= SS_ENC_AUDIO;
+        config.encryptionFlagsEnabled |= encryption_audio;
       }
 
       config.monitor.height = (int) util::from_view(args.at("x-nv-video[0].clientViewportHt"sv));
@@ -1370,7 +1377,7 @@ namespace rtsp_stream {
       config.monitor.bitrate = (int) configuredBitrateKbps;
     }
 
-    if ((config.mlFeatureFlags & ML_FF_LOCAL_CURSOR) == 0) {
+    if ((config.mlFeatureFlags & SC_CURSOR_CLIENT_FEATURE_FLAG) == 0) {
       BOOST_LOG(error) << "Rejecting client without required StationConnect local cursor transport"sv;
       respond(sock, session, &option, 400, "StationConnect Local Cursor Required", req->sequenceNumber, {});
       return;
@@ -1384,7 +1391,9 @@ namespace rtsp_stream {
 
     // Check that any required encryption is enabled
     auto encryption_mode = net::encryption_mode_for_address(sock.remote_endpoint().address());
-    if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY && (config.encryptionFlagsEnabled & (SS_ENC_VIDEO | SS_ENC_AUDIO)) != (SS_ENC_VIDEO | SS_ENC_AUDIO)) {
+    if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY &&
+        (config.encryptionFlagsEnabled & (encryption_video | encryption_audio)) !=
+          (encryption_video | encryption_audio)) {
       BOOST_LOG(error) << "Rejecting client that cannot comply with mandatory encryption requirement"sv;
 
       respond(sock, session, &option, 403, "Forbidden", req->sequenceNumber, {});
