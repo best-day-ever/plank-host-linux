@@ -133,10 +133,6 @@ namespace nvhttp {
 
   bool start_datasmash_data_plane(rtsp_stream::launch_session_t &session,
                                   pt::ptree &tree) {
-    if (session.data_plane != "datasmash") {
-      return true;
-    }
-
     const auto fingerprint = certificate_sha256(config::nvhttp.cert);
     if (!fingerprint) {
       tree.put("root.<xmlattr>.status_code", 503);
@@ -897,22 +893,6 @@ namespace nvhttp {
     return true;
   }
 
-  bool validate_data_plane(rtsp_stream::launch_session_t &session,
-                           pt::ptree &tree) {
-    if (session.data_plane == "legacy") {
-      return true;
-    }
-#ifdef STATIONCONNECT_DATASMASH
-    if (session.data_plane == "datasmash") {
-      return true;
-    }
-#endif
-    tree.put("root.<xmlattr>.status_code", 400);
-    tree.put("root.<xmlattr>.status_message",
-             "Unsupported StationConnect data plane");
-    return false;
-  }
-
   bool validate_encoder_backend(rtsp_stream::launch_session_t &session,
                                 pt::ptree &tree) {
     if (session.stationconnect_protocol_version != stationconnect_topology_version ||
@@ -1060,7 +1040,6 @@ namespace nvhttp {
     launch_session->host_layout = get_arg(args, "scHostLayout", "");
     launch_session->virtual_mode_1 = get_arg(args, "scVirtualMode1", "");
     launch_session->virtual_mode_2 = get_arg(args, "scVirtualMode2", "");
-    launch_session->data_plane = get_arg(args, "scDataPlane", "");
     launch_session->capture_source = get_arg(args, "scCaptureSource", "");
     launch_session->encoder_backend = get_arg(args, "scEncoderBackend", "");
     launch_session->encoding_mode = get_arg(args, "scEncodingMode", "");
@@ -1263,11 +1242,6 @@ namespace nvhttp {
     tree.put("root.StationConnectTopologyVersion", stationconnect_topology_version);
     tree.put("root.StationConnectFeatureFlags", stationconnect_topology_features);
     tree.put("root.StationConnectCaptureSources", "nvfbc,x11-native10");
-#ifdef STATIONCONNECT_DATASMASH
-    tree.put("root.StationConnectDataPlanes", "legacy,datasmash");
-#else
-    tree.put("root.StationConnectDataPlanes", "legacy");
-#endif
     tree.put("root.StationConnectEncoderBackends", "software-cuda,nvenc-direct");
     tree.put("root.StationConnectEncodingModes", get_stationconnect_encoding_modes());
     tree.put("root.MaxLumaPixelsHEVC",
@@ -1421,10 +1395,6 @@ namespace nvhttp {
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     auto launch_session = make_launch_session(host_audio, args);
-    if (!validate_data_plane(*launch_session, tree)) {
-      tree.put("root.gamesession", 0);
-      return;
-    }
     if (!validate_capture_source(*launch_session, tree)) {
       tree.put("root.gamesession", 0);
       return;
@@ -1507,7 +1477,6 @@ namespace nvhttp {
       )
     );
     tree.put("root.gamesession", 1);
-    tree.put("root.StationConnectDataPlane", launch_session->data_plane);
     tree.put("root.StationConnectCaptureSource", launch_session->capture_source);
     tree.put("root.StationConnectEncoderBackend", launch_session->encoder_backend);
     tree.put("root.StationConnectEncodingMode", launch_session->encoding_mode);
@@ -1587,10 +1556,6 @@ namespace nvhttp {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
     const auto launch_session = make_launch_session(host_audio, args);
-    if (!validate_data_plane(*launch_session, tree)) {
-      tree.put("root.resume", 0);
-      return;
-    }
     if (!validate_capture_source(*launch_session, tree)) {
       tree.put("root.resume", 0);
       return;
@@ -1659,7 +1624,6 @@ namespace nvhttp {
       )
     );
     tree.put("root.resume", 1);
-    tree.put("root.StationConnectDataPlane", launch_session->data_plane);
     tree.put("root.StationConnectCaptureSource", launch_session->capture_source);
     tree.put("root.StationConnectEncoderBackend", launch_session->encoder_backend);
     tree.put("root.StationConnectEncodingMode", launch_session->encoding_mode);

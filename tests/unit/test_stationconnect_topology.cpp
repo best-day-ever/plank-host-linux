@@ -9,7 +9,7 @@
 namespace topology = stationconnect::topology;
 
 TEST(StationConnectTopology, PublishesVersionNineFeatureContract) {
-  EXPECT_EQ(topology::protocol_version, 9U);
+  EXPECT_EQ(topology::protocol_version, 10U);
   EXPECT_EQ(topology::feature_flags, 0x3FFFU);
   EXPECT_NE(topology::feature_flags & topology::feature_nvfbc_hevc10_nvenc, 0U);
   EXPECT_TRUE(topology::valid_virtual_mode("1024x2160"));
