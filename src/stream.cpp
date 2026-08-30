@@ -1752,9 +1752,9 @@ namespace stream {
         break;
       }
 
-      // Cursor position is a locally rendered 60 Hz interaction path. Keep the
-      // ENet worker cadence below one frame without polling in a busy loop.
-      server->iterate(8ms);
+      // Cursor position is a locally rendered 60 Hz interaction path. Keep
+      // native control draining below one frame without polling in a busy loop.
+      std::this_thread::sleep_for(8ms);
     }
 
     // Let all remaining connections know the server is shutting down
@@ -1803,7 +1803,6 @@ namespace stream {
       session->controlEnd.raise(true);
     }
 
-    server->flush();
   }
 
   /**
@@ -2448,72 +2447,15 @@ namespace stream {
   }
 
   /**
-   * @brief Bind the GameStream UDP and control sockets used for a streaming session.
+   * @brief Start the native StationConnect media and control workers.
    */
   int start_broadcast(broadcast_ctx_t &ctx) {
-    auto address_family = net::af_from_enum_string(config::sunshine.address_family);
-    auto protocol = address_family == net::IPV4 ? udp::v4() : udp::v6();
-    auto control_port = net::map_port(CONTROL_PORT);
-    auto video_port = net::map_port(VIDEO_STREAM_PORT);
-    auto audio_port = net::map_port(AUDIO_STREAM_PORT);
-
-    if (ctx.control_server.bind(address_family, control_port)) {
-      BOOST_LOG(error) << "Couldn't bind Control server to port ["sv << control_port << "], likely another process already bound to the port"sv;
-
-      return -1;
-    }
-
-    boost::system::error_code ec;
-    ctx.video_sock.open(protocol, ec);
-    if (ec) {
-      BOOST_LOG(fatal) << "Couldn't open socket for Video server: "sv << ec.message();
-
-      return -1;
-    }
-
-    // Set video socket send buffer size (SO_SENDBUF) to 1MB
-    try {
-      ctx.video_sock.set_option(boost::asio::socket_base::send_buffer_size(1024 * 1024));
-    } catch (...) {
-      BOOST_LOG(error) << "Failed to set video socket send buffer size (SO_SENDBUF)";
-    }
-
-    auto bind_addr_str = net::get_bind_address(address_family);
-    const auto bind_addr = boost::asio::ip::make_address(bind_addr_str, ec);
-    if (ec) {
-      BOOST_LOG(fatal) << "Invalid bind address: "sv << bind_addr_str << " - " << ec.message();
-      return -1;
-    }
-
-    ctx.video_sock.bind(udp::endpoint(bind_addr, video_port), ec);
-    if (ec) {
-      BOOST_LOG(fatal) << "Couldn't bind Video server to port ["sv << video_port << "]: "sv << ec.message();
-
-      return -1;
-    }
-
-    ctx.audio_sock.open(protocol, ec);
-    if (ec) {
-      BOOST_LOG(fatal) << "Couldn't open socket for Audio server: "sv << ec.message();
-
-      return -1;
-    }
-
-    ctx.audio_sock.bind(udp::endpoint(bind_addr, audio_port), ec);
-    if (ec) {
-      BOOST_LOG(fatal) << "Couldn't bind Audio server to port ["sv << audio_port << "]: "sv << ec.message();
-
-      return -1;
-    }
-
-    ctx.message_queue_queue = std::make_shared<message_queue_queue_t::element_type>(30);
-
+    // Datasmash owns the only active data-plane socket. These workers retain
+    // the capture/encode and client-callback contracts without binding the
+    // superseded GameStream control, video, or audio ports.
     ctx.video_thread = std::jthread {videoBroadcastThread, std::ref(ctx.video_sock)};
     ctx.audio_thread = std::jthread {audioBroadcastThread, std::ref(ctx.audio_sock)};
     ctx.control_thread = std::jthread {controlBroadcastThread, &ctx.control_server};
-
-    ctx.recv_thread = std::jthread {recvThread, std::ref(ctx)};
-
     return 0;
   }
 
@@ -2532,7 +2474,9 @@ namespace stream {
     video_packets->stop();
     audio_packets->stop();
 
-    ctx.message_queue_queue->stop();
+    if (ctx.message_queue_queue) {
+      ctx.message_queue_queue->stop();
+    }
     ctx.io_context.stop();
 
     ctx.video_sock.close();
@@ -2542,7 +2486,9 @@ namespace stream {
     audio_packets.reset();
 
     BOOST_LOG(debug) << "Waiting for main listening thread to end..."sv;
-    ctx.recv_thread.join();
+    if (ctx.recv_thread.joinable()) {
+      ctx.recv_thread.join();
+    }
     BOOST_LOG(debug) << "Waiting for main video thread to end..."sv;
     ctx.video_thread.join();
     BOOST_LOG(debug) << "Waiting for main audio thread to end..."sv;
@@ -2833,6 +2779,11 @@ namespace stream {
      * @brief Start the audio, video, and control workers for a streaming session.
      */
     int start(session_t &session, const std::string &addr_string) {
+      if (!session.datasmash_endpoint) {
+        BOOST_LOG(error) << "Refusing to start a session without the required Datasmash endpoint"sv;
+        return -1;
+      }
+
       session.input = input::alloc(session.mail, session.input_session_id, session.input_connection_id);
 
       session.broadcast_ref = broadcast.ref();
