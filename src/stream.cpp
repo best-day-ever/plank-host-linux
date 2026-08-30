@@ -7,20 +7,12 @@
 #include <array>
 #include <cmath>
 #include <cstring>
-#include <fstream>
-#include <future>
 #include <limits>
-#include <queue>
-#include <stdexcept>
 
 // lib includes
-#include <boost/endian/arithmetic.hpp>
-#include <openssl/err.h>
-#include <rs.h>
-
 extern "C" {
   // clang-format off
-#include <moonlight-common-c/src/Limelight-internal.h>
+#include <moonlight-common-c/src/StationConnect.h>
   // clang-format on
 }
 
@@ -30,7 +22,6 @@ extern "C" {
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
-#include "network.h"
 #include "platform/common.h"
 #include "process.h"
 #include "raw_hid_tablet.h"
@@ -54,272 +45,13 @@ extern "C" {
   #include "platform/linux/x11grab.h"
 #endif
 
-constexpr int IDX_START_A = 0;  ///< Control-stream message index for the first stream-start packet.
-constexpr int IDX_START_B = 1;  ///< Control-stream message index for the second stream-start packet.
-constexpr int IDX_INVALIDATE_REF_FRAMES = 2;  ///< Control-stream message index for invalidate ref frames.
-constexpr int IDX_LOSS_STATS = 3;  ///< Control-stream message index for loss stats.
-constexpr int IDX_INPUT_DATA = 5;  ///< Control-stream message index for input data.
-constexpr int IDX_RUMBLE_DATA = 6;  ///< Control-stream message index for rumble data.
-constexpr int IDX_TERMINATION = 7;  ///< Control-stream message index for termination.
-constexpr int IDX_PERIODIC_PING = 8;  ///< Control-stream message index for periodic ping.
-constexpr int IDX_REQUEST_IDR_FRAME = 9;  ///< Control-stream message index for request idr frame.
-constexpr int IDX_ENCRYPTED = 10;  ///< Control-stream message index for encrypted.
-constexpr int IDX_HDR_MODE = 11;  ///< Control-stream message index for hdr mode.
-constexpr int IDX_RUMBLE_TRIGGER_DATA = 12;  ///< Control-stream message index for rumble trigger data.
-constexpr int IDX_SET_MOTION_EVENT = 13;  ///< Control-stream message index for set motion event.
-constexpr int IDX_SET_RGB_LED = 14;  ///< Control-stream message index for set rgb led.
-constexpr int IDX_SET_ADAPTIVE_TRIGGERS = 15;  ///< Control-stream message index for set adaptive triggers.
-constexpr int IDX_RAW_HID_CONTROL = 16;  ///< Control-stream message index for StationConnect raw HID requests.
-constexpr int IDX_SET_VIDEO_BITRATE = 17;  ///< Control-stream message index for StationConnect bitrate updates.
-constexpr int IDX_VIDEO_BITRATE_APPLIED = 18;  ///< Control-stream message index for StationConnect bitrate acknowledgements.
-constexpr int IDX_CURSOR_SHAPE = 19;  ///< Control-stream message index for StationConnect local cursor chunks.
-constexpr int IDX_CURSOR_POSITION = 20;  ///< Control-stream message index for StationConnect cursor positions.
 #ifdef STATIONCONNECT_DATASMASH
 constexpr int DATASMASH_CONTROL_DRAIN_LIMIT = 16;
 #endif
 
-static const short packetTypes[] = {
-  0x0305,  // Start A
-  0x0307,  // Start B
-  0x0301,  // Invalidate reference frames
-  0x0201,  // Loss Stats
-  0x0204,  // Frame Stats (unused)
-  0x0206,  // Input data
-  0x010b,  // Rumble data
-  0x0109,  // Termination
-  0x0200,  // Periodic Ping
-  0x0302,  // IDR frame
-  0x0001,  // fully encrypted
-  0x010e,  // HDR mode
-  0x5500,  // Rumble triggers (Sunshine protocol extension)
-  0x5501,  // Set motion event (Sunshine protocol extension)
-  0x5502,  // Set RGB LED (Sunshine protocol extension)
-  0x5503,  // Set Adaptive triggers (Sunshine protocol extension)
-  0x5504,  // Raw HID control (StationConnect protocol extension)
-  0x5505,  // Dynamic video bitrate (StationConnect protocol extension)
-  0x5506,  // Applied video bitrate (StationConnect protocol extension)
-  0x5507,  // Local cursor shape (StationConnect protocol extension)
-  0x5508,  // Local cursor position (StationConnect protocol extension)
-};
-
-namespace asio = boost::asio;
-namespace sys = boost::system;
-
-using asio::ip::tcp;
-using asio::ip::udp;
-
 using namespace std::literals;
 
 namespace stream {
-
-  /**
-   * @brief Enumerates supported socket options.
-   */
-  enum class socket_e : int {
-    video,  ///< Video
-    audio  ///< Audio
-  };
-
-#pragma pack(push, 1)
-
-  /**
-   * @brief Packed short video frame header sent before video payload bytes.
-   */
-  struct video_short_frame_header_t {
-    /**
-     * @brief Return a pointer to the protocol payload following the packet header.
-     *
-     * @return Parsed or serialized payload data.
-     */
-    uint8_t *payload() {
-      return (uint8_t *) (this + 1);
-    }
-
-    std::uint8_t headerType;  ///< Always 0x01 for short headers.
-
-    // Sunshine extension
-    // Frame processing latency, in 1/10 ms units
-    //     zero when the frame is repeated or there is no backend implementation
-    boost::endian::little_uint16_at frame_processing_latency;  ///< Frame processing latency.
-
-    // Currently known values:
-    // 1 = Normal P-frame
-    // 2 = IDR-frame
-    // 4 = P-frame with intra-refresh blocks
-    // 5 = P-frame after reference frame invalidation
-    std::uint8_t frameType;  ///< Frame type.
-
-    // Length of the final packet payload for codecs that cannot handle
-    // zero padding, such as AV1 (Sunshine extension).
-    boost::endian::little_uint16_at lastPayloadLen;  ///< Last payload len.
-
-    std::uint8_t unknown[2];  ///< Reserved bytes with no known client-visible meaning.
-  };
-
-  static_assert(
-    sizeof(video_short_frame_header_t) == 8,
-    "Short frame header must be 8 bytes"
-  );
-
-  /**
-   * @brief Packed RTP and video headers for an unencrypted video packet.
-   */
-  struct video_packet_raw_t {
-    /**
-     * @brief Return a pointer to the protocol payload following the packet header.
-     *
-     * @return Parsed or serialized payload data.
-     */
-    uint8_t *payload() {
-      return (uint8_t *) (this + 1);
-    }
-
-    RTP_PACKET rtp;  ///< RTP header that prefixes this payload.
-    char reserved[4];  ///< Reserved protocol padding bytes.
-
-    NV_VIDEO_PACKET packet;  ///< GameStream video packet header.
-  };
-
-  /**
-   * @brief AES-GCM prefix written before encrypted video packet payloads.
-   */
-  struct video_packet_enc_prefix_t {
-    /**
-     * @brief IV.
-     */
-    std::uint8_t iv[12];  // 12-byte IV is ideal for AES-GCM
-    std::uint32_t frameNumber;  ///< Frame number.
-    std::uint8_t tag[16];  ///< Authentication tag appended to the encrypted payload.
-  };
-
-  /**
-   * @brief Packed RTP header for an audio packet.
-   */
-  struct audio_packet_t {
-    RTP_PACKET rtp;  ///< RTP header that prefixes this payload.
-  };
-
-  /**
-   * @brief Packed control-channel header used before control payloads.
-   */
-  struct control_header_v2 {
-    std::uint16_t type;  ///< Control message type.
-    std::uint16_t payloadLength;  ///< Payload length.
-
-    /**
-     * @brief Return a pointer to the protocol payload following the packet header.
-     *
-     * @return Parsed or serialized payload data.
-     */
-    uint8_t *payload() {
-      return (uint8_t *) (this + 1);
-    }
-  };
-
-  /**
-   * @brief Control-channel termination message payload.
-   */
-  struct control_terminate_t {
-    control_header_v2 header;  ///< Control message header preceding this payload.
-
-    std::uint32_t ec;  ///< Error code reported by the termination message.
-  };
-
-  /**
-   * @brief Control payload that toggles HDR mode and carries metadata.
-   */
-  struct control_hdr_mode_t {
-    control_header_v2 header;  ///< Control message header preceding this payload.
-
-    std::uint8_t enabled;  ///< Nonzero when HDR should be enabled.
-
-    // Sunshine protocol extension
-    SS_HDR_METADATA metadata;  ///< HDR10 metadata sent with the control message.
-  };
-
-  /**
-   * @brief StationConnect acknowledgement for an accepted encoder target.
-   */
-  struct control_video_bitrate_applied_t {
-    control_header_v2 header;
-    boost::endian::little_uint32_at requested_kbps;
-    boost::endian::little_uint32_at applied_kbps;
-    boost::endian::little_uint32_at peak_kbps;
-  };
-
-  /**
-   * @brief Packed encrypted control-channel envelope.
-   */
-  typedef struct control_encrypted_t {
-    std::uint16_t encryptedHeaderType;  ///< Always LE 0x0001.
-    std::uint16_t length;  ///< Size of seq, tag, secondary header, and data.
-
-    // seq is accepted as an arbitrary value in Moonlight
-    std::uint32_t seq;  ///< Monotonically increasing sequence number used as the AES-GCM IV.
-
-    /**
-     * @brief Return a pointer to the protocol payload following the packet header.
-     *
-     * @return Parsed or serialized payload data.
-     */
-    uint8_t *payload() {
-      return (uint8_t *) (this + 1);
-    }
-
-    // encrypted control_header_v2 and payload data follow
-  } *control_encrypted_p;  ///< Alias for control encrypted p.
-
-  /**
-   * @brief Packed RTP and FEC headers for an audio recovery packet.
-   */
-  struct audio_fec_packet_t {
-    RTP_PACKET rtp;  ///< RTP header that prefixes this payload.
-    AUDIO_FEC_HEADER fecHeader;  ///< Audio forward-error-correction header.
-  };
-
-#pragma pack(pop)
-
-  /**
-   * @brief Round a byte count up to the next PKCS#7 padding boundary.
-   *
-   * @param size Number of bytes or elements requested.
-   * @return `size` rounded up to the next PKCS#7 block boundary.
-   */
-  constexpr std::size_t round_to_pkcs7_padded(std::size_t size) {
-    return ((size + 15) / 16) * 16;
-  }
-
-  constexpr std::size_t MAX_AUDIO_PACKET_SIZE = 1400;  ///< Protocol or platform constant for max audio packet size.
-
-  /**
-   * @brief AES key storage used for audio packet encryption.
-   */
-  using audio_aes_t = std::array<char, round_to_pkcs7_padded(MAX_AUDIO_PACKET_SIZE)>;
-
-  /**
-   * @brief Audio/video session identifier carried by GameStream packets.
-   */
-  using av_session_id_t = std::variant<asio::ip::address, std::string>;  // IP address or SS-Ping-Payload from RTSP handshake
-  /**
-   * @brief Mail queue carrying encoded stream packets to sender threads.
-   */
-  using message_queue_t = std::shared_ptr<safe::queue_t<std::pair<udp::endpoint, std::string>>>;
-  /**
-   * @brief Shared queue set used to distribute packet queues to broadcast workers.
-   */
-  using message_queue_queue_t = std::shared_ptr<safe::queue_t<std::tuple<socket_e, av_session_id_t, message_queue_t>>>;
-
-  // return bytes written on success
-  // return -1 on error
-  static inline int encode_audio(bool encrypted, const audio::buffer_t &plaintext, uint8_t *destination, crypto::aes_t &iv, crypto::cipher::cbc_t &cbc) {
-    // If encryption isn't enabled
-    if (!encrypted) {
-      std::copy(std::begin(plaintext), std::end(plaintext), destination);
-      return (int) plaintext.size();
-    }
-
-    return cbc.encrypt(std::string_view {(char *) std::begin(plaintext), plaintext.size()}, destination, &iv);
-  }
 
   static inline void while_starting_do_nothing(std::atomic<session::state_e> &state) {
     while (state.load(std::memory_order_acquire) == session::state_e::STARTING) {
@@ -328,149 +60,13 @@ namespace stream {
   }
 
   /**
-   * @brief Delivery policies for host-to-client control messages.
-   */
-  enum class control_delivery_e {
-    reliable,  ///< Ordered delivery with retransmission.
-    unsequenced,  ///< Latest-value delivery subject to ENet congestion throttling.
-    unsequenced_unthrottled,  ///< Latest-value delivery that bypasses ENet sender throttling.
-  };
-
-  /**
-   * @brief ENet control server that routes incoming control packets to stream sessions.
-   */
-  class control_server_t {
-  public:
-    /**
-     * @brief Bind the underlying socket or graphics resource to its target.
-     *
-     * @param address_family Address family.
-     * @param port TCP or UDP port number.
-     * @return Network operation status.
-     */
-    int bind(net::af_e address_family, std::uint16_t port) {
-      _host = net::host_create(address_family, _addr, port);
-
-      return !(bool) _host;
-    }
-
-    // Get session associated with address.
-    // If none are found, try to find a session not yet claimed. (It will be marked by a port of value 0
-    // If none of those are found, return nullptr
-    /**
-     * @brief Return the session value from the backend.
-     *
-     * @param peer Remote endpoint associated with the socket.
-     * @param connect_data Connect data.
-     * @return Existing session for the peer/connect-data pair, or nullptr when none matches.
-     */
-    session_t *get_session(const net::peer_t peer, uint32_t connect_data);
-
-    // Circular dependency:
-    //   iterate refers to session
-    //   session refers to broadcast_ctx_t
-    //   broadcast_ctx_t refers to control_server_t
-    // Therefore, iterate is implemented further down the source file
-    /**
-     * @brief Visit each active control server session.
-     *
-     * @param timeout Maximum time to wait for the operation.
-     */
-    void iterate(std::chrono::milliseconds timeout);
-
-    /**
-     * @brief Call the handler for a given control stream message.
-     * @param type The message type.
-     * @param session The session the message was received on.
-     * @param payload The payload of the message.
-     * @param reinjected `true` if this message is being reprocessed after decryption.
-     */
-    void call(std::uint16_t type, session_t *session, const std::string_view &payload, bool reinjected);
-
-    /**
-     * @brief Register or visit handlers stored in the map.
-     *
-     * @param type Protocol, message, or resource type selector.
-     * @param cb Callback invoked for each matching message or session.
-     */
-    void map(uint16_t type, std::function<void(session_t *, const std::string_view &)> cb) {
-      _map_type_cb.emplace(type, std::move(cb));
-    }
-
-    /**
-     * @brief Send the serialized response over the active socket.
-     *
-     * @param payload Optional payload body to include in the response.
-     * @param peer Remote endpoint associated with the socket.
-     * @param delivery Reliability, sequencing, and sender-throttle policy.
-     * @return Network operation status.
-     */
-    int send(
-      const std::string_view &payload,
-      net::peer_t peer,
-      control_delivery_e delivery = control_delivery_e::reliable
-    ) {
-      const auto packet_flags = [delivery]() -> enet_uint32 {
-        switch (delivery) {
-          case control_delivery_e::reliable:
-            return ENET_PACKET_FLAG_RELIABLE;
-          case control_delivery_e::unsequenced:
-            return ENET_PACKET_FLAG_UNSEQUENCED;
-          case control_delivery_e::unsequenced_unthrottled:
-            return ENET_PACKET_FLAG_UNSEQUENCED | ENET_PACKET_FLAG_UNTHROTTLED;
-        }
-
-        return ENET_PACKET_FLAG_RELIABLE;
-      }();
-      auto packet = enet_packet_create(
-        payload.data(), payload.size(), packet_flags
-      );
-      if (enet_peer_send(peer, 0, packet)) {
-        enet_packet_destroy(packet);
-
-        return -1;
-      }
-
-      return 0;
-    }
-
-    /**
-     * @brief Flush pending packets to the stream socket.
-     */
-    void flush() {
-      enet_host_flush(_host.get());
-    }
-
-    // Callbacks
-    std::unordered_map<std::uint16_t, std::function<void(session_t *, const std::string_view &)>> _map_type_cb;  ///< Control-message handlers keyed by packet type.
-
-    // All active sessions (including those still waiting for a peer to connect)
-    sync_util::sync_t<std::vector<session_t *>> _sessions;  ///< Active sessions registered with the control server.
-
-    // ENet peer to session mapping for sessions with a peer connected
-    sync_util::sync_t<std::map<net::peer_t, session_t *>> _peer_to_session;  ///< Peer to session.
-
-    ENetAddress _addr;  ///< Local ENet address used by the control channel.
-    net::host_t _host;  ///< ENet host object that owns the control socket.
-  };
-
-  /**
-   * @brief UDP broadcast socket and target address state.
+   * @brief Process-wide native media/control worker state.
    */
   struct broadcast_ctx_t {
-    message_queue_queue_t message_queue_queue;  ///< Queues carrying encoded video and audio packets to sender threads.
-
-    std::jthread recv_thread;  ///< Thread that receives incoming control-channel messages.
     std::jthread video_thread;  ///< Thread that sends encoded video packets.
     std::jthread audio_thread;  ///< Thread that sends encoded audio packets.
-    std::jthread control_thread;  ///< Thread that runs the ENet control server.
-
-    asio::io_context io_context;  ///< Asio context used by the UDP broadcast sockets.
-
-    udp::socket video_sock {io_context};  ///< UDP socket bound for video packet transmission.
-    udp::socket audio_sock {io_context};  ///< UDP socket bound for audio packet transmission.
-
-    control_server_t control_server;  ///< ENet server for GameStream control packets.
+    std::jthread control_thread;  ///< Thread that runs native control and event delivery.
+    sync_util::sync_t<std::vector<session_t *>> sessions;  ///< Active native sessions.
   };
 
   /**
@@ -489,68 +85,29 @@ namespace stream {
     std::jthread cursorThread;  ///< XFixes cursor-shape monitor for local-cursor clients.
     std::jthread inputThread;  ///< Native KyProto input receiver for StationConnect sessions.
 
-    std::chrono::steady_clock::time_point pingTimeout;  ///< Deadline for receiving the next client ping.
-
     safe::shared_t<broadcast_ctx_t>::ptr_t broadcast_ref;  ///< Shared broadcast context retained while the session is active.
 
-    boost::asio::ip::address localAddress;  ///< Local address.
-
     struct {
-      std::string ping_payload;
-
-      int lowseq;
-      udp::endpoint peer;
-
-      std::optional<crypto::cipher::gcm_t> cipher;
-      std::uint64_t gcm_iv_counter;
-
       safe::mail_raw_t::event_t<bool> idr_events;
       safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
-
-      std::unique_ptr<platf::deinit_t> qos;
     } video;  ///< Video worker thread state for the active stream.
 
     struct {
-      crypto::cipher::cbc_t cipher;
-      std::string ping_payload;
-
-      std::uint16_t sequenceNumber;
-      // avRiKeyId == util::endian::big(First (sizeof(avRiKeyId)) bytes of launch_session->iv)
-      std::uint32_t avRiKeyId;
       std::uint32_t timestamp;
-      udp::endpoint peer;
-
-      util::buffer_t<char> shards;
-      util::buffer_t<uint8_t *> shards_p;
-
-      audio_fec_packet_t fec_packet;
-      std::unique_ptr<platf::deinit_t> qos;
-    } audio;  ///< Audio capture configuration for the stream..
+    } audio;  ///< Native audio timestamp state for the stream.
 
     struct {
-      crypto::cipher::gcm_t cipher;
-      crypto::aes_t legacy_input_enc_iv;  // Only used when the client doesn't support full control stream encryption
-      crypto::aes_t incoming_iv;
-      crypto::aes_t outgoing_iv;
-
-      std::uint32_t connect_data;  // Used for new clients with ML_FF_SESSION_ID_V1
-      std::string expected_peer_address;  // Only used for legacy clients without ML_FF_SESSION_ID_V1
-
-      net::peer_t peer;
-      std::uint32_t seq;
-
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
       raw_hid::feedback_queue_t raw_hid_feedback_queue;
       safe::mail_raw_t::queue_t<std::vector<std::vector<std::uint8_t>>> cursor_shape_queue;
       safe::mail_raw_t::event_t<SC_CURSOR_POSITION_WIRE_MESSAGE> cursor_position_event;
-    } control;  ///< Runtime state for the encrypted GameStream control channel.
+    } control;  ///< Native Host-to-Client event queues.
 
-    std::uint32_t launch_session_id;  ///< RTSP launch-session ID associated with this stream.
     std::string input_session_id;  ///< Stable client identity used to retain input devices across resume.
     bool stationconnect_display_lease {};  ///< Whether this stream owns the temporary physical-display layout.
     uid_t stationconnect_display_lease_uid {};  ///< PAM account that owns the display lease.
     std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained until this stream is destroyed.
-    std::shared_ptr<void> datasmash_endpoint;  ///< Experimental QUIC data-plane lifetime.
+    std::shared_ptr<void> datasmash_endpoint;  ///< Native QUIC data-plane lifetime.
 
     safe::mail_raw_t::event_t<bool> shutdown_event;  ///< Event raised when the stream should shut down.
     safe::signal_t controlEnd;  ///< Signal raised when the control channel exits.
@@ -559,64 +116,7 @@ namespace stream {
   };
 
   /**
-   * First part of cipher must be struct of type control_encrypted_t
-   *
-   * returns empty string_view on failure
-   * returns string_view pointing to payload data
-   */
-  template<std::size_t max_payload_size>
-  static inline std::string_view encode_control(session_t *session, const std::string_view &plaintext, std::array<std::uint8_t, max_payload_size> &tagged_cipher) {
-    static_assert(
-      max_payload_size >= sizeof(control_encrypted_t) + sizeof(crypto::cipher::tag_size),
-      "max_payload_size >= sizeof(control_encrypted_t) + sizeof(crypto::cipher::tag_size)"
-    );
-
-    if (session->config.controlProtocolType != 13) {
-      return plaintext;
-    }
-
-    auto seq = session->control.seq++;
-
-    auto &iv = session->control.outgoing_iv;
-    if (session->config.encryptionFlagsEnabled & SS_ENC_CONTROL_V2) {
-      // We use the deterministic IV construction algorithm specified in NIST SP 800-38D
-      // Section 8.2.1. The sequence number is our "invocation" field and the 'CH' in the
-      // high bytes is the "fixed" field. Because each client provides their own unique
-      // key, our values in the fixed field need only uniquely identify each independent
-      // use of the client's key with AES-GCM in our code.
-      //
-      // The sequence number is 32 bits long which allows for 2^32 control stream messages
-      // to be sent to each client before the IV repeats.
-      iv.resize(12);
-      std::copy_n((uint8_t *) &seq, sizeof(seq), std::begin(iv));
-      iv[10] = 'H';  // Host originated
-      iv[11] = 'C';  // Control stream
-    } else {
-      // Nvidia's old style encryption uses a 16-byte IV
-      iv.resize(16);
-
-      iv[0] = (std::uint8_t) seq;
-    }
-
-    auto packet = (control_encrypted_p) tagged_cipher.data();
-
-    auto bytes = session->control.cipher.encrypt(plaintext, packet->payload(), &iv);
-    if (bytes <= 0) {
-      BOOST_LOG(error) << "Couldn't encrypt control data"sv;
-      return {};
-    }
-
-    std::uint16_t packet_length = bytes + crypto::cipher::tag_size + sizeof(control_encrypted_t::seq);
-
-    packet->encryptedHeaderType = util::endian::little(0x0001);
-    packet->length = util::endian::little(packet_length);
-    packet->seq = util::endian::little(seq);
-
-    return std::string_view {(char *) tagged_cipher.data(), packet_length + sizeof(control_encrypted_t) - sizeof(control_encrypted_t::seq)};
-  }
-
-  /**
-   * @brief Start periodic mDNS and service-discovery broadcasts.
+   * @brief Start process-wide native media and control workers.
    *
    * @param ctx Native context object used by the operation or callback.
    * @return 0 on success; nonzero when broadcast setup fails.
@@ -630,319 +130,6 @@ namespace stream {
   void end_broadcast(broadcast_ctx_t &ctx);
 
   static auto broadcast = safe::make_shared<broadcast_ctx_t>(start_broadcast, end_broadcast);
-
-  session_t *control_server_t::get_session(const net::peer_t peer, uint32_t connect_data) {
-    {
-      // Fast path - look up existing session by peer
-      auto lg = _peer_to_session.lock();
-      auto it = _peer_to_session->find(peer);
-      if (it != _peer_to_session->end()) {
-        return it->second;
-      }
-    }
-
-    // Slow path - process new session
-    TUPLE_2D(peer_port, peer_addr, platf::from_sockaddr_ex((sockaddr *) &peer->address.address));
-    auto lg = _sessions.lock();
-    for (auto pos = std::begin(*_sessions); pos != std::end(*_sessions); ++pos) {
-      auto session_p = *pos;
-
-      // Skip sessions that are already established
-      if (session_p->control.peer) {
-        continue;
-      }
-
-      // Identify the connection by the unique connect data if the client supports it.
-      // Only fall back to IP address matching for clients without session ID support.
-      if (session_p->config.mlFeatureFlags & ML_FF_SESSION_ID_V1) {
-        if (session_p->control.connect_data != connect_data) {
-          continue;
-        } else {
-          BOOST_LOG(debug) << "Initialized new control stream session by connect data match [v2]"sv;
-        }
-      } else {
-        if (session_p->control.expected_peer_address != peer_addr) {
-          continue;
-        } else {
-          BOOST_LOG(debug) << "Initialized new control stream session by IP address match [v1]"sv;
-        }
-      }
-
-      // Once the control stream connection is established, RTSP session state can be torn down
-      rtsp_stream::launch_session_clear(session_p->launch_session_id);
-
-      session_p->control.peer = peer;
-
-      // Use the local address from the control connection as the source address
-      // for other communications to the client. This is necessary to ensure
-      // proper routing on multi-homed hosts.
-      auto local_address = platf::from_sockaddr((sockaddr *) &peer->localAddress.address);
-      try {
-        session_p->localAddress = boost::asio::ip::make_address(local_address);
-      } catch (const boost::system::system_error &e) {
-        BOOST_LOG(error) << "boost::system::system_error in address parsing: " << e.what() << " (code: " << e.code() << ")"sv;
-        throw;
-      }
-
-      BOOST_LOG(debug) << "Control local address ["sv << local_address << ']';
-      BOOST_LOG(debug) << "Control peer address ["sv << peer_addr << ':' << peer_port << ']';
-
-      // Insert this into the map for O(1) lookups in the future
-      auto ptslg = _peer_to_session.lock();
-      _peer_to_session->emplace(peer, session_p);
-      return session_p;
-    }
-
-    return nullptr;
-  }
-
-  /**
-   * @brief Call the handler for a given control stream message.
-   * @param type The message type.
-   * @param session The session the message was received on.
-   * @param payload The payload of the message.
-   * @param reinjected `true` if this message is being reprocessed after decryption.
-   */
-  void control_server_t::call(std::uint16_t type, session_t *session, const std::string_view &payload, bool reinjected) {
-    // If we are using the encrypted control stream protocol, drop any messages that come off the wire unencrypted
-    if (session->config.controlProtocolType == 13 && !reinjected && type != packetTypes[IDX_ENCRYPTED]) {
-      BOOST_LOG(error) << "Dropping unencrypted message on encrypted control stream: "sv << util::hex(type).to_string_view();
-      return;
-    }
-
-    auto cb = _map_type_cb.find(type);
-    if (cb == std::end(_map_type_cb)) {
-      BOOST_LOG(debug)
-        << "type [Unknown] { "sv << util::hex(type).to_string_view() << " }"sv << std::endl
-        << "---data---"sv << std::endl
-        << util::hex_vec(payload) << std::endl
-        << "---end data---"sv;
-    } else {
-      cb->second(session, payload);
-    }
-  }
-
-  void control_server_t::iterate(std::chrono::milliseconds timeout) {
-    ENetEvent event;
-    auto res = enet_host_service(_host.get(), &event, (enet_uint32) timeout.count());
-
-    if (res > 0) {
-      auto session = get_session(event.peer, event.data);
-      if (!session) {
-        BOOST_LOG(warning) << "Rejected connection from ["sv << platf::from_sockaddr((sockaddr *) &event.peer->address.address) << "]: it's not properly set up"sv;
-        enet_peer_disconnect_now(event.peer, 0);
-
-        return;
-      }
-
-      session->pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
-
-      switch (event.type) {
-        case ENET_EVENT_TYPE_RECEIVE:
-          {
-            net::packet_t packet {event.packet};
-
-            auto type = *(std::uint16_t *) packet->data;
-            std::string_view payload {(char *) packet->data + sizeof(type), packet->dataLength - sizeof(type)};
-
-            call(type, session, payload, false);
-          }
-          break;
-        case ENET_EVENT_TYPE_CONNECT:
-          BOOST_LOG(info) << "CLIENT CONNECTED"sv;
-          break;
-        case ENET_EVENT_TYPE_DISCONNECT:
-          BOOST_LOG(info) << "CLIENT DISCONNECTED"sv;
-          // No more clients to send video data to ^_^
-          if (session->state == session::state_e::RUNNING) {
-            session::stop(*session);
-          }
-          break;
-        case ENET_EVENT_TYPE_NONE:
-          break;
-      }
-    }
-  }
-
-  namespace fec {
-    /**
-     * @brief Owning pointer for a Reed-Solomon encoder instance.
-     */
-    using rs_t = util::safe_ptr<reed_solomon, [](reed_solomon *rs) {
-      reed_solomon_release(rs);
-    }>;
-
-    /**
-     * @brief Reed-Solomon FEC encoder state for video packets.
-     */
-    struct fec_t {
-      size_t data_shards;  ///< Number of original packet shards in each FEC block.
-      size_t nr_shards;  ///< Total data and recovery shards generated for each FEC block.
-      size_t percentage;  ///< Recovery-shard percentage requested for the stream.
-
-      size_t blocksize;  ///< Bytes reserved for the payload portion of each shard.
-      size_t prefixsize;  ///< Bytes reserved before each shard payload for protocol headers.
-      util::buffer_t<char> shards;  ///< Contiguous backing storage for all encoded FEC shards.
-      util::buffer_t<char> headers;  ///< Backing storage for the RTP/FEC headers attached to shards.
-      util::buffer_t<uint8_t *> shards_p;  ///< Pointer table passed to the Reed-Solomon encoder.
-
-      std::vector<platf::buffer_descriptor_t> payload_buffers;  ///< Platform send descriptors for FEC payload buffers.
-
-      /**
-       * @brief Return the FEC shard data pointer for a packet-group element.
-       *
-       * @param el Packet-group element index.
-       * @return Pointer to the shard bytes for the requested element.
-       */
-      char *data(size_t el) {
-        return (char *) shards_p[el];
-      }
-
-      /**
-       * @brief Return the FEC prefix bytes for the current packet group.
-       *
-       * @param el Packet-group element index.
-       * @return Pointer to the element's prefix bytes, or nullptr when no prefix is used.
-       */
-      char *prefix(size_t el) {
-        return prefixsize ? &headers[el * prefixsize] : nullptr;
-      }
-
-      /**
-       * @brief Return the serialized size of the current object.
-       *
-       * @return Number of elements currently stored.
-       */
-      size_t size() const {
-        return nr_shards;
-      }
-    };
-
-    static fec_t encode(const std::string_view &payload, size_t blocksize, size_t fecpercentage, size_t minparityshards, size_t prefixsize) {
-      auto payload_size = payload.size();
-
-      auto pad = payload_size % blocksize != 0;
-
-      auto aligned_data_shards = payload_size / blocksize;
-      auto data_shards = aligned_data_shards + (pad ? 1 : 0);
-      auto parity_shards = (data_shards * fecpercentage + 99) / 100;
-
-      // increase the FEC percentage for this frame if the parity shard minimum is not met
-      if (parity_shards < minparityshards && fecpercentage != 0) {
-        parity_shards = minparityshards;
-        fecpercentage = (100 * parity_shards) / data_shards;
-
-        BOOST_LOG(verbose) << "Increasing FEC percentage to "sv << fecpercentage << " to meet parity shard minimum"sv << std::endl;
-      }
-
-      auto nr_shards = data_shards + parity_shards;
-
-      // If we need to store a zero-padded data shard, allocate that first to
-      // to keep the shards in order and reduce buffer fragmentation
-      auto parity_shard_offset = pad ? 1 : 0;
-      util::buffer_t<char> shards {(parity_shard_offset + parity_shards) * blocksize};
-      util::buffer_t<uint8_t *> shards_p {nr_shards};
-      std::vector<platf::buffer_descriptor_t> payload_buffers;
-      payload_buffers.reserve(2);
-
-      // Point into the payload buffer for all except the final padded data shard
-      auto next = std::begin(payload);
-      for (auto x = 0; x < aligned_data_shards; ++x) {
-        shards_p[x] = (uint8_t *) next;
-        next += blocksize;
-      }
-      payload_buffers.emplace_back(std::begin(payload), aligned_data_shards * blocksize);
-
-      // If the last data shard needs to be zero-padded, we must use the shards buffer
-      if (pad) {
-        shards_p[aligned_data_shards] = (uint8_t *) &shards[0];
-
-        // GCC doesn't figure out that std::copy_n() can be replaced with memcpy() here
-        // and ends up compiling a horribly slow element-by-element copy loop, so we
-        // help it by using memcpy()/memset() directly.
-        auto copy_len = std::min<size_t>(blocksize, std::end(payload) - next);
-        std::memcpy(shards_p[aligned_data_shards], next, copy_len);
-        if (copy_len < blocksize) {
-          // Zero any additional space after the end of the payload
-          std::memset(shards_p[aligned_data_shards] + copy_len, 0, blocksize - copy_len);
-        }
-      }
-
-      // Add a payload buffer describing the shard buffer
-      payload_buffers.emplace_back(std::begin(shards), shards.size());
-
-      if (fecpercentage != 0) {
-        // Point into our allocated buffer for the parity shards
-        for (auto x = 0; x < parity_shards; ++x) {
-          shards_p[data_shards + x] = (uint8_t *) &shards[(parity_shard_offset + x) * blocksize];
-        }
-
-        // packets = parity_shards + data_shards
-        rs_t rs {reed_solomon_new((int) data_shards, (int) parity_shards)};
-
-        reed_solomon_encode(rs.get(), shards_p.begin(), (int) nr_shards, (int) blocksize);
-      }
-
-      return {
-        data_shards,
-        nr_shards,
-        fecpercentage,
-        blocksize,
-        prefixsize,
-        std::move(shards),
-        util::buffer_t<char> {nr_shards * prefixsize},
-        std::move(shards_p),
-        std::move(payload_buffers),
-      };
-    }
-  }  // namespace fec
-
-  /**
-   * @brief Combines two buffers and inserts new buffers at each slice boundary of the result.
-   * @param insert_size The number of bytes to insert.
-   * @param slice_size The number of bytes between insertions.
-   * @param data1 The first data buffer.
-   * @param data2 The second data buffer.
-   *
-   * @return Combined buffer with insert padding written at each slice boundary.
-   */
-  std::vector<uint8_t> concat_and_insert(uint64_t insert_size, uint64_t slice_size, const std::string_view &data1, const std::string_view &data2) {
-    auto data_size = data1.size() + data2.size();
-    auto pad = data_size % slice_size != 0;
-    auto elements = data_size / slice_size + (pad ? 1 : 0);
-
-    std::vector<uint8_t> result;
-    result.resize(elements * insert_size + data_size);
-
-    auto next = std::begin(data1);
-    auto end = std::end(data1);
-    for (auto x = 0; x < elements; ++x) {
-      void *p = &result[x * (insert_size + slice_size)];
-
-      // For the last iteration, only copy to the end of the data
-      if (x == elements - 1) {
-        slice_size = data_size - (x * slice_size);
-      }
-
-      // Test if this slice will extend into the next buffer
-      if (next + slice_size > end) {
-        // Copy the first portion from the first buffer
-        auto copy_len = end - next;
-        std::copy(next, end, (char *) p + insert_size);
-
-        // Copy the remaining portion from the second buffer
-        next = std::begin(data2);
-        end = std::end(data2);
-        std::copy(next, next + (slice_size - copy_len), (char *) p + copy_len + insert_size);
-        next += slice_size - copy_len;
-      } else {
-        std::copy(next, next + slice_size, (char *) p + insert_size);
-        next += slice_size;
-      }
-    }
-
-    return result;
-  }
 
   /**
    * @brief Replace a byte sequence in an encoded packet.
@@ -1004,58 +191,37 @@ namespace stream {
 
   int send_hdr_mode(session_t *session, video::hdr_info_t hdr_info) {
 #ifdef STATIONCONNECT_DATASMASH
-    if (session->datasmash_endpoint) {
-      std::array<std::uint8_t, SC_DATASMASH_EVENT_HDR_MODE_SIZE> payload {};
-      payload[0] = hdr_info->enabled ? 1 : 0;
-      std::size_t offset = 2;
-      for (const auto &primary : hdr_info->metadata.displayPrimaries) {
-        sc_datasmash_event_write_u16(payload.data() + offset, primary.x);
-        sc_datasmash_event_write_u16(payload.data() + offset + 2, primary.y);
-        offset += 4;
-      }
-      sc_datasmash_event_write_u16(payload.data() + offset, hdr_info->metadata.whitePoint.x);
-      sc_datasmash_event_write_u16(payload.data() + offset + 2, hdr_info->metadata.whitePoint.y);
+    if (!session->datasmash_endpoint) {
+      return -1;
+    }
+    std::array<std::uint8_t, SC_DATASMASH_EVENT_HDR_MODE_SIZE> payload {};
+    payload[0] = hdr_info->enabled ? 1 : 0;
+    std::size_t offset = 2;
+    for (const auto &primary : hdr_info->metadata.displayPrimaries) {
+      sc_datasmash_event_write_u16(payload.data() + offset, primary.x);
+      sc_datasmash_event_write_u16(payload.data() + offset + 2, primary.y);
       offset += 4;
-      sc_datasmash_event_write_u16(payload.data() + offset, hdr_info->metadata.maxDisplayLuminance);
-      sc_datasmash_event_write_u16(payload.data() + offset + 2, hdr_info->metadata.minDisplayLuminance);
-      sc_datasmash_event_write_u16(payload.data() + offset + 4, hdr_info->metadata.maxContentLightLevel);
-      sc_datasmash_event_write_u16(payload.data() + offset + 6, hdr_info->metadata.maxFrameAverageLightLevel);
-      sc_datasmash_event_write_u16(payload.data() + offset + 8, hdr_info->metadata.maxFullFrameLuminance);
-      const auto result = send_datasmash_event(
-        session, SC_DATASMASH_EVENT_HDR_MODE, payload.data(), payload.size()
-      );
-      if (!result) {
-        BOOST_LOG(debug) << "Sent HDR mode over native KyProto: "sv << hdr_info->enabled;
-      }
-      return result;
     }
+    sc_datasmash_event_write_u16(payload.data() + offset, hdr_info->metadata.whitePoint.x);
+    sc_datasmash_event_write_u16(payload.data() + offset + 2, hdr_info->metadata.whitePoint.y);
+    offset += 4;
+    sc_datasmash_event_write_u16(payload.data() + offset, hdr_info->metadata.maxDisplayLuminance);
+    sc_datasmash_event_write_u16(payload.data() + offset + 2, hdr_info->metadata.minDisplayLuminance);
+    sc_datasmash_event_write_u16(payload.data() + offset + 4, hdr_info->metadata.maxContentLightLevel);
+    sc_datasmash_event_write_u16(payload.data() + offset + 6, hdr_info->metadata.maxFrameAverageLightLevel);
+    sc_datasmash_event_write_u16(payload.data() + offset + 8, hdr_info->metadata.maxFullFrameLuminance);
+    const auto result = send_datasmash_event(
+      session, SC_DATASMASH_EVENT_HDR_MODE, payload.data(), payload.size()
+    );
+    if (!result) {
+      BOOST_LOG(debug) << "Sent HDR mode over native KyProto: "sv << hdr_info->enabled;
+    }
+    return result;
+#else
+    (void) session;
+    (void) hdr_info;
+    return -1;
 #endif
-    if (!session->control.peer) {
-      BOOST_LOG(warning) << "Couldn't send HDR mode, still waiting for PING from Moonlight"sv;
-      // Still waiting for PING from Moonlight
-      return -1;
-    }
-
-    control_hdr_mode_t plaintext {};
-    plaintext.header.type = packetTypes[IDX_HDR_MODE];
-    plaintext.header.payloadLength = sizeof(control_hdr_mode_t) - sizeof(control_header_v2);
-
-    plaintext.enabled = hdr_info->enabled;
-    plaintext.metadata = hdr_info->metadata;
-
-    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
-      encrypted_payload;
-
-    auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
-    if (session->broadcast_ref->control_server.send(payload, session->control.peer)) {
-      TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
-      BOOST_LOG(warning) << "Couldn't send HDR mode to ["sv << addr << ':' << port << ']';
-
-      return -1;
-    }
-
-    BOOST_LOG(debug) << "Sent HDR mode: " << hdr_info->enabled;
-    return 0;
   }
 
   /**
@@ -1071,27 +237,16 @@ namespace stream {
       return -1;
     }
 #ifdef STATIONCONNECT_DATASMASH
-    if (session->datasmash_endpoint) {
-      return send_datasmash_event(
-        session, SC_DATASMASH_EVENT_RAW_HID_WACOM, frame.data(), frame.size()
-      );
-    }
-#endif
-    if (!session->control.peer) {
+    if (!session->datasmash_endpoint) {
       return -1;
     }
-
-    std::vector<std::uint8_t> plaintext(sizeof(control_header_v2) + frame.size());
-    auto *header = reinterpret_cast<control_header_v2 *>(plaintext.data());
-    header->type = util::endian::little(static_cast<std::uint16_t>(packetTypes[IDX_RAW_HID_CONTROL]));
-    header->payloadLength = util::endian::little(static_cast<std::uint16_t>(frame.size()));
-    std::ranges::copy(frame, plaintext.begin() + sizeof(control_header_v2));
-
-    constexpr auto maximum_plaintext = sizeof(control_header_v2) + sizeof(SC_RAW_HID_WIRE_HEADER) + SC_RAW_HID_MAX_PAYLOAD_SIZE;
-    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(maximum_plaintext) + crypto::cipher::tag_size>
-      encrypted_payload;
-    const auto payload = encode_control(session, std::string_view {reinterpret_cast<const char *>(plaintext.data()), plaintext.size()}, encrypted_payload);
-    return session->broadcast_ref->control_server.send(payload, session->control.peer);
+    return send_datasmash_event(
+      session, SC_DATASMASH_EVENT_RAW_HID_WACOM, frame.data(), frame.size()
+    );
+#else
+    (void) session;
+    return -1;
+#endif
   }
 
   int send_cursor_shape_control(session_t *session, const std::vector<std::uint8_t> &frame) {
@@ -1100,34 +255,16 @@ namespace stream {
       return -1;
     }
 #ifdef STATIONCONNECT_DATASMASH
-    if (session->datasmash_endpoint) {
-      return send_datasmash_event(
-        session, SC_DATASMASH_EVENT_CURSOR_SHAPE, frame.data(), frame.size()
-      );
-    }
-#endif
-    if (!session->control.peer) {
+    if (!session->datasmash_endpoint) {
       return -1;
     }
-
-    std::vector<std::uint8_t> plaintext(sizeof(control_header_v2) + frame.size());
-    auto *header = reinterpret_cast<control_header_v2 *>(plaintext.data());
-    header->type = util::endian::little(static_cast<std::uint16_t>(packetTypes[IDX_CURSOR_SHAPE]));
-    header->payloadLength = util::endian::little(static_cast<std::uint16_t>(frame.size()));
-    std::ranges::copy(frame, plaintext.begin() + sizeof(control_header_v2));
-
-    constexpr auto maximum_plaintext = sizeof(control_header_v2) +
-                                       sizeof(SC_CURSOR_WIRE_HEADER) +
-                                       SC_CURSOR_MAX_CHUNK_SIZE;
-    std::array<std::uint8_t, sizeof(control_encrypted_t) +
-      crypto::cipher::round_to_pkcs7_padded(maximum_plaintext) +
-      crypto::cipher::tag_size> encrypted_payload;
-    const auto payload = encode_control(
-      session,
-      std::string_view {reinterpret_cast<const char *>(plaintext.data()), plaintext.size()},
-      encrypted_payload
+    return send_datasmash_event(
+      session, SC_DATASMASH_EVENT_CURSOR_SHAPE, frame.data(), frame.size()
     );
-    return session->broadcast_ref->control_server.send(payload, session->control.peer);
+#else
+    (void) session;
+    return -1;
+#endif
   }
 
   int send_cursor_position_control(
@@ -1135,32 +272,18 @@ namespace stream {
     const SC_CURSOR_POSITION_WIRE_MESSAGE &position
   ) {
 #ifdef STATIONCONNECT_DATASMASH
-    if (session->datasmash_endpoint) {
-      return send_datasmash_event(
-        session, SC_DATASMASH_EVENT_CURSOR_POSITION,
-        reinterpret_cast<const std::uint8_t *>(&position), sizeof(position)
-      );
-    }
-#endif
-    if (!session->control.peer) {
+    if (!session->datasmash_endpoint) {
       return -1;
     }
-
-    std::array<std::uint8_t, sizeof(control_header_v2) + sizeof(position)> plaintext {};
-    auto *header = reinterpret_cast<control_header_v2 *>(plaintext.data());
-    header->type = util::endian::little(static_cast<std::uint16_t>(packetTypes[IDX_CURSOR_POSITION]));
-    header->payloadLength = util::endian::little(static_cast<std::uint16_t>(sizeof(position)));
-    std::memcpy(plaintext.data() + sizeof(control_header_v2), &position, sizeof(position));
-
-    std::array<std::uint8_t, sizeof(control_encrypted_t) +
-      crypto::cipher::round_to_pkcs7_padded(plaintext.size()) +
-      crypto::cipher::tag_size> encrypted_payload;
-    const auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
-    return session->broadcast_ref->control_server.send(
-      payload,
-      session->control.peer,
-      control_delivery_e::unsequenced_unthrottled
+    return send_datasmash_event(
+      session, SC_DATASMASH_EVENT_CURSOR_POSITION,
+      reinterpret_cast<const std::uint8_t *>(&position), sizeof(position)
     );
+#else
+    (void) session;
+    (void) position;
+    return -1;
+#endif
   }
 
   template<typename T>
@@ -1346,58 +469,40 @@ namespace stream {
    * @brief Confirm an accepted StationConnect encoder target to the client.
    */
   int send_video_bitrate_applied(session_t *session, const int requested_kbps) {
+#ifdef STATIONCONNECT_DATASMASH
     const int applied_kbps = requested_kbps;
     const int peak_kbps = applied_kbps * config::video.sw.vbv_maxrate_percentage / 100;
-
-#ifdef STATIONCONNECT_DATASMASH
-    if (session->datasmash_endpoint) {
-      const std::uint32_t values[] {
-        static_cast<std::uint32_t>(requested_kbps),
-        static_cast<std::uint32_t>(applied_kbps),
-        static_cast<std::uint32_t>(peak_kbps),
-      };
-      std::array<std::uint8_t, SC_DATASMASH_CONTROL_MAX_PACKET_SIZE> packet {};
-      std::size_t packet_size = 0;
-      const auto encode_result = sc_datasmash_control_encode(
-        SC_DATASMASH_CONTROL_VIDEO_BITRATE_APPLIED, values, std::size(values),
-        packet.data(), packet.size(), &packet_size
-      );
-      auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
-      const auto result = encode_result != 0 ? SC_DATASMASH_ERROR_INVALID_ARGUMENT :
-        sc_datasmash_native_data_send(endpoint, packet.data(), packet_size);
-      if (result != SC_DATASMASH_OK) {
-        BOOST_LOG(error) << "Datasmash bitrate acknowledgement failed with result "sv
-                         << result;
-        session::stop(*session);
-        return -1;
-      }
-      BOOST_LOG(info) << "Confirmed StationConnect encoder target over Datasmash: requested="sv
-                      << requested_kbps << " Kbps, applied="sv << applied_kbps
-                      << " Kbps, peak="sv << peak_kbps << " Kbps"sv;
-      return 0;
-    }
-#endif
-    if (!session->control.peer) {
+    if (!session->datasmash_endpoint) {
       return -1;
     }
-
-    control_video_bitrate_applied_t plaintext {};
-    plaintext.header.type = packetTypes[IDX_VIDEO_BITRATE_APPLIED];
-    plaintext.header.payloadLength = sizeof(plaintext) - sizeof(control_header_v2);
-    plaintext.requested_kbps = requested_kbps;
-    plaintext.applied_kbps = applied_kbps;
-    plaintext.peak_kbps = peak_kbps;
-
-    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
-      encrypted_payload;
-    const auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
-    const auto result = session->broadcast_ref->control_server.send(payload, session->control.peer);
-    if (!result) {
-      BOOST_LOG(info) << "Confirmed StationConnect encoder target: requested="sv
-                      << requested_kbps << " Kbps, applied="sv << applied_kbps
-                      << " Kbps, peak="sv << peak_kbps << " Kbps"sv;
+    const std::uint32_t values[] {
+      static_cast<std::uint32_t>(requested_kbps),
+      static_cast<std::uint32_t>(applied_kbps),
+      static_cast<std::uint32_t>(peak_kbps),
+    };
+    std::array<std::uint8_t, SC_DATASMASH_CONTROL_MAX_PACKET_SIZE> packet {};
+    std::size_t packet_size = 0;
+    const auto encode_result = sc_datasmash_control_encode(
+      SC_DATASMASH_CONTROL_VIDEO_BITRATE_APPLIED, values, std::size(values),
+      packet.data(), packet.size(), &packet_size
+    );
+    auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
+    const auto result = encode_result != 0 ? SC_DATASMASH_ERROR_INVALID_ARGUMENT :
+      sc_datasmash_native_data_send(endpoint, packet.data(), packet_size);
+    if (result != SC_DATASMASH_OK) {
+      BOOST_LOG(error) << "Datasmash bitrate acknowledgement failed with result "sv
+                       << result;
+      session::stop(*session);
+      return -1;
     }
-    return result;
+    BOOST_LOG(info) << "Confirmed StationConnect encoder target over Datasmash: requested="sv
+                    << requested_kbps << " Kbps, applied="sv << applied_kbps
+                    << " Kbps, peak="sv << peak_kbps << " Kbps"sv;
+    return 0;
+#else
+    (void) session;
+    return -1;
+#endif
   }
 
 #ifdef STATIONCONNECT_DATASMASH
@@ -1490,255 +595,68 @@ namespace stream {
 #endif
 
   /**
-   * @brief Run the broadcast control-channel worker thread.
+   * @brief Run native control reception and Host-to-Client event delivery.
    *
-   * @param server RTSP server instance handling the request.
+   * @param ctx Process-wide native worker state.
    */
-  void controlBroadcastThread(control_server_t *server) {
-    server->map(packetTypes[IDX_PERIODIC_PING], [](session_t *session, const std::string_view &payload) {
-      BOOST_LOG(verbose) << "type [IDX_PERIODIC_PING]"sv;
-    });
-
-    server->map(packetTypes[IDX_START_A], [&](session_t *session, const std::string_view &payload) {
-      BOOST_LOG(debug) << "type [IDX_START_A]"sv;
-    });
-
-    server->map(packetTypes[IDX_START_B], [&](session_t *session, const std::string_view &payload) {
-      BOOST_LOG(debug) << "type [IDX_START_B]"sv;
-    });
-
-    server->map(packetTypes[IDX_LOSS_STATS], [&](session_t *session, const std::string_view &payload) {
-      int32_t *stats = (int32_t *) payload.data();
-      auto count = stats[0];
-      std::chrono::milliseconds t {stats[1]};
-
-      auto lastGoodFrame = stats[3];
-
-      BOOST_LOG(verbose)
-        << "type [IDX_LOSS_STATS]"sv << std::endl
-        << "---begin stats---" << std::endl
-        << "loss count since last report [" << count << ']' << std::endl
-        << "time in milli since last report [" << t.count() << ']' << std::endl
-        << "last good frame [" << lastGoodFrame << ']' << std::endl
-        << "---end stats---";
-    });
-
-    server->map(packetTypes[IDX_REQUEST_IDR_FRAME], [&](session_t *session, const std::string_view &payload) {
-      BOOST_LOG(debug) << "type [IDX_REQUEST_IDR_FRAME]"sv;
-
-      session->video.idr_events->raise(true);
-    });
-
-    server->map(packetTypes[IDX_SET_VIDEO_BITRATE], [&](session_t *session, const std::string_view &payload) {
-      const auto bitrate_kbps = stationconnect::bitrate::decode_request(payload);
-      if (!bitrate_kbps) {
-        BOOST_LOG(warning) << "Rejected malformed or out-of-range StationConnect bitrate request"sv;
-        return;
-      }
-
-      session->mail->event<int>(mail::video_bitrate)->raise(*bitrate_kbps);
-      send_video_bitrate_applied(session, *bitrate_kbps);
-    });
-
-    server->map(packetTypes[IDX_INVALIDATE_REF_FRAMES], [&](session_t *session, const std::string_view &payload) {
-      auto frames = (std::int64_t *) payload.data();
-      auto firstFrame = frames[0];
-      auto lastFrame = frames[1];
-
-      BOOST_LOG(debug)
-        << "type [IDX_INVALIDATE_REF_FRAMES]"sv << std::endl
-        << "firstFrame [" << firstFrame << ']' << std::endl
-        << "lastFrame [" << lastFrame << ']';
-
-      session->video.invalidate_ref_frames_events->raise(std::make_pair(firstFrame, lastFrame));
-    });
-
-    server->map(packetTypes[IDX_INPUT_DATA], [&](session_t *session, const std::string_view &payload) {
-      BOOST_LOG(debug) << "type [IDX_INPUT_DATA]"sv;
-
-      auto tagged_cipher_length = util::endian::big(*(int32_t *) payload.data());
-      std::string_view tagged_cipher {payload.data() + sizeof(tagged_cipher_length), (size_t) tagged_cipher_length};
-
-      std::vector<uint8_t> plaintext;
-
-      auto &cipher = session->control.cipher;
-      auto &iv = session->control.legacy_input_enc_iv;
-      if (cipher.decrypt(tagged_cipher, plaintext, &iv)) {
-        // something went wrong :(
-
-        BOOST_LOG(error) << "Failed to verify tag"sv;
-
-        session::stop(*session);
-        return;
-      }
-
-      if (tagged_cipher_length >= 16 + iv.size()) {
-        std::copy(payload.end() - 16, payload.end(), std::begin(iv));
-      }
-
-      input::passthrough(session->input, std::move(plaintext));
-    });
-
-    server->map(packetTypes[IDX_ENCRYPTED], [server](session_t *session, const std::string_view &payload) {
-      BOOST_LOG(verbose) << "type [IDX_ENCRYPTED]"sv;
-
-      auto header = (control_encrypted_p) (payload.data() - 2);
-
-      auto length = util::endian::little(header->length);
-      auto seq = util::endian::little(header->seq);
-
-      if (length < (16 + 4 + 4)) {
-        BOOST_LOG(warning) << "Control: Runt packet"sv;
-        return;
-      }
-
-      auto tagged_cipher_length = length - 4;
-      std::string_view tagged_cipher {(char *) header->payload(), (size_t) tagged_cipher_length};
-
-      auto &cipher = session->control.cipher;
-      auto &iv = session->control.incoming_iv;
-      if (session->config.encryptionFlagsEnabled & SS_ENC_CONTROL_V2) {
-        // We use the deterministic IV construction algorithm specified in NIST SP 800-38D
-        // Section 8.2.1. The sequence number is our "invocation" field and the 'CC' in the
-        // high bytes is the "fixed" field. Because each client provides their own unique
-        // key, our values in the fixed field need only uniquely identify each independent
-        // use of the client's key with AES-GCM in our code.
-        //
-        // The sequence number is 32 bits long which allows for 2^32 control stream messages
-        // to be received from each client before the IV repeats.
-        iv.resize(12);
-        std::copy_n((uint8_t *) &seq, sizeof(seq), std::begin(iv));
-        iv[10] = 'C';  // Client originated
-        iv[11] = 'C';  // Control stream
-      } else {
-        // Nvidia's old style encryption uses a 16-byte IV
-        iv.resize(16);
-
-        iv[0] = (std::uint8_t) seq;
-      }
-
-      std::vector<uint8_t> plaintext;
-      if (cipher.decrypt(tagged_cipher, plaintext, &iv)) {
-        // something went wrong :(
-
-        BOOST_LOG(error) << "Failed to verify tag"sv;
-
-        session::stop(*session);
-        return;
-      }
-
-      auto type = *(std::uint16_t *) plaintext.data();
-      std::string_view next_payload {(char *) plaintext.data() + 4, plaintext.size() - 4};
-
-      if (type == packetTypes[IDX_ENCRYPTED]) {
-        BOOST_LOG(error) << "Bad packet type [IDX_ENCRYPTED] found"sv;
-        session::stop(*session);
-        return;
-      }
-
-      // IDX_INPUT_DATA callback will attempt to decrypt unencrypted data, therefore we need pass it directly
-      if (type == packetTypes[IDX_INPUT_DATA]) {
-        plaintext.erase(std::begin(plaintext), std::begin(plaintext) + 4);
-        input::passthrough(session->input, std::move(plaintext));
-      } else {
-        server->call(type, session, next_payload, true);
-      }
-    });
-
-    // This thread handles latency-sensitive control messages
-    platf::set_thread_name("stream::controlBroadcast");
+  void controlBroadcastThread(broadcast_ctx_t *ctx) {
+    platf::set_thread_name("stream::nativeControl");
     platf::adjust_thread_priority(platf::thread_priority_e::critical);
 
-    // Check for both the full shutdown event and the shutdown event for this
-    // broadcast to ensure we can inform connected clients of our graceful
-    // termination when we shut down.
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
     auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
 #ifdef STATIONCONNECT_DATASMASH
-    std::array<std::uint8_t, SC_DATASMASH_CONTROL_MAX_PACKET_SIZE> datasmash_control_packet;
+    std::array<std::uint8_t, SC_DATASMASH_CONTROL_MAX_PACKET_SIZE> control_packet;
 #endif
+
     while (!shutdown_event->peek() && !broadcast_shutdown_event->peek()) {
-      bool has_session_awaiting_peer = false;
-
       {
-        auto lg = server->_sessions.lock();
-
-        auto now = std::chrono::steady_clock::now();
-
-        KITTY_WHILE_LOOP(auto pos = std::begin(*server->_sessions), pos != std::end(*server->_sessions), {
-          // Don't perform additional session processing if we're shutting down
+        auto sessions = ctx->sessions.lock();
+        KITTY_WHILE_LOOP(auto pos = std::begin(*ctx->sessions), pos != std::end(*ctx->sessions), {
           if (shutdown_event->peek() || broadcast_shutdown_event->peek()) {
             break;
           }
 
           auto session = *pos;
-
 #ifdef STATIONCONNECT_DATASMASH
-          drain_datasmash_control(session, datasmash_control_packet);
+          drain_datasmash_control(session, control_packet);
 #endif
-
-          if (!session->datasmash_endpoint && now > session->pingTimeout) {
-            auto address = session->control.peer ? platf::from_sockaddr((sockaddr *) &session->control.peer->address.address) : session->control.expected_peer_address;
-            BOOST_LOG(info) << address << ": Ping Timeout"sv;
-            session::stop(*session);
-          }
-
           if (session->state.load(std::memory_order_acquire) == session::state_e::STOPPING) {
-            pos = server->_sessions->erase(pos);
-
-            if (session->control.peer) {
-              {
-                auto ptslg = server->_peer_to_session.lock();
-                server->_peer_to_session->erase(session->control.peer);
-              }
-
-              enet_peer_disconnect_now(session->control.peer, 0);
-            }
-
+            pos = ctx->sessions->erase(pos);
             session->controlEnd.raise(true);
             continue;
           }
 
-          // Remember if we have a session that's waiting for a peer to connect to the
-          // control stream. This ensures the clients are properly notified even when
-          // the app terminates before they finish connecting.
-          if (!session->datasmash_endpoint && !session->control.peer) {
-            has_session_awaiting_peer = true;
+          if (!session->cursorThread.joinable()) {
+            session->cursorThread = std::jthread(localCursorThread, session);
           }
-          if (session->datasmash_endpoint || session->control.peer) {
-            if (!session->cursorThread.joinable()) {
-              session->cursorThread = std::jthread(localCursorThread, session);
-            }
 
-            auto &hdr_queue = session->control.hdr_queue;
-            while ((session->datasmash_endpoint || session->control.peer) && hdr_queue->peek()) {
-              auto hdr_info = hdr_queue->pop();
+          auto &hdr_queue = session->control.hdr_queue;
+          while (hdr_queue->peek()) {
+            send_hdr_mode(session, hdr_queue->pop());
+          }
 
-              send_hdr_mode(session, std::move(hdr_info));
-            }
+          auto &raw_hid_feedback_queue = session->control.raw_hid_feedback_queue;
+          while (raw_hid_feedback_queue->peek()) {
+            const auto frame = raw_hid_feedback_queue->pop();
+            send_raw_hid_control(session, *frame);
+          }
 
-            auto &raw_hid_feedback_queue = session->control.raw_hid_feedback_queue;
-            while ((session->datasmash_endpoint || session->control.peer) && raw_hid_feedback_queue->peek()) {
-              const auto frame = raw_hid_feedback_queue->pop();
-              send_raw_hid_control(session, *frame);
-            }
-
-            auto &cursor_shape_queue = session->control.cursor_shape_queue;
-            while ((session->datasmash_endpoint || session->control.peer) && cursor_shape_queue->peek()) {
-              const auto frames = cursor_shape_queue->pop();
-              for (const auto &frame : *frames) {
-                if (send_cursor_shape_control(session, frame)) {
-                  BOOST_LOG(warning) << "Unable to send a StationConnect local cursor chunk"sv;
-                  session::stop(*session);
-                  break;
-                }
+          auto &cursor_shape_queue = session->control.cursor_shape_queue;
+          while (cursor_shape_queue->peek()) {
+            const auto frames = cursor_shape_queue->pop();
+            for (const auto &frame : *frames) {
+              if (send_cursor_shape_control(session, frame)) {
+                BOOST_LOG(warning) << "Unable to send a StationConnect local cursor chunk"sv;
+                session::stop(*session);
+                break;
               }
             }
+          }
 
-            if (const auto position = session->control.cursor_position_event->try_pop()) {
-              if (send_cursor_position_control(session, *position)) {
-                BOOST_LOG(debug) << "Unable to send a StationConnect cursor position sample"sv;
-              }
+          if (const auto position = session->control.cursor_position_event->try_pop()) {
+            if (send_cursor_position_control(session, *position)) {
+              BOOST_LOG(debug) << "Unable to send a StationConnect cursor position sample"sv;
             }
           }
 
@@ -1746,8 +664,7 @@ namespace stream {
         })
       }
 
-      // Don't break until any pending sessions either expire or connect
-      if (proc::proc.running() == 0 && !has_session_awaiting_peer) {
+      if (proc::proc.running() == 0) {
         BOOST_LOG(info) << "Process terminated"sv;
         break;
       }
@@ -1757,575 +674,154 @@ namespace stream {
       std::this_thread::sleep_for(8ms);
     }
 
-    // Let all remaining connections know the server is shutting down
-    // reason: graceful termination
-    std::uint32_t reason = 0x80030023;
-
-    control_terminate_t plaintext;
-    plaintext.header.type = packetTypes[IDX_TERMINATION];
-    plaintext.header.payloadLength = sizeof(plaintext.ec);
-    plaintext.ec = util::endian::big<uint32_t>(reason);
-
-    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
-      encrypted_payload;
-
-    auto lg = server->_sessions.lock();
-    for (auto pos = std::begin(*server->_sessions); pos != std::end(*server->_sessions); ++pos) {
-      auto session = *pos;
-
+    auto sessions = ctx->sessions.lock();
+    for (auto *session : *ctx->sessions) {
 #ifdef STATIONCONNECT_DATASMASH
-      if (session->datasmash_endpoint) {
-        const std::uint32_t values[] {reason};
-        std::array<std::uint8_t, SC_DATASMASH_CONTROL_MAX_PACKET_SIZE> packet {};
-        std::size_t packet_size = 0;
-        const auto encode_result = sc_datasmash_control_encode(
-          SC_DATASMASH_CONTROL_HOST_TERMINATE, values, std::size(values),
-          packet.data(), packet.size(), &packet_size
-        );
-        auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
-        if (encode_result != 0 || sc_datasmash_native_data_send(
-              endpoint, packet.data(), packet_size) != SC_DATASMASH_OK) {
-          BOOST_LOG(warning) << "Couldn't send Datasmash termination code"sv;
-        }
+      constexpr std::uint32_t reason = 0x80030023;
+      const std::uint32_t values[] {reason};
+      std::array<std::uint8_t, SC_DATASMASH_CONTROL_MAX_PACKET_SIZE> packet {};
+      std::size_t packet_size = 0;
+      const auto encode_result = sc_datasmash_control_encode(
+        SC_DATASMASH_CONTROL_HOST_TERMINATE, values, std::size(values),
+        packet.data(), packet.size(), &packet_size
+      );
+      auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(
+        session->datasmash_endpoint.get()
+      );
+      if (encode_result != 0 || !endpoint ||
+          sc_datasmash_native_data_send(endpoint, packet.data(), packet_size) !=
+            SC_DATASMASH_OK) {
+        BOOST_LOG(warning) << "Couldn't send Datasmash termination code"sv;
       }
 #endif
-      // We may not have gotten far enough to have an ENet connection yet
-      if (session->control.peer) {
-        auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
-
-        if (server->send(payload, session->control.peer)) {
-          TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
-          BOOST_LOG(warning) << "Couldn't send termination code to ["sv << addr << ':' << port << ']';
-        }
-      }
-
       session->shutdown_event->raise(true);
       session->controlEnd.raise(true);
     }
-
   }
 
   /**
-   * @brief Receive thread data.
-   *
-   * @param ctx Native context object used by the operation or callback.
+   * @brief Submit complete encoded video frames to the native transport.
    */
-  void recvThread(broadcast_ctx_t &ctx) {
-    std::map<av_session_id_t, message_queue_t> peer_to_video_session;
-    std::map<av_session_id_t, message_queue_t> peer_to_audio_session;
-
-    auto &video_sock = ctx.video_sock;
-    auto &audio_sock = ctx.audio_sock;
-
-    auto &message_queue_queue = ctx.message_queue_queue;
-    auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
-
-    auto &io = ctx.io_context;
-
-    udp::endpoint peer;
-
-    std::array<char, 2048> buf[2];
-    std::function<void(const boost::system::error_code, size_t)> recv_func[2];
-
-    platf::set_thread_name("stream::recv");
-
-    auto populate_peer_to_session = [&]() {
-      while (message_queue_queue->peek()) {
-        auto message_queue_opt = message_queue_queue->pop();
-        TUPLE_3D_REF(socket_type, session_id, message_queue, *message_queue_opt);
-
-        switch (socket_type) {
-          case socket_e::video:
-            if (message_queue) {
-              peer_to_video_session.emplace(session_id, message_queue);
-            } else {
-              peer_to_video_session.erase(session_id);
-            }
-            break;
-          case socket_e::audio:
-            if (message_queue) {
-              peer_to_audio_session.emplace(session_id, message_queue);
-            } else {
-              peer_to_audio_session.erase(session_id);
-            }
-            break;
-        }
-      }
-    };
-
-    auto recv_func_init = [&](udp::socket &sock, int buf_elem, std::map<av_session_id_t, message_queue_t> &peer_to_session) {
-      recv_func[buf_elem] = [&, buf_elem](const boost::system::error_code &ec, size_t bytes) {
-        auto fg = util::fail_guard([&]() {
-          sock.async_receive_from(asio::buffer(buf[buf_elem]), peer, 0, recv_func[buf_elem]);
-        });
-
-        auto type_str = buf_elem ? "AUDIO"sv : "VIDEO"sv;
-        BOOST_LOG(verbose) << "Recv: "sv << peer.address().to_string() << ':' << peer.port() << " :: " << type_str;
-
-        populate_peer_to_session();
-
-        // No data, yet no error
-        if (ec == boost::system::errc::connection_refused || ec == boost::system::errc::connection_reset) {
-          return;
-        }
-
-        if (ec || !bytes) {
-          BOOST_LOG(error) << "Couldn't receive data from udp socket: "sv << ec.message();
-          return;
-        }
-
-        if (bytes == 4) {
-          // For legacy PING packets, find the matching session by address.
-          auto it = peer_to_session.find(peer.address());
-          if (it != std::end(peer_to_session)) {
-            BOOST_LOG(debug) << "RAISE: "sv << peer.address().to_string() << ':' << peer.port() << " :: " << type_str;
-            it->second->raise(peer, std::string {buf[buf_elem].data(), bytes});
-          }
-        } else if (bytes >= sizeof(SS_PING)) {
-          auto ping = (PSS_PING) buf[buf_elem].data();
-
-          // For new PING packets that include a client identifier, search by payload.
-          auto it = peer_to_session.find(std::string {ping->payload, sizeof(ping->payload)});
-          if (it != std::end(peer_to_session)) {
-            BOOST_LOG(debug) << "RAISE: "sv << peer.address().to_string() << ':' << peer.port() << " :: " << type_str;
-            it->second->raise(peer, std::string {buf[buf_elem].data(), bytes});
-          }
-        }
-      };
-    };
-
-    recv_func_init(video_sock, 0, peer_to_video_session);
-    recv_func_init(audio_sock, 1, peer_to_audio_session);
-
-    video_sock.async_receive_from(asio::buffer(buf[0]), peer, 0, recv_func[0]);
-    audio_sock.async_receive_from(asio::buffer(buf[1]), peer, 0, recv_func[1]);
-
-    while (!broadcast_shutdown_event->peek()) {
-      io.run();
-    }
-  }
-
-  /**
-   * @brief Run the broadcast video sender thread.
-   *
-   * @param sock Socket used to read or write the protocol message.
-   */
-  void videoBroadcastThread(udp::socket &sock) {
+  void videoBroadcastThread() {
     auto shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
     auto packets = mail::man->queue<video::packet_t>(mail::video_packets);
-    auto video_epoch = std::chrono::steady_clock::now();
+#ifdef STATIONCONNECT_DATASMASH
+    const auto video_epoch = std::chrono::steady_clock::now();
+#endif
 
-    // Video traffic is sent on this thread
     platf::set_thread_name("stream::videoBroadcast");
     platf::adjust_thread_priority(platf::thread_priority_e::high);
 
-    logging::min_max_avg_periodic_logger<double> frame_processing_latency_logger(debug, "Frame processing latency", "ms");
-
-    logging::time_delta_periodic_logger frame_send_batch_latency_logger(debug, "Network: each send_batch() latency");
-    logging::time_delta_periodic_logger frame_fec_latency_logger(debug, "Network: each FEC block latency");
-    logging::time_delta_periodic_logger frame_network_latency_logger(debug, "Network: frame's overall network latency");
-
-    crypto::aes_t iv(12);
-
-    auto timer = platf::create_high_precision_timer();
-    if (!timer || !*timer) {
-      BOOST_LOG(error) << "Failed to create timer, aborting video broadcast thread";
-      return;
-    }
-
-    auto ratecontrol_next_frame_start = std::chrono::steady_clock::now();
+    logging::min_max_avg_periodic_logger<double> frame_processing_latency_logger(
+      debug, "Frame processing latency", "ms"
+    );
+    logging::time_delta_periodic_logger frame_transport_latency_logger(
+      debug, "Native transport: video submission latency"
+    );
 
     while (auto packet = packets->pop()) {
       if (shutdown_event->peek()) {
         break;
       }
 
-      frame_network_latency_logger.first_point_now();
-
-      auto session = (session_t *) packet->channel_data;
-      auto lowseq = session->video.lowseq;
-
-      std::string_view payload {(char *) packet->data(), packet->data_size()};
-      std::vector<uint8_t> payload_with_replacements;
-
-      // Apply replacements on the packet payload before performing any other operations.
-      // We need to know the final frame size to calculate the last packet size, and we
-      // must avoid matching replacements against the frame header or any other non-video
-      // part of the payload.
+      auto *session = static_cast<session_t *>(packet->channel_data);
+      std::string_view payload {
+        reinterpret_cast<char *>(packet->data()), packet->data_size()
+      };
+      std::vector<std::uint8_t> replaced_payload;
       if (packet->is_idr() && packet->replacements) {
-        for (auto &replacement : *packet->replacements) {
-          auto frame_old = replacement.old;
-          auto frame_new = replacement._new;
-
-          payload_with_replacements = replace(payload, frame_old, frame_new);
-          payload = {(char *) payload_with_replacements.data(), payload_with_replacements.size()};
+        for (const auto &replacement : *packet->replacements) {
+          replaced_payload = replace(payload, replacement.old, replacement._new);
+          payload = {
+            reinterpret_cast<char *>(replaced_payload.data()),
+            replaced_payload.size()
+          };
         }
-      }
-
-      video_short_frame_header_t frame_header = {};
-      frame_header.headerType = 0x01;  // Short header type
-      frame_header.frameType = packet->is_idr()                     ? 2 :
-                               packet->after_ref_frame_invalidation ? 5 :
-                                                                      1;
-      frame_header.lastPayloadLen = (payload.size() + sizeof(frame_header)) % (session->config.packetsize - sizeof(NV_VIDEO_PACKET));
-      if (frame_header.lastPayloadLen == 0) {
-        frame_header.lastPayloadLen = session->config.packetsize - sizeof(NV_VIDEO_PACKET);
-      }
-
-      if (packet->frame_timestamp) {
-        auto duration_to_latency = [](const std::chrono::steady_clock::duration &duration) {
-          const auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
-          return (uint16_t) std::clamp<decltype(duration_us)>((duration_us + 50) / 100, 0, std::numeric_limits<uint16_t>::max());
-        };
-
-        uint16_t latency = duration_to_latency(std::chrono::steady_clock::now() - *packet->frame_timestamp);
-        frame_header.frame_processing_latency = latency;
-        frame_processing_latency_logger.collect_and_log(latency / 10.);
-      } else {
-        frame_header.frame_processing_latency = 0;
       }
 
 #ifdef STATIONCONNECT_DATASMASH
-      if (session->datasmash_endpoint) {
-        auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
-        ScDatasmashNativeVideoFrameInfo frame_info {};
-        frame_info.struct_size = sizeof(frame_info);
-        if (session->config.monitor.videoFormat == 0) {
-          frame_info.codec = SC_DATASMASH_NATIVE_VIDEO_CODEC_H264;
-        } else if (session->config.monitor.videoFormat == 1) {
-          frame_info.codec = SC_DATASMASH_NATIVE_VIDEO_CODEC_HEVC;
-        } else {
-          BOOST_LOG(error) << "Datasmash native transport cannot carry video format "sv
-                           << session->config.monitor.videoFormat;
-          session::stop(*session);
-          continue;
-        }
-        frame_info.flags = packet->is_idr() ? SC_DATASMASH_NATIVE_VIDEO_FLAG_KEY : 0;
-        frame_info.frame_number = static_cast<std::uint64_t>(packet->frame_index());
-        const auto frame_time = packet->frame_timestamp.value_or(
-          std::chrono::steady_clock::now()
-        );
-        using native_video_tick = std::chrono::duration<std::uint64_t, std::ratio<1, 90000>>;
-        frame_info.pts = std::chrono::duration_cast<native_video_tick>(
-          frame_time - video_epoch
-        ).count();
-        frame_info.host_processing_latency = frame_header.frame_processing_latency;
-
-        const auto result = sc_datasmash_native_video_send(
-          endpoint,
-          &frame_info,
-          reinterpret_cast<const std::uint8_t *>(payload.data()),
-          payload.size()
-        );
-        if (result < SC_DATASMASH_OK) {
-          const auto state = sc_datasmash_native_endpoint_state(endpoint);
-          if (result == SC_DATASMASH_ERROR_INVALID_STATE || state != SC_DATASMASH_STATE_READY) {
-            BOOST_LOG(info) << "Datasmash native video peer has closed"sv;
-          } else {
-            BOOST_LOG(error) << "Datasmash native video submission failed with result "sv
-                             << result;
-          }
-          session::stop(*session);
-        } else if (result == SC_DATASMASH_DROPPED) {
-          BOOST_LOG(warning) << "Datasmash native video queue replaced an old frame"sv;
-        }
-        frame_network_latency_logger.second_point_now_and_log();
+      if (!session->datasmash_endpoint) {
+        BOOST_LOG(error) << "Native video frame has no Datasmash endpoint"sv;
+        session::stop(*session);
         continue;
       }
-#endif
 
-      auto fecPercentage = config::stream.fec_percentage;
-
-      // Insert space for packet headers
-      auto blocksize = session->config.packetsize + MAX_RTP_HEADER_SIZE;
-      auto payload_blocksize = blocksize - sizeof(video_packet_raw_t);
-      auto payload_new = concat_and_insert(sizeof(video_packet_raw_t), payload_blocksize, std::string_view {(char *) &frame_header, sizeof(frame_header)}, payload);
-
-      payload = std::string_view {(char *) payload_new.data(), payload_new.size()};
-
-      // Legacy multi-FEC uses two-bit block indices. StationConnect clients
-      // advertise high bits in multiFecFlags, extending the limit to 16.
-      constexpr auto LEGACY_MAX_FEC_BLOCKS = 4;
-      constexpr auto EXTENDED_MAX_FEC_BLOCKS = 16;
-      const bool extended_fec_blocks =
-        (session->config.mlFeatureFlags & ML_FF_EXTENDED_FEC_BLOCKS) != 0;
-      const auto max_fec_blocks = extended_fec_blocks ?
-                                    EXTENDED_MAX_FEC_BLOCKS :
-                                    LEGACY_MAX_FEC_BLOCKS;
-
-      // The max number of data shards per block is found by solving this system of equations for D:
-      // D = 255 - P
-      // P = D * F
-      // which results in the solution:
-      // D = 255 / (1 + F)
-      // multiplied by 100 since F is the percentage as an integer:
-      // D = (255 * 100) / (100 + F)
-      auto max_data_shards_per_fec_block = (DATA_SHARDS_MAX * 100) / (100 + fecPercentage);
-
-      // Compute the number of FEC blocks needed for this frame using the block size and max shards
-      auto max_data_per_fec_block = max_data_shards_per_fec_block * blocksize;
-      auto fec_blocks_needed = (payload.size() + (max_data_per_fec_block - 1)) / max_data_per_fec_block;
-
-      // If the number of FEC blocks needed exceeds the protocol limit, turn off FEC for this frame.
-      // For normal FEC percentages, this should only happen for enormous frames (over 800 packets at 20%).
-      if (fec_blocks_needed > max_fec_blocks) {
-        BOOST_LOG(warning) << "Skipping FEC for abnormally large encoded frame "sv
-                           << packet->frame_index() << " ("sv << payload.size() << " bytes, "sv
-                           << (packet->is_idr() ? "IDR, "sv : "P-frame, "sv)
-                           << "needed "sv << fec_blocks_needed << " FEC blocks)"sv;
-        fecPercentage = 0;
-        fec_blocks_needed = max_fec_blocks;
+      ScDatasmashNativeVideoFrameInfo frame_info {};
+      frame_info.struct_size = sizeof(frame_info);
+      if (session->config.monitor.videoFormat == 0) {
+        frame_info.codec = SC_DATASMASH_NATIVE_VIDEO_CODEC_H264;
+      } else if (session->config.monitor.videoFormat == 1) {
+        frame_info.codec = SC_DATASMASH_NATIVE_VIDEO_CODEC_HEVC;
+      } else {
+        BOOST_LOG(error) << "Datasmash native transport cannot carry video format "sv
+                         << session->config.monitor.videoFormat;
+        session::stop(*session);
+        continue;
       }
 
-      std::array<std::string_view, EXTENDED_MAX_FEC_BLOCKS> fec_blocks;
-      auto fec_blocks_begin = std::begin(fec_blocks);
-      auto fec_blocks_end = std::begin(fec_blocks) + fec_blocks_needed;
+      frame_info.flags = packet->is_idr() ? SC_DATASMASH_NATIVE_VIDEO_FLAG_KEY : 0;
+      frame_info.frame_number = static_cast<std::uint64_t>(packet->frame_index());
+      const auto frame_time = packet->frame_timestamp.value_or(
+        std::chrono::steady_clock::now()
+      );
+      using native_video_tick =
+        std::chrono::duration<std::uint64_t, std::ratio<1, 90000>>;
+      frame_info.pts = std::chrono::duration_cast<native_video_tick>(
+        frame_time - video_epoch
+      ).count();
 
-      BOOST_LOG(verbose) << "Generating "sv << fec_blocks_needed << " FEC blocks"sv;
-
-      // Align individual FEC blocks to blocksize
-      auto unaligned_size = payload.size() / fec_blocks_needed;
-      auto aligned_size = ((unaligned_size + (blocksize - 1)) / blocksize) * blocksize;
-
-      // If we exceed the 10-bit FEC packet index (which means our frame exceeded 4096 packets),
-      // the frame will be unrecoverable. Log an error for this case.
-      if (aligned_size / blocksize >= 1024) {
-        BOOST_LOG(error) << "Encoder produced a frame too large to send! Is the encoder broken? (needed "sv << (aligned_size / blocksize) << " packets)"sv;
+      if (packet->frame_timestamp) {
+        const auto latency_us = std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - *packet->frame_timestamp
+        ).count();
+        const auto latency_tenths_ms = static_cast<std::uint16_t>(
+          std::clamp<decltype(latency_us)>(
+            (latency_us + 50) / 100, 0,
+            std::numeric_limits<std::uint16_t>::max()
+          )
+        );
+        frame_info.host_processing_latency = latency_tenths_ms;
+        frame_processing_latency_logger.collect_and_log(latency_tenths_ms / 10.0);
       }
 
-      // Split the data into aligned FEC blocks
-      for (int x = 0; x < fec_blocks_needed; ++x) {
-        if (x == fec_blocks_needed - 1) {
-          // The last block must extend to the end of the payload
-          fec_blocks[x] = payload.substr(x * aligned_size);
+      auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(
+        session->datasmash_endpoint.get()
+      );
+      frame_transport_latency_logger.first_point_now();
+      const auto result = sc_datasmash_native_video_send(
+        endpoint, &frame_info,
+        reinterpret_cast<const std::uint8_t *>(payload.data()), payload.size()
+      );
+      frame_transport_latency_logger.second_point_now_and_log();
+      if (result < SC_DATASMASH_OK) {
+        const auto state = sc_datasmash_native_endpoint_state(endpoint);
+        if (result == SC_DATASMASH_ERROR_INVALID_STATE ||
+            state != SC_DATASMASH_STATE_READY) {
+          BOOST_LOG(info) << "Datasmash native video peer has closed"sv;
         } else {
-          // Earlier blocks just extend to the next block offset
-          fec_blocks[x] = payload.substr(x * aligned_size, aligned_size);
+          BOOST_LOG(error) << "Datasmash native video submission failed with result "sv
+                           << result;
         }
+        session::stop(*session);
+      } else if (result == SC_DATASMASH_DROPPED) {
+        BOOST_LOG(warning) << "Datasmash native video queue replaced an old frame"sv;
       }
-
-      try {
-        // Use around 80% of 1Gbps          1Gbps            percent    ms     packet      byte
-        size_t ratecontrol_packets_in_1ms = std::giga::num * 80 / 100 / 1000 / blocksize / 8;
-
-        // Send less than 64K in a single batch.
-        // On Windows, batches above 64K seem to bypass SO_SNDBUF regardless of its size,
-        // appear in "Other I/O" and begin waiting for interrupts.
-        // This gives inconsistent performance so we'd rather avoid it.
-        size_t send_batch_size = 64 * 1024 / blocksize;
-        // Also don't exceed 64 packets, which can happen when Moonlight requests
-        // unusually small packet size.
-        // Generic Segmentation Offload on Linux can't do more than 64.
-        send_batch_size = std::min<size_t>(64, send_batch_size);
-
-        // Don't ignore the last ratecontrol group of the previous frame
-        auto ratecontrol_frame_start = std::max(ratecontrol_next_frame_start, std::chrono::steady_clock::now());
-
-        size_t ratecontrol_frame_packets_sent = 0;
-        size_t ratecontrol_group_packets_sent = 0;
-
-        auto blockIndex = 0;
-        std::for_each(fec_blocks_begin, fec_blocks_end, [&](std::string_view &current_payload) {
-          auto packets = (current_payload.size() + (blocksize - 1)) / blocksize;
-
-          for (int x = 0; x < packets; ++x) {
-            auto *inspect = (video_packet_raw_t *) &current_payload[x * blocksize];
-
-            inspect->packet.frameIndex = (uint32_t) packet->frame_index();
-            inspect->packet.streamPacketIndex = ((uint32_t) lowseq + x) << 8;
-
-            // Preserve the legacy low two bits and carry negotiated high bits
-            // in the otherwise-unused low nibble of multiFecFlags.
-            inspect->packet.multiFecFlags = 0x10;
-            inspect->packet.multiFecBlocks = 0;
-            setMultiFecBlockNumbers(&inspect->packet, blockIndex, fec_blocks_needed - 1);
-
-            inspect->packet.flags = FLAG_CONTAINS_PIC_DATA;
-            if (x == 0) {
-              inspect->packet.flags |= FLAG_SOF;
-            }
-            if (x == packets - 1) {
-              inspect->packet.flags |= FLAG_EOF;
-            }
-          }
-
-          frame_fec_latency_logger.first_point_now();
-          // If video encryption is enabled, we allocate space for the encryption header before each shard
-          auto shards = fec::encode(current_payload, blocksize, fecPercentage, session->config.minRequiredFecPackets, session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
-          frame_fec_latency_logger.second_point_now_and_log();
-
-          auto peer_address = session->video.peer.address();
-          auto batch_info = platf::batched_send_info_t {
-            shards.headers.begin(),
-            shards.prefixsize,
-            shards.payload_buffers,
-            shards.blocksize,
-            0,
-            0,
-            (uintptr_t) sock.native_handle(),
-            peer_address,
-            session->video.peer.port(),
-            session->localAddress,
-          };
-
-          size_t next_shard_to_send = 0;
-
-          // RTP video timestamps use a 90 KHz clock and the frame_timestamp from when the frame was captured
-          // When a timestamp isn't available (duplicate frames), the timestamp from rate control is used instead.
-          bool frame_is_dupe = false;
-          if (!packet->frame_timestamp) {
-            packet->frame_timestamp = ratecontrol_next_frame_start;
-            frame_is_dupe = true;
-          }
-          using rtp_tick = std::chrono::duration<uint32_t, std::ratio<1, 90000>>;
-          uint32_t timestamp = std::chrono::round<rtp_tick>(*packet->frame_timestamp - video_epoch).count();
-
-          // set FEC info now that we know for sure what our percentage will be for this frame
-          for (auto x = 0; x < shards.size(); ++x) {
-            auto *inspect = (video_packet_raw_t *) shards.data(x);
-
-            inspect->packet.fecInfo =
-              (uint32_t) (x << 12 |
-                          shards.data_shards << 22 |
-                          shards.percentage << 4);
-
-            inspect->rtp.header = 0x80 | FLAG_EXTENSION;
-            inspect->rtp.sequenceNumber = util::endian::big<uint16_t>(lowseq + x);
-            inspect->rtp.timestamp = util::endian::big<uint32_t>(timestamp);
-
-            inspect->packet.multiFecFlags = 0x10;
-            inspect->packet.multiFecBlocks = 0;
-            setMultiFecBlockNumbers(&inspect->packet, blockIndex, fec_blocks_needed - 1);
-            inspect->packet.frameIndex = (uint32_t) packet->frame_index();
-
-            // Encrypt this shard if video encryption is enabled
-            if (session->video.cipher) {
-              // We use the deterministic IV construction algorithm specified in NIST SP 800-38D
-              // Section 8.2.1. The sequence number is our "invocation" field and the 'V' in the
-              // high bytes is the "fixed" field. Because each client provides their own unique
-              // key, our values in the fixed field need only uniquely identify each independent
-              // use of the client's key with AES-GCM in our code.
-              //
-              // The IV counter is 64 bits long which allows for 2^64 encrypted video packets
-              // to be sent to each client before the IV repeats.
-              std::copy_n((uint8_t *) &session->video.gcm_iv_counter, sizeof(session->video.gcm_iv_counter), std::begin(iv));
-              iv[11] = 'V';  // Video stream
-              session->video.gcm_iv_counter++;
-
-              // Encrypt the target buffer in place
-              auto *prefix = (video_packet_enc_prefix_t *) shards.prefix(x);
-              prefix->frameNumber = (std::uint32_t) packet->frame_index();
-              std::copy(std::begin(iv), std::end(iv), prefix->iv);
-              session->video.cipher->encrypt(std::string_view {(char *) inspect, (size_t) blocksize}, prefix->tag, (uint8_t *) inspect, &iv);
-            }
-
-            if (x - next_shard_to_send + 1 >= send_batch_size || x + 1 == shards.size()) {
-              // Do pacing within the frame.
-              // Also trigger pacing before the first send_batch() of the frame
-              // to account for the last send_batch() of the previous frame.
-              if (ratecontrol_group_packets_sent >= ratecontrol_packets_in_1ms || ratecontrol_frame_packets_sent == 0) {
-                auto due = ratecontrol_frame_start +
-                           std::chrono::duration_cast<std::chrono::nanoseconds>(1ms) *
-                             ratecontrol_frame_packets_sent / ratecontrol_packets_in_1ms;
-
-                auto now = std::chrono::steady_clock::now();
-                if (now < due) {
-                  timer->sleep_for(due - now);
-                }
-
-                ratecontrol_group_packets_sent = 0;
-              }
-
-              size_t current_batch_size = x - next_shard_to_send + 1;
-              batch_info.block_offset = next_shard_to_send;
-              batch_info.block_count = current_batch_size;
-
-              frame_send_batch_latency_logger.first_point_now();
-              // Use a batched UDP send if it's supported on this platform.
-              if (!platf::send_batch(batch_info)) {
-                // Batched send is not available, so send each packet individually
-                BOOST_LOG(verbose) << "Falling back to unbatched send"sv;
-                for (auto y = 0; y < current_batch_size; y++) {
-                  auto send_info = platf::send_info_t {
-                    shards.prefix(next_shard_to_send + y),
-                    shards.prefixsize,
-                    shards.data(next_shard_to_send + y),
-                    shards.blocksize,
-                    (uintptr_t) sock.native_handle(),
-                    peer_address,
-                    session->video.peer.port(),
-                    session->localAddress,
-                  };
-
-                  platf::send(send_info);
-                }
-              }
-              frame_send_batch_latency_logger.second_point_now_and_log();
-
-              ratecontrol_group_packets_sent += current_batch_size;
-              ratecontrol_frame_packets_sent += current_batch_size;
-              next_shard_to_send = x + 1;
-            }
-          }
-
-          // remember this in case the next frame comes immediately
-          ratecontrol_next_frame_start = ratecontrol_frame_start +
-                                         std::chrono::duration_cast<std::chrono::nanoseconds>(1ms) *
-                                           ratecontrol_frame_packets_sent / ratecontrol_packets_in_1ms;
-
-          frame_network_latency_logger.second_point_now_and_log();
-
-          BOOST_LOG(verbose) << "Sent Frame seq ["sv << packet->frame_index() << "] pts ["sv << timestamp
-                             << "] shards ["sv << shards.size() << "/"sv << shards.percentage << "%]"sv
-                             << (frame_is_dupe ? " Dupe" : "")
-                             << (packet->is_idr() ? " Key" : "")
-                             << (packet->after_ref_frame_invalidation ? " RFI" : "");
-
-          ++blockIndex;
-          lowseq += shards.size();
-        });
-
-        session->video.lowseq = lowseq;
-      } catch (const std::exception &e) {
-        BOOST_LOG(error) << "Broadcast video failed "sv << e.what();
-#ifdef STATIONCONNECT_DATASMASH
-        if (session->datasmash_endpoint) {
-          session::stop(*session);
-        }
+#else
+      BOOST_LOG(error) << "StationConnect Host was built without native video transport"sv;
+      session::stop(*session);
 #endif
-        std::this_thread::sleep_for(100ms);
-      }
     }
 
     shutdown_event->raise(true);
   }
 
   /**
-   * @brief Run the broadcast audio sender thread.
-   *
-   * @param sock Socket used to read or write the protocol message.
+   * @brief Submit raw Opus packets to the native transport.
    */
-  void audioBroadcastThread(udp::socket &sock) {
+  void audioBroadcastThread() {
     auto shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
     auto packets = mail::man->queue<audio::packet_t>(mail::audio_packets);
 
-    audio_packet_t audio_packet;
-    fec::rs_t rs {reed_solomon_new(RTPA_DATA_SHARDS, RTPA_FEC_SHARDS)};
-    crypto::aes_t iv(16);
-
-    // For unknown reasons, the RS parity matrix computed by our RS implementation
-    // doesn't match the one Nvidia uses for audio data. I'm not exactly sure why,
-    // but we can simply replace it with the matrix generated by OpenFEC which
-    // works correctly. This is possible because the data and FEC shard count is
-    // constant and known in advance.
-    constexpr std::array<unsigned char, 8> parity {0x77, 0x40, 0x38, 0x0e, 0xc7, 0xa7, 0x0d, 0x6c};
-    memcpy(rs.get()->p, parity.data(), parity.size());
-
-    audio_packet.rtp.header = 0x80;
-    audio_packet.rtp.packetType = 97;
-    audio_packet.rtp.ssrc = 0;
-
-    // Audio traffic is sent on this thread
     platf::set_thread_name("stream::audioBroadcast");
     platf::adjust_thread_priority(platf::thread_priority_e::high);
 
@@ -2334,113 +830,47 @@ namespace stream {
         break;
       }
 
-      TUPLE_2D_REF(channel_data, packet_data, *packet);
-      auto session = (session_t *) channel_data;
-
-      auto sequenceNumber = session->audio.sequenceNumber;
-      auto timestamp = session->audio.timestamp;
+      auto &channel_data = std::get<0>(*packet);
+      auto *session = static_cast<session_t *>(channel_data);
 
 #ifdef STATIONCONNECT_DATASMASH
-      if (session->datasmash_endpoint) {
-        auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
-        ScDatasmashNativeAudioPacketInfo packet_info {};
-        packet_info.struct_size = sizeof(packet_info);
-        packet_info.frame_samples = static_cast<std::uint16_t>(
-          session->config.audio.packetDuration * 48
-        );
-        packet_info.pts = timestamp;
-        const auto result = sc_datasmash_native_audio_send(
-          endpoint,
-          &packet_info,
-          packet_data.begin(),
-          packet_data.size()
-        );
-        if (result < SC_DATASMASH_OK) {
-          const auto state = sc_datasmash_native_endpoint_state(endpoint);
-          if (result == SC_DATASMASH_ERROR_INVALID_STATE || state != SC_DATASMASH_STATE_READY) {
-            BOOST_LOG(info) << "Datasmash native audio peer has closed"sv;
-          } else {
-            BOOST_LOG(error) << "Datasmash native audio submission failed with result "sv
-                             << result;
-          }
-          session::stop(*session);
-        } else if (result == SC_DATASMASH_DROPPED) {
-          BOOST_LOG(warning) << "Datasmash native audio queue replaced an old packet"sv;
-        }
-        session->audio.sequenceNumber++;
-        session->audio.timestamp += session->config.audio.packetDuration;
+      auto &packet_data = std::get<1>(*packet);
+      if (!session->datasmash_endpoint) {
+        BOOST_LOG(error) << "Native audio packet has no Datasmash endpoint"sv;
+        session::stop(*session);
         continue;
       }
+
+      ScDatasmashNativeAudioPacketInfo packet_info {};
+      packet_info.struct_size = sizeof(packet_info);
+      packet_info.frame_samples = static_cast<std::uint16_t>(
+        session->config.audio.packetDuration * 48
+      );
+      packet_info.pts = session->audio.timestamp;
+      auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(
+        session->datasmash_endpoint.get()
+      );
+      const auto result = sc_datasmash_native_audio_send(
+        endpoint, &packet_info, packet_data.begin(), packet_data.size()
+      );
+      if (result < SC_DATASMASH_OK) {
+        const auto state = sc_datasmash_native_endpoint_state(endpoint);
+        if (result == SC_DATASMASH_ERROR_INVALID_STATE ||
+            state != SC_DATASMASH_STATE_READY) {
+          BOOST_LOG(info) << "Datasmash native audio peer has closed"sv;
+        } else {
+          BOOST_LOG(error) << "Datasmash native audio submission failed with result "sv
+                           << result;
+        }
+        session::stop(*session);
+      } else if (result == SC_DATASMASH_DROPPED) {
+        BOOST_LOG(warning) << "Datasmash native audio queue replaced an old packet"sv;
+      }
+#else
+      BOOST_LOG(error) << "StationConnect Host was built without native audio transport"sv;
+      session::stop(*session);
 #endif
-
-      *(std::uint32_t *) iv.data() = util::endian::big<std::uint32_t>(session->audio.avRiKeyId + sequenceNumber);
-
-      auto &shards_p = session->audio.shards_p;
-
-      auto bytes = encode_audio(session->config.encryptionFlagsEnabled & SS_ENC_AUDIO, packet_data, shards_p[sequenceNumber % RTPA_DATA_SHARDS], iv, session->audio.cipher);
-      if (bytes < 0) {
-        BOOST_LOG(error) << "Couldn't encode audio packet"sv;
-        break;
-      }
-
-      BOOST_LOG(verbose) << "Audio [seq "sv << sequenceNumber << ", pts "sv << timestamp << "] ::  send..."sv;
-
-      audio_packet.rtp.sequenceNumber = util::endian::big(sequenceNumber);
-      audio_packet.rtp.timestamp = util::endian::big(timestamp);
-
-      session->audio.sequenceNumber++;
       session->audio.timestamp += session->config.audio.packetDuration;
-
-      auto peer_address = session->audio.peer.address();
-      try {
-        const auto send_audio_packet = [&](const void *header, size_t header_size, const void *payload, size_t payload_size) {
-          auto send_info = platf::send_info_t {
-            static_cast<const char *>(header),
-            header_size,
-            static_cast<const char *>(payload),
-            payload_size,
-            (uintptr_t) sock.native_handle(),
-            peer_address,
-            session->audio.peer.port(),
-            session->localAddress,
-          };
-          platf::send(send_info);
-        };
-        send_audio_packet(
-          &audio_packet,
-          sizeof(audio_packet),
-          shards_p[sequenceNumber % RTPA_DATA_SHARDS],
-          bytes
-        );
-
-        auto &fec_packet = session->audio.fec_packet;
-        // initialize the FEC header at the beginning of the FEC block
-        if (sequenceNumber % RTPA_DATA_SHARDS == 0) {
-          fec_packet.fecHeader.baseSequenceNumber = util::endian::big(sequenceNumber);
-          fec_packet.fecHeader.baseTimestamp = util::endian::big(timestamp);
-        }
-
-        // generate parity shards at the end of the FEC block
-        if ((sequenceNumber + 1) % RTPA_DATA_SHARDS == 0) {
-          reed_solomon_encode(rs.get(), shards_p.begin(), RTPA_TOTAL_SHARDS, bytes);
-
-          for (auto x = 0; x < RTPA_FEC_SHARDS; ++x) {
-            fec_packet.rtp.sequenceNumber = util::endian::big<std::uint16_t>(sequenceNumber + x + 1);
-            fec_packet.fecHeader.fecShardIndex = x;
-
-            send_audio_packet(
-              &fec_packet,
-              sizeof(fec_packet),
-              shards_p[RTPA_DATA_SHARDS + x],
-              bytes
-            );
-            BOOST_LOG(verbose) << "Audio FEC ["sv << (sequenceNumber & ~(RTPA_DATA_SHARDS - 1)) << ' ' << x << "] ::  send..."sv;
-          }
-        }
-      } catch (const std::exception &e) {
-        BOOST_LOG(error) << "Broadcast audio failed "sv << e.what();
-        std::this_thread::sleep_for(100ms);
-      }
     }
 
     shutdown_event->raise(true);
@@ -2453,9 +883,9 @@ namespace stream {
     // Datasmash owns the only active data-plane socket. These workers retain
     // the capture/encode and client-callback contracts without binding the
     // superseded GameStream control, video, or audio ports.
-    ctx.video_thread = std::jthread {videoBroadcastThread, std::ref(ctx.video_sock)};
-    ctx.audio_thread = std::jthread {audioBroadcastThread, std::ref(ctx.audio_sock)};
-    ctx.control_thread = std::jthread {controlBroadcastThread, &ctx.control_server};
+    ctx.video_thread = std::jthread {videoBroadcastThread};
+    ctx.audio_thread = std::jthread {audioBroadcastThread};
+    ctx.control_thread = std::jthread {controlBroadcastThread, &ctx};
     return 0;
   }
 
@@ -2474,21 +904,9 @@ namespace stream {
     video_packets->stop();
     audio_packets->stop();
 
-    if (ctx.message_queue_queue) {
-      ctx.message_queue_queue->stop();
-    }
-    ctx.io_context.stop();
-
-    ctx.video_sock.close();
-    ctx.audio_sock.close();
-
     video_packets.reset();
     audio_packets.reset();
 
-    BOOST_LOG(debug) << "Waiting for main listening thread to end..."sv;
-    if (ctx.recv_thread.joinable()) {
-      ctx.recv_thread.join();
-    }
     BOOST_LOG(debug) << "Waiting for main video thread to end..."sv;
     ctx.video_thread.join();
     BOOST_LOG(debug) << "Waiting for main audio thread to end..."sv;
@@ -2498,70 +916,6 @@ namespace stream {
     BOOST_LOG(debug) << "All broadcasting threads ended"sv;
 
     broadcast_shutdown_event->reset();
-  }
-
-  /**
-   * @brief Receive ping data.
-   *
-   * @param session Active streaming or pairing session for the request.
-   * @param ref Reference frame metadata used by the encoder.
-   * @param type Protocol, message, or resource type selector.
-   * @param expected_payload Expected payload.
-   * @param peer Remote endpoint associated with the socket.
-   * @param timeout Maximum time to wait for the operation.
-   * @return Network operation status.
-   */
-  int recv_ping(session_t *session, decltype(broadcast)::ptr_t ref, socket_e type, std::string_view expected_payload, udp::endpoint &peer, std::chrono::milliseconds timeout) {
-    auto messages = std::make_shared<message_queue_t::element_type>(30);
-    av_session_id_t session_id = std::string {expected_payload};
-
-    // Only allow matches on the peer address for legacy clients
-    if (!(session->config.mlFeatureFlags & ML_FF_SESSION_ID_V1)) {
-      ref->message_queue_queue->raise(type, peer.address(), messages);
-    }
-    ref->message_queue_queue->raise(type, session_id, messages);
-
-    auto fg = util::fail_guard([&]() {
-      messages->stop();
-
-      // remove message queue from session
-      if (!(session->config.mlFeatureFlags & ML_FF_SESSION_ID_V1)) {
-        ref->message_queue_queue->raise(type, peer.address(), nullptr);
-      }
-      ref->message_queue_queue->raise(type, session_id, nullptr);
-    });
-
-    auto start_time = std::chrono::steady_clock::now();
-    auto current_time = start_time;
-
-    while (current_time - start_time < config::stream.ping_timeout) {
-      auto delta_time = current_time - start_time;
-
-      auto msg_opt = messages->pop(config::stream.ping_timeout - delta_time);
-      if (!msg_opt) {
-        break;
-      }
-
-      TUPLE_2D_REF(recv_peer, msg, *msg_opt);
-      if (msg.find(expected_payload) != std::string::npos) {
-        // Match the new PING payload format
-        BOOST_LOG(debug) << "Received ping [v2] from "sv << recv_peer.address() << ':' << recv_peer.port() << " ["sv << util::hex_vec(msg) << ']';
-      } else if (!(session->config.mlFeatureFlags & ML_FF_SESSION_ID_V1) && msg == "PING"sv) {
-        // Match the legacy fixed PING payload only if the new type is not supported
-        BOOST_LOG(debug) << "Received ping [v1] from "sv << recv_peer.address() << ':' << recv_peer.port() << " ["sv << util::hex_vec(msg) << ']';
-      } else {
-        BOOST_LOG(debug) << "Received non-ping from "sv << recv_peer.address() << ':' << recv_peer.port() << " ["sv << util::hex_vec(msg) << ']';
-        current_time = std::chrono::steady_clock::now();
-        continue;
-      }
-
-      // Update connection details.
-      peer = recv_peer;
-      return 0;
-    }
-
-    BOOST_LOG(error) << "Initial Ping Timeout"sv;
-    return -1;
   }
 
   /**
@@ -2576,18 +930,6 @@ namespace stream {
     });
 
     while_starting_do_nothing(session->state);
-
-    if (!session->datasmash_endpoint) {
-      auto ref = broadcast.ref();
-      auto error = recv_ping(session, ref, socket_e::video, session->video.ping_payload, session->video.peer, config::stream.ping_timeout);
-      if (error < 0) {
-        return;
-      }
-
-      // Enable local prioritization and QoS tagging on video traffic requested by legacy clients.
-      auto address = session->video.peer.address();
-      session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
-    }
 
     BOOST_LOG(debug) << "Start capturing Video"sv;
     video::capture(session->mail, session->config.monitor, session);
@@ -2605,18 +947,6 @@ namespace stream {
     });
 
     while_starting_do_nothing(session->state);
-
-    if (!session->datasmash_endpoint) {
-      auto ref = broadcast.ref();
-      auto error = recv_ping(session, ref, socket_e::audio, session->audio.ping_payload, session->audio.peer, config::stream.ping_timeout);
-      if (error < 0) {
-        return;
-      }
-
-      // Enable local prioritization and QoS tagging on audio traffic requested by legacy clients.
-      auto address = session->audio.peer.address();
-      session->audio.qos = platf::enable_socket_qos(ref->audio_sock.native_handle(), address, session->audio.peer.port(), platf::qos_data_type_e::audio, session->config.audioQosType != 0);
-    }
 
     BOOST_LOG(debug) << "Start capturing Audio"sv;
     audio::capture(session->mail, session->config.audio, session);
@@ -2730,7 +1060,7 @@ namespace stream {
         stats.struct_size = sizeof(stats);
         auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session.datasmash_endpoint.get());
         if (sc_datasmash_native_endpoint_stats(endpoint, &stats) == SC_DATASMASH_OK) {
-        BOOST_LOG(info) << "Datasmash native transport: video_sent="sv
+          BOOST_LOG(info) << "Datasmash native transport: video_sent="sv
                           << stats.video_frames_sent << " frames/"sv
                           << stats.video_bytes_sent << " bytes, send_queue_drops="sv
                           << stats.video_send_drops << "; audio_sent="sv
@@ -2779,6 +1109,7 @@ namespace stream {
      * @brief Start the audio, video, and control workers for a streaming session.
      */
     int start(session_t &session, const std::string &addr_string) {
+      (void) addr_string;
       if (!session.datasmash_endpoint) {
         BOOST_LOG(error) << "Refusing to start a session without the required Datasmash endpoint"sv;
         return -1;
@@ -2791,30 +1122,15 @@ namespace stream {
         return -1;
       }
 
-      session.control.expected_peer_address = addr_string;
-      BOOST_LOG(debug) << "Expecting incoming session connections from "sv << addr_string;
-
-      // Insert this session into the session list
       {
-        auto lg = session.broadcast_ref->control_server._sessions.lock();
-        session.broadcast_ref->control_server._sessions->push_back(&session);
+        auto sessions = session.broadcast_ref->sessions.lock();
+        session.broadcast_ref->sessions->push_back(&session);
       }
-
-      auto addr = boost::asio::ip::make_address(addr_string);
-      session.video.peer.address(addr);
-      session.video.peer.port(0);
-
-      session.audio.peer.address(addr);
-      session.audio.peer.port(0);
-
-      session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
 
       session.audioThread = std::jthread {audioThread, &session};
       session.videoThread = std::jthread {videoThread, &session};
 #ifdef STATIONCONNECT_DATASMASH
-      if (session.datasmash_endpoint) {
-        session.inputThread = std::jthread {nativeInputThread, &session};
-      }
+      session.inputThread = std::jthread {nativeInputThread, &session};
 #endif
 
       session.state.store(state_e::RUNNING, std::memory_order_relaxed);
@@ -2836,7 +1152,6 @@ namespace stream {
       auto mail = std::make_shared<safe::mail_raw_t>();
 
       session->shutdown_event = mail->event<bool>(mail::shutdown);
-      session->launch_session_id = launch_session.id;
       session->input_session_id = launch_session.unique_id;
       session->stationconnect_display_lease = launch_session.stationconnect_display_lease;
       session->stationconnect_display_lease_uid =
@@ -2853,65 +1168,16 @@ namespace stream {
 
       session->config = config;
 
-      session->control.connect_data = launch_session.control_connect_data;
       session->control.hdr_queue = mail->event<video::hdr_info_t>(mail::hdr);
       session->control.raw_hid_feedback_queue = mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback);
       session->control.cursor_shape_queue =
         mail->queue<std::vector<std::vector<std::uint8_t>>>(mail::cursor_shape);
       session->control.cursor_position_event =
         mail->event<SC_CURSOR_POSITION_WIRE_MESSAGE>(mail::cursor_position);
-      session->control.legacy_input_enc_iv = launch_session.iv;
-      session->control.cipher = crypto::cipher::gcm_t {
-        launch_session.gcm_key,
-        false
-      };
-
       session->video.idr_events = mail->event<bool>(mail::idr);
       session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
-      session->video.lowseq = 0;
-      session->video.ping_payload = launch_session.av_ping_payload;
-      if (config.encryptionFlagsEnabled & SS_ENC_VIDEO) {
-        BOOST_LOG(info) << "Video encryption enabled"sv;
-        session->video.cipher = crypto::cipher::gcm_t {
-          launch_session.gcm_key,
-          false
-        };
-        session->video.gcm_iv_counter = 0;
-      }
-
-      constexpr auto max_block_size = crypto::cipher::round_to_pkcs7_padded(2048);
-
-      util::buffer_t<char> shards {RTPA_TOTAL_SHARDS * max_block_size};
-      util::buffer_t<uint8_t *> shards_p {RTPA_TOTAL_SHARDS};
-
-      for (auto x = 0; x < RTPA_TOTAL_SHARDS; ++x) {
-        shards_p[x] = (uint8_t *) &shards[x * max_block_size];
-      }
-
-      // Audio FEC spans multiple audio packets,
-      // therefore its session specific
-      session->audio.shards = std::move(shards);
-      session->audio.shards_p = std::move(shards_p);
-
-      session->audio.fec_packet.rtp.header = 0x80;
-      session->audio.fec_packet.rtp.packetType = 127;
-      session->audio.fec_packet.rtp.timestamp = 0;
-      session->audio.fec_packet.rtp.ssrc = 0;
-
-      session->audio.fec_packet.fecHeader.payloadType = 97;
-      session->audio.fec_packet.fecHeader.ssrc = 0;
-
-      session->audio.cipher = crypto::cipher::cbc_t {
-        launch_session.gcm_key,
-        true
-      };
-
-      session->audio.ping_payload = launch_session.av_ping_payload;
-      session->audio.avRiKeyId = util::endian::big(*(std::uint32_t *) launch_session.iv.data());
-      session->audio.sequenceNumber = 0;
       session->audio.timestamp = 0;
 
-      session->control.peer = nullptr;
       session->state.store(state_e::STOPPED, std::memory_order_relaxed);
 
       session->mail = std::move(mail);
