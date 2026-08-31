@@ -7,12 +7,15 @@
 extern "C" {
 #include <moonlight-common-c/src/Limelight.h>
 #include <moonlight-common-c/src/Rtsp.h>
+#include <stationconnect_datasmash.h>
+#include <stationconnect_datasmash_setup.h>
 }
 
 // standard includes
 #include <array>
 #include <cctype>
 #include <format>
+#include <optional>
 #include <set>
 #include <unordered_map>
 #include <utility>
@@ -20,6 +23,7 @@ extern "C" {
 // lib includes
 #include <boost/asio.hpp>
 #include <boost/bind.hpp>
+#include <nlohmann/json.hpp>
 
 // local includes
 #include "config.h"
@@ -1386,48 +1390,330 @@ namespace rtsp_stream {
     respond(sock, session, &option, 200, "OK", req->sequenceNumber, {});
   }
 
-  void start() {
-    platf::set_thread_name("rtsp");
-    auto shutdown_event = mail::man->event<bool>(mail::shutdown);
+  struct native_start_result_t {
+    int status {SC_DATASMASH_SETUP_STATUS_INTERNAL_ERROR};
+    std::string message;
+    nlohmann::json response;
+  };
 
-    server.map("OPTIONS"sv, &cmd_option);
-    server.map("DESCRIBE"sv, &cmd_describe);
-    server.map("SETUP"sv, &cmd_setup);
-    server.map("ANNOUNCE"sv, &cmd_announce);
-    server.map("PLAY"sv, &cmd_play);
+  std::optional<std::uint32_t> negotiated_video_format_for_mode(
+    const std::string_view encoding_mode
+  ) {
+    if (encoding_mode == "h264-8-422-software"sv) {
+      return VIDEO_FORMAT_H264_HIGH8_422;
+    }
+    if (encoding_mode == "h264-8-444-software"sv ||
+        encoding_mode == "h264-8-444-nvenc"sv) {
+      return VIDEO_FORMAT_H264_HIGH8_444;
+    }
+    if (encoding_mode == "h264-10-422-software"sv) {
+      return VIDEO_FORMAT_H264_HIGH10_422;
+    }
+    if (encoding_mode == "h264-10-444-software"sv) {
+      return VIDEO_FORMAT_H264_HIGH10_444;
+    }
+    if (encoding_mode == "hevc-8-444-nvenc"sv) {
+      return VIDEO_FORMAT_H265_REXT8_444;
+    }
+    if (encoding_mode == "hevc-10-444-nvenc"sv) {
+      return VIDEO_FORMAT_H265_REXT10_444;
+    }
+    return std::nullopt;
+  }
 
-    boost::system::error_code ec;
-    if (server.bind(net::af_from_enum_string(config::sunshine.address_family), net::map_port(rtsp_stream::RTSP_SETUP_PORT), ec)) {
-      BOOST_LOG(fatal) << "Couldn't bind RTSP server to port ["sv << net::map_port(rtsp_stream::RTSP_SETUP_PORT) << "], " << ec.message();
-      shutdown_event->raise(true);
+  native_start_result_t start_native_session(
+    const std::shared_ptr<launch_session_t> &launch_session,
+    const nlohmann::json &request
+  ) {
+    native_start_result_t result;
+    if (!launch_session || !request.is_object()) {
+      result.status = SC_DATASMASH_SETUP_STATUS_INVALID_REQUEST;
+      result.message = "Malformed native session request";
+      return result;
+    }
 
+    stream::config_t config {};
+    config.monitor.span_desktop = launch_session->span_desktop;
+    config.monitor.output_name = launch_session->span_desktop ?
+      std::string {} : launch_session->output_name;
+    config.monitor.encoder_backend = launch_session->encoder_backend;
+    if (launch_session->capture_source == "nvfbc") {
+      config.monitor.capture_source = video::capture_source_e::nvfbc_8bit;
+    } else if (launch_session->capture_source == "x11-native10") {
+      config.monitor.capture_source = video::capture_source_e::x11_native10;
+    } else {
+      result.status = SC_DATASMASH_SETUP_STATUS_UNSUPPORTED;
+      result.message = "Unsupported capture source";
+      return result;
+    }
+
+    int encoder_target_kbps {};
+    std::uint32_t requested_video_format {};
+    bool high_quality_audio {};
+    try {
+      const auto &video_request = request.at("video");
+      const auto &audio_request = request.at("audio");
+      config.monitor.width = video_request.at("width").get<int>();
+      config.monitor.height = video_request.at("height").get<int>();
+      config.monitor.framerate = video_request.at("fps").get<int>();
+      config.monitor.framerateX100 = video_request.value("fps_x100", 0);
+      config.monitor.slicesPerFrame = video_request.value("slices_per_frame", 1);
+      config.monitor.numRefFrames = video_request.value("reference_frames", 0);
+      config.monitor.encoderCscMode = video_request.at("encoder_csc_mode").get<int>();
+      config.monitor.videoFormat = video_request.at("codec").get<int>();
+      config.monitor.dynamicRange = video_request.at("ten_bit").get<bool>() ? 1 : 0;
+      config.monitor.chromaSamplingType = video_request.at("chroma").get<int>();
+      config.monitor.enableIntraRefresh = video_request.value("intra_refresh", 0);
+      encoder_target_kbps = video_request.at("encoder_target_kbps").get<int>();
+      requested_video_format = video_request.at("negotiated_format").get<std::uint32_t>();
+
+      config.audio.channels = audio_request.at("channels").get<int>();
+      config.audio.mask = audio_request.at("channel_mask").get<int>();
+      config.audio.packetDuration = audio_request.value("packet_duration_ms", 5);
+      high_quality_audio = audio_request.value("high_quality", false);
+    } catch (const nlohmann::json::exception &) {
+      result.status = SC_DATASMASH_SETUP_STATUS_INVALID_REQUEST;
+      result.message = "Missing or invalid native session field";
+      return result;
+    }
+
+    if (config.monitor.width != launch_session->width ||
+        config.monitor.height != launch_session->height ||
+        config.monitor.framerate != launch_session->fps ||
+        config.monitor.width <= 0 || config.monitor.height <= 0 ||
+        config.monitor.framerate <= 0 || config.monitor.framerate > 240 ||
+        config.monitor.framerateX100 < 0 ||
+        config.monitor.slicesPerFrame <= 0 ||
+        config.monitor.numRefFrames < 0 ||
+        config.monitor.chromaSamplingType < 0 ||
+        config.monitor.chromaSamplingType > 2 ||
+        config.audio.packetDuration <= 0 || config.audio.packetDuration > 120 ||
+        (config.audio.channels != 2 && config.audio.channels != 6 &&
+         config.audio.channels != 8)) {
+      result.status = SC_DATASMASH_SETUP_STATUS_INVALID_REQUEST;
+      result.message = "Native session values are outside qualified bounds";
+      return result;
+    }
+    if (config.monitor.framerateX100 > 0) {
+      const double strict_fps = config.monitor.framerateX100 / 100.0;
+      const double ratio = strict_fps / config.monitor.framerate;
+      if (ratio < 0.99 || ratio > 1.01) {
+        config.monitor.framerateX100 = 0;
+      }
+    }
+
+    const auto negotiated_video_format = negotiated_video_format_for_mode(
+      launch_session->encoding_mode
+    );
+    if (!negotiated_video_format ||
+        requested_video_format != *negotiated_video_format) {
+      result.status = SC_DATASMASH_SETUP_STATUS_UNSUPPORTED;
+      result.message = "Native decoder format differs from accepted encoding mode";
+      return result;
+    }
+
+    const auto exact_target = stationconnect::bitrate::validate_target(
+      encoder_target_kbps
+    );
+    if (!exact_target) {
+      result.status = SC_DATASMASH_SETUP_STATUS_INVALID_REQUEST;
+      result.message = "Encoder target is outside the qualified range";
+      return result;
+    }
+    config.monitor.bitrate = *exact_target;
+
+    const bool identity_gbr_requested =
+      (config.monitor.encoderCscMode >> 1) == COLORSPACE_IDENTITY_GBR;
+    const bool exact_identity_444 =
+      config.monitor.chromaSamplingType == 1 && identity_gbr_requested &&
+      (config.monitor.encoderCscMode & 0x1) != 0 &&
+      (config.monitor.videoFormat == 0 || config.monitor.videoFormat == 1);
+    const bool encoding_mode_matches =
+      (launch_session->encoding_mode == "h264-8-422-software" &&
+       config.monitor.videoFormat == 0 && config.monitor.dynamicRange == 0 &&
+       config.monitor.chromaSamplingType == 2 && !identity_gbr_requested) ||
+      (launch_session->encoding_mode == "h264-8-444-software" &&
+       config.monitor.videoFormat == 0 && config.monitor.dynamicRange == 0 &&
+       exact_identity_444) ||
+      (launch_session->encoding_mode == "h264-10-422-software" &&
+       config.monitor.videoFormat == 0 && config.monitor.dynamicRange == 1 &&
+       config.monitor.chromaSamplingType == 2 && !identity_gbr_requested) ||
+      (launch_session->encoding_mode == "h264-10-444-software" &&
+       config.monitor.videoFormat == 0 && config.monitor.dynamicRange == 1 &&
+       exact_identity_444) ||
+      (launch_session->encoding_mode == "h264-8-444-nvenc" &&
+       config.monitor.videoFormat == 0 && config.monitor.dynamicRange == 0 &&
+       exact_identity_444) ||
+      (launch_session->encoding_mode == "hevc-8-444-nvenc" &&
+       config.monitor.videoFormat == 1 && config.monitor.dynamicRange == 0 &&
+       exact_identity_444) ||
+      (launch_session->encoding_mode == "hevc-10-444-nvenc" &&
+       config.monitor.videoFormat == 1 && config.monitor.dynamicRange == 1 &&
+       exact_identity_444);
+    if (!encoding_mode_matches) {
+      result.status = SC_DATASMASH_SETUP_STATUS_UNSUPPORTED;
+      result.message = "Native stream format differs from accepted encoding mode";
+      return result;
+    }
+
+    if (launch_session->encoder_backend == "nvenc-direct") {
+      const bool nvfbc_mode =
+        config.monitor.capture_source == video::capture_source_e::nvfbc_8bit &&
+        exact_identity_444 &&
+        ((config.monitor.dynamicRange == 0 &&
+          (config.monitor.videoFormat == 0 || config.monitor.videoFormat == 1)) ||
+         (config.monitor.dynamicRange == 1 && config.monitor.videoFormat == 1 &&
+          (launch_session->stationconnect_feature_flags &
+           stationconnect::topology::feature_nvfbc_hevc10_nvenc) != 0));
+      const bool native10_mode =
+        config.monitor.capture_source == video::capture_source_e::x11_native10 &&
+        config.monitor.videoFormat == 1 && config.monitor.dynamicRange == 1 &&
+        exact_identity_444;
+      if (!nvfbc_mode && !native10_mode) {
+        result.status = SC_DATASMASH_SETUP_STATUS_UNSUPPORTED;
+        result.message = "Unsupported native NVENC capture/profile combination";
+        return result;
+      }
+    } else if (launch_session->encoder_backend == "software-cuda") {
+      if (config.monitor.videoFormat != 0 ||
+          (config.monitor.capture_source == video::capture_source_e::x11_native10 &&
+           (config.monitor.dynamicRange != 1 || !exact_identity_444))) {
+        result.status = SC_DATASMASH_SETUP_STATUS_UNSUPPORTED;
+        result.message = "Unsupported native software capture/profile combination";
+        return result;
+      }
+    } else {
+      result.status = SC_DATASMASH_SETUP_STATUS_UNSUPPORTED;
+      result.message = "Unsupported encoder backend";
+      return result;
+    }
+
+    if ((platf::get_capabilities() & platf::platform_caps::local_cursor) == 0) {
+      result.status = SC_DATASMASH_SETUP_STATUS_INTERNAL_ERROR;
+      result.message = "StationConnect local cursor transport is unavailable";
+      return result;
+    }
+
+    config.audio.flags[audio::config_t::HOST_AUDIO] = launch_session->host_audio;
+    config.audio.flags[audio::config_t::HIGH_QUALITY] = high_quality_audio;
+    config.audio.flags[audio::config_t::CONTINUOUS_AUDIO] =
+      launch_session->continuous_audio;
+    const auto audio_index = audio::map_stream(
+      config.audio.channels, high_quality_audio
+    );
+    if (audio_index < 0 || audio_index >= audio::MAX_STREAM_CONFIG) {
+      result.status = SC_DATASMASH_SETUP_STATUS_UNSUPPORTED;
+      result.message = "Unsupported audio layout";
+      return result;
+    }
+    const auto &opus = audio::stream_configs[audio_index];
+
+    auto stream_session = stream::session::alloc(config, *launch_session);
+    server.insert(stream_session);
+    if (stream::session::start(*stream_session, {})) {
+      server.remove(stream_session);
+      result.status = SC_DATASMASH_SETUP_STATUS_INTERNAL_ERROR;
+      result.message = "Failed to start native streaming session";
+      return result;
+    }
+
+    result.status = SC_DATASMASH_SETUP_STATUS_OK;
+    result.response = {
+      {"video_format", *negotiated_video_format},
+      {"audio", {
+        {"sample_rate", opus.sampleRate},
+        {"channels", opus.channelCount},
+        {"streams", opus.streams},
+        {"coupled_streams", opus.coupledStreams},
+        {"packet_duration_ms", config.audio.packetDuration},
+        {"mapping", nlohmann::json::array()},
+      }},
+    };
+    for (int index = 0; index < opus.channelCount; ++index) {
+      result.response["audio"]["mapping"].push_back(opus.mapping[index]);
+    }
+    BOOST_LOG(info) << "Native QUIC session negotiated without RTSP: "sv
+                    << config.monitor.width << 'x' << config.monitor.height
+                    << '@' << config.monitor.framerate << " target="sv
+                    << config.monitor.bitrate << " Kbps"sv;
+    return result;
+  }
+
+  void process_native_launch(const std::shared_ptr<launch_session_t> &launch_session) {
+    auto *endpoint = launch_session && launch_session->datasmash_endpoint ?
+      static_cast<ScDatasmashNativeEndpoint *>(launch_session->datasmash_endpoint.get()) :
+      nullptr;
+    if (!endpoint) {
+      BOOST_LOG(error) << "Pending native launch has no Datasmash endpoint"sv;
       return;
     }
 
-    std::jthread rtsp_thread {[&shutdown_event] {
-      platf::set_thread_name("rtsp::handler");
-      auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
+    std::vector<std::uint8_t> packet(SC_DATASMASH_SETUP_MAX_PACKET_SIZE);
+    std::size_t packet_size {};
+    const auto timeout_ms = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        config::stream.ping_timeout
+      ).count(), 100, 120000
+    ));
+    const auto receive_result = sc_datasmash_native_data_receive(
+      endpoint, packet.data(), packet.size(), &packet_size, timeout_ms
+    );
+    ScDatasmashSetupPacket request_packet {};
+    if (receive_result != SC_DATASMASH_OK ||
+        sc_datasmash_setup_decode(packet.data(), packet_size, &request_packet) != 0 ||
+        request_packet.type != SC_DATASMASH_SETUP_LAUNCH_REQUEST ||
+        (request_packet.flags & SC_DATASMASH_SETUP_FLAG_RESPONSE) != 0) {
+      BOOST_LOG(error) << "Native session negotiation did not receive a valid launch request"sv;
+      return;
+    }
 
-      while (!shutdown_event->peek()) {
-        server.iterate();
+    const auto request_json = nlohmann::json::parse(
+      request_packet.payload,
+      request_packet.payload + request_packet.payload_size,
+      nullptr,
+      false
+    );
+    auto start_result = start_native_session(launch_session, request_json);
+    nlohmann::json response_json = start_result.response;
+    if (!start_result.message.empty()) {
+      response_json["message"] = start_result.message;
+    }
+    const auto response_payload = response_json.dump();
+    packet.resize(SC_DATASMASH_SETUP_HEADER_SIZE + response_payload.size());
+    std::size_t response_size {};
+    const auto response_type = start_result.status == SC_DATASMASH_SETUP_STATUS_OK ?
+      SC_DATASMASH_SETUP_LAUNCH_RESPONSE : SC_DATASMASH_SETUP_ERROR;
+    if (sc_datasmash_setup_encode(
+          response_type,
+          SC_DATASMASH_SETUP_FLAG_RESPONSE,
+          static_cast<std::uint16_t>(start_result.status),
+          request_packet.request_id,
+          reinterpret_cast<const std::uint8_t *>(response_payload.data()),
+          response_payload.size(), packet.data(), packet.size(), &response_size
+        ) != 0 ||
+        sc_datasmash_native_data_send(endpoint, packet.data(), response_size) !=
+          SC_DATASMASH_OK) {
+      BOOST_LOG(error) << "Unable to return native session negotiation result"sv;
+    }
+  }
 
-        if (broadcast_shutdown_event->peek()) {
-          server.clear();
-        } else {
-          // cleanup all stopped sessions
-          server.clear(false);
-        }
+  void start() {
+    platf::set_thread_name("native-setup");
+    auto shutdown_event = mail::man->event<bool>(mail::shutdown);
+    auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
+    BOOST_LOG(info) << "Native QUIC session negotiation active; RTSP TCP listener disabled"sv;
+    while (!shutdown_event->peek()) {
+      auto launch_session = server.launch_event.pop(500ms);
+      if (launch_session) {
+        process_native_launch(launch_session);
       }
-
-      server.clear();
-    }};
-
-    // Wait for shutdown
-    shutdown_event->view();
-
-    // Stop the server and join the server thread
-    server.stop();
-    rtsp_thread.join();
+      if (broadcast_shutdown_event->peek()) {
+        server.clear();
+      } else {
+        server.clear(false);
+      }
+    }
+    server.clear();
   }
 
   /**

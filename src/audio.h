@@ -49,6 +49,9 @@ namespace audio {
 
   extern opus_stream_config_t stream_configs[MAX_STREAM_CONFIG];
 
+  /** Select the qualified Opus layout for a channel count and quality tier. */
+  int map_stream(int channels, bool quality);
+
   /**
    * @brief Audio capture and encoder settings for a stream.
    */
