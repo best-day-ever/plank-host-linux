@@ -94,6 +94,8 @@ namespace nvhttp {
     stationconnect::topology::feature_encoder_backend_selection;
   constexpr auto stationconnect_feature_nvfbc_hevc10_nvenc =
     stationconnect::topology::feature_nvfbc_hevc10_nvenc;
+  constexpr auto stationconnect_feature_fixed_transport_mtu =
+    stationconnect::topology::feature_fixed_transport_mtu;
   constexpr auto stationconnect_topology_features = stationconnect::topology::feature_flags;
 
 #ifdef STATIONCONNECT_DATASMASH
@@ -168,6 +170,7 @@ namespace nvhttp {
     const auto keep_alive_ms = std::clamp<std::int64_t>(idle_ms / 2, 100, 5000);
     endpoint_config.idle_timeout_ms = static_cast<std::uint32_t>(idle_ms);
     endpoint_config.keep_alive_interval_ms = static_cast<std::uint32_t>(keep_alive_ms);
+    endpoint_config.max_udp_payload_size = session.quic_udp_payload_mtu;
     // The exact per-bookmark target is authenticated by the native setup
     // request after this listener starts. Media does not begin until that
     // request updates the shared encoder/transport rate policy.
@@ -205,9 +208,11 @@ namespace nvhttp {
     tree.put("root.StationConnectDatasmashPort", port);
     tree.put("root.StationConnectDatasmashCertificateSha256", *fingerprint);
     tree.put("root.StationConnectDatasmashToken", token);
+    tree.put("root.StationConnectQuicUdpPayloadMtu", session.quic_udp_payload_mtu);
     OPENSSL_cleanse(token.data(), token.size());
     BOOST_LOG(info) << "Experimental datasmash listener started on UDP port "sv << port
-                    << " (idle timeout "sv << idle_ms << " ms)"sv;
+                    << " (idle timeout "sv << idle_ms << " ms, fixed QUIC UDP payload "sv
+                    << session.quic_udp_payload_mtu << " bytes)"sv;
     return true;
   }
 #endif
@@ -655,6 +660,7 @@ namespace nvhttp {
                         uid_t authenticated_uid,
                         pt::ptree &tree) {
     if (session.stationconnect_protocol_version != stationconnect_topology_version ||
+        (session.stationconnect_feature_flags & stationconnect_feature_fixed_transport_mtu) == 0 ||
         (session.stationconnect_feature_flags & stationconnect_feature_host_layout_binding) == 0 ||
         (session.stationconnect_feature_flags & stationconnect_feature_independent_virtual_modes) == 0 ||
         (session.stationconnect_feature_flags & stationconnect_feature_dynamic_host_layout) == 0 ||
@@ -923,6 +929,21 @@ namespace nvhttp {
     return true;
   }
 
+  bool validate_transport_mtu(session_stream::launch_session_t &session,
+                              pt::ptree &tree) {
+    if (session.stationconnect_protocol_version != stationconnect_topology_version ||
+        (session.stationconnect_feature_flags &
+         stationconnect_feature_fixed_transport_mtu) == 0 ||
+        !stationconnect::topology::valid_quic_udp_payload_mtu(
+          session.quic_udp_payload_mtu)) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message",
+               "A valid fixed StationConnect QUIC UDP payload is required");
+      return false;
+    }
+    return true;
+  }
+
   /**
    * @brief Read a named query argument from the HTTP request map.
    *
@@ -1031,6 +1052,10 @@ namespace nvhttp {
     launch_session->capture_source = get_arg(args, "scCaptureSource", "");
     launch_session->encoder_backend = get_arg(args, "scEncoderBackend", "");
     launch_session->encoding_mode = get_arg(args, "scEncodingMode", "");
+    launch_session->quic_udp_payload_mtu =
+      static_cast<std::uint32_t>(util::from_view(
+        get_arg(args, "scQuicUdpPayloadMtu", "0")
+      ));
     launch_session->stationconnect_protocol_version =
       static_cast<std::uint32_t>(util::from_view(get_arg(args, "scProtocolVersion", "0")));
     launch_session->stationconnect_feature_flags =
@@ -1369,6 +1394,10 @@ namespace nvhttp {
       tree.put("root.gamesession", 0);
       return;
     }
+    if (!validate_transport_mtu(*launch_session, tree)) {
+      tree.put("root.gamesession", 0);
+      return;
+    }
     if (!resolve_selected_output(*launch_session, *authenticated_uid, tree)) {
       tree.put("root.gamesession", 0);
       return;
@@ -1496,6 +1525,10 @@ namespace nvhttp {
       return;
     }
     if (!validate_encoder_backend(*launch_session, tree)) {
+      tree.put("root.resume", 0);
+      return;
+    }
+    if (!validate_transport_mtu(*launch_session, tree)) {
       tree.put("root.resume", 0);
       return;
     }

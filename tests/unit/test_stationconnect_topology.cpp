@@ -8,10 +8,11 @@
 
 namespace topology = stationconnect::topology;
 
-TEST(StationConnectTopology, PublishesVersionNineFeatureContract) {
-  EXPECT_EQ(topology::protocol_version, 10U);
-  EXPECT_EQ(topology::feature_flags, 0x3FFFU);
+TEST(StationConnectTopology, PublishesVersionElevenFeatureContract) {
+  EXPECT_EQ(topology::protocol_version, 11U);
+  EXPECT_EQ(topology::feature_flags, 0x7FFFU);
   EXPECT_NE(topology::feature_flags & topology::feature_nvfbc_hevc10_nvenc, 0U);
+  EXPECT_NE(topology::feature_flags & topology::feature_fixed_transport_mtu, 0U);
   EXPECT_TRUE(topology::valid_virtual_mode("1024x2160"));
   EXPECT_TRUE(topology::valid_virtual_mode("2560x2160"));
   EXPECT_TRUE(topology::valid_virtual_mode("4096x2160"));
@@ -27,6 +28,16 @@ TEST(StationConnectTopology, PublishesVersionNineFeatureContract) {
   EXPECT_TRUE(topology::valid_virtual_layout_modes(
     "dual-horizontal", "4096x2160", "4096x2160"
   ));
+}
+
+TEST(StationConnectTopology, AcceptsOnlyValidFixedQuicPayloadCeilings) {
+  EXPECT_TRUE(topology::valid_quic_udp_payload_mtu(1200));
+  EXPECT_TRUE(topology::valid_quic_udp_payload_mtu(1344));
+  EXPECT_TRUE(topology::valid_quic_udp_payload_mtu(1452));
+  EXPECT_TRUE(topology::valid_quic_udp_payload_mtu(65527));
+  EXPECT_FALSE(topology::valid_quic_udp_payload_mtu(0));
+  EXPECT_FALSE(topology::valid_quic_udp_payload_mtu(1199));
+  EXPECT_FALSE(topology::valid_quic_udp_payload_mtu(65528));
 }
 
 TEST(StationConnectTopology, AcceptsOnlyExactEncodingTuples) {

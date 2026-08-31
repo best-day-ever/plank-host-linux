@@ -38,6 +38,7 @@ namespace session_stream {
     std::string capture_source;  ///< Exact StationConnect capture source requested by the client.
     std::string encoder_backend;  ///< Exact StationConnect encoder backend requested by the client.
     std::string encoding_mode;  ///< Exact StationConnect codec/depth/chroma/encoder mode requested by the client.
+    std::uint32_t quic_udp_payload_mtu {};  ///< Fixed complete QUIC UDP payload ceiling selected for both peers.
     bool span_desktop {};  ///< Whether the complete virtual desktop is captured for this session.
     std::uint32_t stationconnect_protocol_version {};  ///< Selected StationConnect extension version.
     std::uint32_t stationconnect_feature_flags {};  ///< Client-supported StationConnect feature bits.

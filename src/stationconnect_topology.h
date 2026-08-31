@@ -10,7 +10,7 @@
 
 namespace stationconnect::topology {
   constexpr int maximum_virtual_canvas_width = 8192;
-  constexpr std::uint32_t protocol_version = 10;
+  constexpr std::uint32_t protocol_version = 11;
   constexpr std::uint32_t feature_output_topology = 0x1;
   constexpr std::uint32_t feature_selected_output = 0x2;
   constexpr std::uint32_t feature_unified_absolute_input = 0x4;
@@ -25,6 +25,7 @@ namespace stationconnect::topology {
   constexpr std::uint32_t feature_capture_source_selection = 0x800;
   constexpr std::uint32_t feature_encoder_backend_selection = 0x1000;
   constexpr std::uint32_t feature_nvfbc_hevc10_nvenc = 0x2000;
+  constexpr std::uint32_t feature_fixed_transport_mtu = 0x4000;
   constexpr std::uint32_t feature_flags =
     feature_output_topology |
     feature_selected_output |
@@ -39,7 +40,12 @@ namespace stationconnect::topology {
     feature_temporary_physical_layout |
     feature_capture_source_selection |
     feature_encoder_backend_selection |
-    feature_nvfbc_hevc10_nvenc;
+    feature_nvfbc_hevc10_nvenc |
+    feature_fixed_transport_mtu;
+
+  constexpr bool valid_quic_udp_payload_mtu(std::uint32_t mtu) {
+    return mtu >= 1200 && mtu <= 65527;
+  }
 
   enum class layout_error {
     none,
