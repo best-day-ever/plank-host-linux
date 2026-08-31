@@ -121,7 +121,7 @@ namespace stationconnect::session {
   /** Request a display transition from GDM or the authenticated user's desktop. */
   display_request_status request_display_transition(const display_request_t &request);
 
-  /** Mark a temporary physical-display lease active once RTSP allocates its stream. */
+  /** Mark a temporary physical-display lease active once native setup allocates its stream. */
   display_request_status activate_display_lease(uid_t account_uid);
 
   /** Release a temporary physical-display lease when its final stream ends. */

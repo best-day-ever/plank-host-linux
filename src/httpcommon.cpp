@@ -26,7 +26,7 @@
 #include "nvhttp.h"
 #include "platform/common.h"
 #include "process.h"
-#include "rtsp.h"
+#include "session_stream.h"
 #include "utility.h"
 #include "uuid.h"
 

@@ -25,7 +25,7 @@ extern "C" {
 #include "platform/common.h"
 #include "process.h"
 #include "raw_hid_tablet.h"
-#include "rtsp.h"
+#include "session_stream.h"
 #include "session/session_context.h"
 #include "stream.h"
 #include "stationconnect_bitrate.h"
@@ -1146,7 +1146,7 @@ namespace stream {
     /**
      * @brief Allocate and initialize platform input state for a stream.
      */
-    std::shared_ptr<session_t> alloc(config_t &config, rtsp_stream::launch_session_t &launch_session) {
+    std::shared_ptr<session_t> alloc(config_t &config, session_stream::launch_session_t &launch_session) {
       auto session = std::make_shared<session_t>();
 
       auto mail = std::make_shared<safe::mail_raw_t>();

@@ -49,7 +49,7 @@ namespace audio {
   constexpr auto SAMPLE_RATE = 48000;  ///< Audio sample rate in hertz required by Opus.
 
   // NOTE: If you adjust the bitrates listed here, make sure to update the
-  // corresponding bitrate adjustment logic in rtsp_stream::cmd_announce()
+  // corresponding bitrate adjustment logic in native session negotiation.
   /**
    * @brief Opus stream layouts and bitrates advertised to clients.
    */

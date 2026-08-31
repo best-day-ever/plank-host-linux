@@ -16,7 +16,7 @@ namespace stationconnect::bitrate {
   constexpr int maximum_kbps = 500000;
 
   /**
-   * @brief Validate an encoder target supplied by RTSP or the control stream.
+   * @brief Validate an encoder target supplied during native setup or by the control stream.
    */
   inline std::optional<int> validate_target(const std::int64_t bitrate_kbps) {
     if (bitrate_kbps < minimum_kbps || bitrate_kbps > maximum_kbps) {

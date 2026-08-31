@@ -23,7 +23,7 @@
 #include "main.h"
 #include "nvhttp.h"
 #include "process.h"
-#include "rtsp.h"
+#include "session_stream.h"
 #ifdef __linux__
   #include "session/session_context.h"
 #endif
@@ -421,7 +421,7 @@ int main(int argc, char *argv[]) {
   }
 
   std::jthread httpThread {nvhttp::start};
-  std::jthread rtspThread {rtsp_stream::start};
+  std::jthread nativeSessionThread {session_stream::start};
 
 #ifdef _WIN32
   // If we're using the default port and GameStream is enabled, warn the user
@@ -434,7 +434,7 @@ int main(int argc, char *argv[]) {
   mainThreadLoop(shutdown_event);
 
   httpThread.join();
-  rtspThread.join();
+  nativeSessionThread.join();
 
   task_pool.stop();
   task_pool.join();

@@ -1,33 +1,22 @@
 /**
- * @file src/rtsp.h
- * @brief Declarations for RTSP streaming.
+ * @file src/session_stream.h
+ * @brief Native session launch and active-stream ownership declarations.
  */
 #pragma once
 
 // standard includes
-#include <atomic>
+#include <cstdint>
 #include <memory>
+#include <string>
 
 #include <sys/types.h>
 
-// local includes
-#include "crypto.h"
-#include "thread_safe.h"
-
-namespace rtsp_stream {
-  constexpr auto RTSP_SETUP_PORT = 21;  ///< GameStream base-port offset used for the RTSP setup listener.
-
+namespace session_stream {
   /**
-   * @brief RTSP launch session state shared with stream setup.
+   * @brief Authorized launch state shared with native QUIC stream setup.
    */
   struct launch_session_t {
-    uint32_t id;  ///< RTSP launch-session identifier assigned before stream startup.
-
-    crypto::aes_t gcm_key;  ///< AES-GCM key negotiated for encrypted RTSP messages.
-    crypto::aes_t iv;  ///< Initial RTSP AES-GCM IV supplied by the client.
-
-    std::string av_ping_payload;  ///< AV ping payload.
-    uint32_t control_connect_data;  ///< Client-provided token used when connecting the control channel.
+    uint32_t id;  ///< Launch-session identifier assigned before stream startup.
 
     bool host_audio;  ///< Whether host audio should be played locally.
     std::string unique_id;  ///< Moonlight client unique identifier for this launch request.
@@ -55,15 +44,12 @@ namespace rtsp_stream {
     bool stationconnect_display_lease {};  ///< Whether this stream owns a temporary physical-display layout.
     uid_t stationconnect_display_lease_uid {};  ///< PAM account that owns the temporary display lease.
 
-    std::optional<crypto::cipher::gcm_t> rtsp_cipher;  ///< AES-GCM cipher used once encrypted RTSP is negotiated.
-    std::string rtsp_url_scheme;  ///< URL scheme selected by the RTSP SETUP flow.
-    uint32_t rtsp_iv_counter;  ///< Counter value mixed into encrypted RTSP IVs.
     std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained by StationConnect streams.
     std::shared_ptr<void> datasmash_endpoint;  ///< Experimental QUIC data-plane lifetime.
   };
 
   /**
-   * @brief Queue a launch session until the RTSP client connects.
+   * @brief Queue an authorized launch for native QUIC negotiation.
    *
    * @param launch_session Session state prepared by the GameStream launch handler.
    */
@@ -82,7 +68,7 @@ namespace rtsp_stream {
   int session_count();
 
   /**
-   * @brief Check whether an accepted launch is still waiting for its RTSP peer.
+   * @brief Check whether an accepted launch awaits its native QUIC peer.
    * @return True when a launch session is pending.
    */
   bool launch_session_pending();
@@ -92,13 +78,7 @@ namespace rtsp_stream {
    */
   void terminate_sessions();
   /**
-   * @brief Terminate active sessions associated with a client certificate.
-   *
-   * @param cert Certificate data or object used by the operation.
-   */
-
-  /**
-   * @brief Runs the RTSP server loop.
+   * @brief Runs the native QUIC session-setup worker.
    */
   void start();
-}  // namespace rtsp_stream
+}  // namespace session_stream

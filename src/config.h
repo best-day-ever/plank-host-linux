@@ -210,29 +210,12 @@ namespace config {
   };
 
   /**
-   * @brief Encryption policy that always sends unencrypted video.
-   */
-  constexpr int ENCRYPTION_MODE_NEVER = 0;  // Never use video encryption, even if the client supports it
-  /**
-   * @brief Encryption policy that uses encrypted video only when the client supports it.
-   */
-  constexpr int ENCRYPTION_MODE_OPPORTUNISTIC = 1;  // Use video encryption if available, but stream without it if not supported
-  /**
-   * @brief Encryption policy that rejects clients without video encryption support.
-   */
-  constexpr int ENCRYPTION_MODE_MANDATORY = 2;  // Always use video encryption and refuse clients that can't encrypt
-
-  /**
    * @brief Network stream settings shared by audio, video, and control channels.
    */
   struct stream_t {
     std::chrono::milliseconds ping_timeout;  ///< Timeout used when waiting for client ping responses.
 
     int fec_percentage;  ///< Percentage of forward-error-correction packets to add to the stream.
-
-    // Video encryption settings for LAN and WAN streams
-    int lan_encryption_mode;  ///< Video encryption policy for LAN clients.
-    int wan_encryption_mode;  ///< Video encryption policy for WAN clients.
 
   };
 

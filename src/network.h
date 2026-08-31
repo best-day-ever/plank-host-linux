@@ -106,13 +106,6 @@ namespace net {
   std::string addr_to_url_escaped_string(boost::asio::ip::address address);
 
   /**
-   * @brief Get the encryption mode for the given remote endpoint address.
-   * @param address The address used to look up the desired encryption mode.
-   * @return The WAN or LAN encryption mode, based on the provided address.
-   */
-  int encryption_mode_for_address(boost::asio::ip::address address);
-
-  /**
    * @brief Returns a string for use as the instance name for mDNS.
    * @param hostname The hostname to use for instance name generation.
    * @return Hostname-based instance name or "Sunshine" if hostname is invalid.

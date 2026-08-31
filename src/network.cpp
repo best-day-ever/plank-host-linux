@@ -173,15 +173,6 @@ namespace net {
     }
   }
 
-  int encryption_mode_for_address(boost::asio::ip::address address) {
-    auto nettype = net::from_address(address.to_string());
-    if (nettype == net::net_e::PC || nettype == net::net_e::LAN) {
-      return config::stream.lan_encryption_mode;
-    } else {
-      return config::stream.wan_encryption_mode;
-    }
-  }
-
   std::uint16_t map_port(int port) {
     // calculate the port from the config port
     auto mapped_port = (std::uint16_t) ((int) config::sunshine.port + port);

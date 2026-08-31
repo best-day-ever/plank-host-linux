@@ -23,7 +23,7 @@
 // local includes
 #include "audio.h"
 #include "platform/common.h"
-#include "rtsp.h"
+#include "session_stream.h"
 
 // platform-specific includes
 #ifdef _WIN32
@@ -339,14 +339,14 @@ namespace display_device {
      * @returns True on successful parsing, false otherwise.
      *
      * @examples
-     * const std::shared_ptr<rtsp_stream::launch_session_t> launch_session;
+     * const std::shared_ptr<session_stream::launch_session_t> launch_session;
      * const config::video_t &video_config { config::video };
      *
      * SingleDisplayConfiguration config;
      * const bool success = parse_resolution_option(video_config, *launch_session, config);
      * @examples_end
      */
-    bool parse_resolution_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
+    bool parse_resolution_option(const config::video_t &video_config, const session_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
       using resolution_option_e = config::video_t::dd_t::resolution_option_e;
 
       switch (video_config.dd.resolution_option) {
@@ -391,14 +391,14 @@ namespace display_device {
      * @returns True on successful parsing, false otherwise.
      *
      * @examples
-     * const std::shared_ptr<rtsp_stream::launch_session_t> launch_session;
+     * const std::shared_ptr<session_stream::launch_session_t> launch_session;
      * const config::video_t &video_config { config::video };
      *
      * SingleDisplayConfiguration config;
      * const bool success = parse_refresh_rate_option(video_config, *launch_session, config);
      * @examples_end
      */
-    bool parse_refresh_rate_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
+    bool parse_refresh_rate_option(const config::video_t &video_config, const session_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
       using refresh_rate_option_e = config::video_t::dd_t::refresh_rate_option_e;
 
       switch (video_config.dd.refresh_rate_option) {
@@ -440,12 +440,12 @@ namespace display_device {
      *          Empty optional if no action is required.
      *
      * @examples
-     * const std::shared_ptr<rtsp_stream::launch_session_t> launch_session;
+     * const std::shared_ptr<session_stream::launch_session_t> launch_session;
      * const config::video_t &video_config { config::video };
      * const auto hdr_option = parse_hdr_option(video_config, *launch_session);
      * @examples_end
      */
-    std::optional<HdrState> parse_hdr_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
+    std::optional<HdrState> parse_hdr_option(const config::video_t &video_config, const session_stream::launch_session_t &session) {
       using hdr_option_e = config::video_t::dd_t::hdr_option_e;
 
       switch (video_config.dd.hdr_option) {
@@ -548,14 +548,14 @@ namespace display_device {
      * @returns True if the remapping was performed or skipped, false if remapping has failed due to invalid config.
      *
      * @examples
-     * const std::shared_ptr<rtsp_stream::launch_session_t> launch_session;
+     * const std::shared_ptr<session_stream::launch_session_t> launch_session;
      * const config::video_t &video_config { config::video };
      *
      * SingleDisplayConfiguration config;
      * const bool success = remap_display_mode_if_needed(video_config, *launch_session, config);
      * @examples_end
      */
-    bool remap_display_mode_if_needed(const config::video_t &video_config, const rtsp_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
+    bool remap_display_mode_if_needed(const config::video_t &video_config, const session_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
       const auto remapping_type {determine_remapping_type(video_config)};
       if (!remapping_type) {
         return true;
@@ -829,7 +829,7 @@ namespace display_device {
     return mapped_name;
   }
 
-  void configure_display(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
+  void configure_display(const config::video_t &video_config, const session_stream::launch_session_t &session) {
     const auto result {parse_configuration(video_config, session)};
     if (const auto *parsed_config {std::get_if<SingleDisplayConfiguration>(&result)}; parsed_config) {
       configure_display(*parsed_config);
@@ -910,7 +910,7 @@ namespace display_device {
     });
   }
 
-  std::variant<failed_to_parse_tag_t, configuration_disabled_tag_t, SingleDisplayConfiguration> parse_configuration(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
+  std::variant<failed_to_parse_tag_t, configuration_disabled_tag_t, SingleDisplayConfiguration> parse_configuration(const config::video_t &video_config, const session_stream::launch_session_t &session) {
     const auto device_prep {parse_device_prep_option(video_config)};
     if (!device_prep) {
       return configuration_disabled_tag_t {};

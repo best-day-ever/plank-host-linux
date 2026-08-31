@@ -26,7 +26,6 @@
 #include "logging.h"
 #include "nvhttp.h"
 #include "platform/common.h"
-#include "rtsp.h"
 #include "utility.h"
 
 #ifdef _WIN32
@@ -804,9 +803,6 @@ namespace config {
     10s,  // ping_timeout
 
     20,  // fecPercentage
-
-    ENCRYPTION_MODE_NEVER,  // lan_encryption_mode
-    ENCRYPTION_MODE_OPPORTUNISTIC,  // wan_encryption_mode
   };
 
   /**
@@ -1565,8 +1561,6 @@ namespace config {
       stream.ping_timeout = std::chrono::milliseconds(to);
     }
 
-    int_between_f(vars, "lan_encryption_mode", stream.lan_encryption_mode, {0, 2});
-    int_between_f(vars, "wan_encryption_mode", stream.wan_encryption_mode, {0, 2});
     int_between_f(vars, "fec_percentage", stream.fec_percentage, {1, 255});
 
     map_int_int_f(vars, "keybindings"s, input.keybindings);
@@ -1588,7 +1582,7 @@ namespace config {
     string_restricted_f(vars, "startup_layout", sunshine.startup_layout, {"physical"sv, "virtual"sv});
 
     int port = sunshine.port;
-    int_between_f(vars, "port"s, port, {1024 + nvhttp::PORT_HTTPS, 65535 - rtsp_stream::RTSP_SETUP_PORT});
+    int_between_f(vars, "port"s, port, {1024 - nvhttp::PORT_HTTPS, 65535});
     sunshine.port = (std::uint16_t) port;
 
     string_restricted_f(vars, "address_family", sunshine.address_family, {"ipv4"sv, "both"sv});

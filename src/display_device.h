@@ -23,7 +23,7 @@ namespace config {
   struct video_t;
 }
 
-namespace rtsp_stream {
+namespace session_stream {
   struct launch_session_t;
 }
 
@@ -75,13 +75,13 @@ namespace display_device {
    * @param session Session information.
    *
    * @examples
-   * const std::shared_ptr<rtsp_stream::launch_session_t> launch_session;
+   * const std::shared_ptr<session_stream::launch_session_t> launch_session;
    * const config::video_t &video_config { config::video };
    *
    * configure_display(video_config, *launch_session);
    * @examples_end
    */
-  void configure_display(const config::video_t &video_config, const rtsp_stream::launch_session_t &session);
+  void configure_display(const config::video_t &video_config, const session_stream::launch_session_t &session);
 
   /**
    * @brief Configure the display device using the provided configuration.
@@ -166,7 +166,7 @@ namespace display_device {
    *         a tag indicating that the user does not want to perform any configuration.
    *
    * @examples
-   * const std::shared_ptr<rtsp_stream::launch_session_t> launch_session;
+   * const std::shared_ptr<session_stream::launch_session_t> launch_session;
    * const config::video_t &video_config { config::video };
    *
    * const auto config { parse_configuration(video_config, *launch_session) };
@@ -175,5 +175,5 @@ namespace display_device {
    * }
    * @examples_end
    */
-  [[nodiscard]] std::variant<failed_to_parse_tag_t, configuration_disabled_tag_t, SingleDisplayConfiguration> parse_configuration(const config::video_t &video_config, const rtsp_stream::launch_session_t &session);
+  [[nodiscard]] std::variant<failed_to_parse_tag_t, configuration_disabled_tag_t, SingleDisplayConfiguration> parse_configuration(const config::video_t &video_config, const session_stream::launch_session_t &session);
 }  // namespace display_device

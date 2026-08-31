@@ -126,7 +126,6 @@ TEST(ConfigConsistencyTest, RuntimeOptionsMatchStationConnectProductPolicy) {
     "key_repeat_delay",
     "key_repeat_frequency",
     "keybindings",
-    "lan_encryption_mode",
     "log_path",
     "min_log_level",
     "min_threads",
@@ -148,7 +147,6 @@ TEST(ConfigConsistencyTest, RuntimeOptionsMatchStationConnectProductPolicy) {
     "sw_tune",
     "sw_vbv_buffer_frames",
     "sw_vbv_maxrate_percentage",
-    "wan_encryption_mode",
   };
 
   const auto runtime = extract_runtime_options();

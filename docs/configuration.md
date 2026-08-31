@@ -36,7 +36,7 @@ addresses allowed by `address_family`.
 
 ### port
 
-Base TCP port used to derive the StationConnect service ports. Default:
+Base port used by StationConnect HTTPS authentication and native QUIC. Default:
 `47989`. Changing it requires matching firewall policy and client reachability.
 
 ### stationconnect_mdns_discovery
@@ -44,16 +44,6 @@ Base TCP port used to derive the StationConnect service ports. Default:
 Publish the host through mDNS/Avahi for automatic client discovery. Accepted
 values: `true` or `false`. Default: `false`. This controls advertisement only;
 manually configured hostname/IP bookmarks continue to work while disabled.
-
-### lan_encryption_mode
-
-Media-encryption policy for LAN-scoped remote source addresses: `0` never,
-`1` when supported, or `2` mandatory. The packaged default is `0`.
-
-### wan_encryption_mode
-
-Media-encryption policy for WAN-scoped remote source addresses: `0` never,
-`1` when supported, or `2` mandatory. The packaged default is `1`.
 
 ### ping_timeout
 

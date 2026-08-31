@@ -50,7 +50,7 @@
 #include "nvhttp.h"
 #include "platform/common.h"
 #include "process.h"
-#include "rtsp.h"
+#include "session_stream.h"
 #include "session/session_context.h"
 #include "stationconnect_topology.h"
 #include "utility.h"
@@ -131,7 +131,7 @@ namespace nvhttp {
     ), true);
   }
 
-  bool start_datasmash_data_plane(rtsp_stream::launch_session_t &session,
+  bool start_datasmash_data_plane(session_stream::launch_session_t &session,
                                   pt::ptree &tree) {
     const auto fingerprint = certificate_sha256(config::nvhttp.cert);
     if (!fingerprint) {
@@ -659,7 +659,7 @@ namespace nvhttp {
     return body;
   }
 
-  bool bind_host_layout(rtsp_stream::launch_session_t &session,
+  bool bind_host_layout(session_stream::launch_session_t &session,
                         const std::vector<platf::display_info_t> &outputs,
                         uid_t authenticated_uid,
                         pt::ptree &tree) {
@@ -781,7 +781,7 @@ namespace nvhttp {
     write_auth_json(response, SimpleWeb::StatusCode::success_ok, output_topology_json());
   }
 
-  bool bind_topology_generation(rtsp_stream::launch_session_t &session,
+  bool bind_topology_generation(session_stream::launch_session_t &session,
                                 const std::vector<platf::display_info_t> &outputs,
                                 pt::ptree &tree) {
     // Bind the requested output layout atomically at launch. Do not poll the
@@ -806,7 +806,7 @@ namespace nvhttp {
     return true;
   }
 
-  bool resolve_selected_output(rtsp_stream::launch_session_t &session,
+  bool resolve_selected_output(session_stream::launch_session_t &session,
                                uid_t authenticated_uid,
                                pt::ptree &tree) {
     const auto outputs = video::output_topology();
@@ -867,7 +867,7 @@ namespace nvhttp {
     return true;
   }
 
-  bool validate_capture_source(rtsp_stream::launch_session_t &session,
+  bool validate_capture_source(session_stream::launch_session_t &session,
                                pt::ptree &tree) {
     if (session.stationconnect_protocol_version != stationconnect_topology_version ||
         (session.stationconnect_feature_flags &
@@ -893,7 +893,7 @@ namespace nvhttp {
     return true;
   }
 
-  bool validate_encoder_backend(rtsp_stream::launch_session_t &session,
+  bool validate_encoder_backend(session_stream::launch_session_t &session,
                                 pt::ptree &tree) {
     if (session.stationconnect_protocol_version != stationconnect_topology_version ||
         (session.stationconnect_feature_flags &
@@ -1003,13 +1003,10 @@ namespace nvhttp {
    * @param args Arguments forwarded to the callable or parser.
    * @return Constructed launch session object.
    */
-  std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session(bool host_audio, const args_t &args) {
-    auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
+  std::shared_ptr<session_stream::launch_session_t> make_launch_session(bool host_audio, const args_t &args) {
+    auto launch_session = std::make_shared<session_stream::launch_session_t>();
 
     launch_session->id = ++session_id_counter;
-
-    auto rikey = util::from_hex_vec(get_arg(args, "rikey"), true);
-    std::copy(rikey.cbegin(), rikey.cend(), std::back_inserter(launch_session->gcm_key));
 
     launch_session->host_audio = host_audio;
     std::stringstream mode = std::stringstream(get_arg(args, "mode", "0x0x0"));
@@ -1048,26 +1045,6 @@ namespace nvhttp {
     launch_session->stationconnect_feature_flags =
       static_cast<std::uint32_t>(util::from_view(get_arg(args, "scFeatureFlags", "0")));
 
-    // Encrypted RTSP is enabled with client reported corever >= 1
-    auto corever = util::from_view(get_arg(args, "corever", "0"));
-    if (corever >= 1) {
-      launch_session->rtsp_cipher = crypto::cipher::gcm_t {
-        launch_session->gcm_key,
-        false
-      };
-      launch_session->rtsp_iv_counter = 0;
-    }
-    launch_session->rtsp_url_scheme = launch_session->rtsp_cipher ? "rtspenc://"s : "rtsp://"s;
-    // Generate the unique identifiers for this connection that we will send later during RTSP handshake
-    unsigned char raw_payload[8];
-    RAND_bytes(raw_payload, sizeof(raw_payload));
-    launch_session->av_ping_payload = util::hex_vec(raw_payload);
-    RAND_bytes((unsigned char *) &launch_session->control_connect_data, sizeof(launch_session->control_connect_data));
-
-    launch_session->iv.resize(16);
-    uint32_t prepend_iv = util::endian::big<uint32_t>((int) util::from_view(get_arg(args, "rikeyid")));
-    auto prepend_iv_p = (uint8_t *) &prepend_iv;
-    std::copy(prepend_iv_p, prepend_iv_p + sizeof(prepend_iv), std::begin(launch_session->iv));
     return launch_session;
   }
 
@@ -1342,8 +1319,6 @@ namespace nvhttp {
 
     auto args = request->parse_query_string();
     if (
-      args.find("rikey"s) == std::end(args) ||
-      args.find("rikeyid"s) == std::end(args) ||
       args.find("localAudioPlayMode"s) == std::end(args) ||
       args.find("appid"s) == std::end(args)
     ) {
@@ -1373,13 +1348,13 @@ namespace nvhttp {
 
     auto current_appid = proc::proc.running();
     if (current_appid > 0 &&
-        rtsp_stream::session_count() == 0 &&
-        !rtsp_stream::launch_session_pending()) {
+        session_stream::session_count() == 0 &&
+        !session_stream::launch_session_pending()) {
       // The Desktop application is a process-less reservation. A normal
       // disconnect stops and joins the media session, but the reservation can
       // outlive it and make a rapid reconnect look like a competing launch.
       // session_count() above synchronously removes STOPPING sessions. Once no
-      // active or pending RTSP session owns this reservation, clear it before
+      // active or pending native session owns this reservation, clear it before
       // admitting the replacement launch.
       BOOST_LOG(info) << "Clearing orphaned StationConnect Desktop reservation before launch"sv;
       proc::proc.terminate();
@@ -1408,7 +1383,7 @@ namespace nvhttp {
       return;
     }
 
-    if (rtsp_stream::session_count() == 0) {
+    if (session_stream::session_count() == 0) {
       if (!video::select_encoder_backend_for_session(
               launch_session->encoder_backend)) {
         tree.put("root.<xmlattr>.status_code", 503);
@@ -1427,17 +1402,6 @@ namespace nvhttp {
 
       // The media worker probes capture and encoding before its HTTP interface
       // starts. Reprobing here can race a reconnecting NvFBC capture thread.
-    }
-
-    auto encryption_mode = net::encryption_mode_for_address(request->remote_endpoint().address());
-    if (!launch_session->rtsp_cipher && encryption_mode == config::ENCRYPTION_MODE_MANDATORY) {
-      BOOST_LOG(error) << "Rejecting client that cannot comply with mandatory encryption requirement"sv;
-
-      tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", "Encryption is mandatory for this host but unsupported by the client");
-      tree.put("root.gamesession", 0);
-
-      return;
     }
 
     if (appid > 0) {
@@ -1467,21 +1431,12 @@ namespace nvhttp {
 #endif
 
     tree.put("root.<xmlattr>.status_code", 200);
-    tree.put(
-      "root.sessionUrl0",
-      std::format(
-        "{}{}:{}",
-        launch_session->rtsp_url_scheme,
-        net::addr_to_url_escaped_string(request->local_endpoint().address()),
-        static_cast<int>(net::map_port(rtsp_stream::RTSP_SETUP_PORT))
-      )
-    );
     tree.put("root.gamesession", 1);
     tree.put("root.StationConnectCaptureSource", launch_session->capture_source);
     tree.put("root.StationConnectEncoderBackend", launch_session->encoder_backend);
     tree.put("root.StationConnectEncodingMode", launch_session->encoding_mode);
 
-    rtsp_stream::launch_session_raise(launch_session);
+    session_stream::launch_session_raise(launch_session);
 
     // Stream was started successfully, we will revert the config when the app or session terminates
     revert_display_configuration = false;
@@ -1537,21 +1492,10 @@ namespace nvhttp {
     }
 
     auto args = request->parse_query_string();
-    if (
-      args.find("rikey"s) == std::end(args) ||
-      args.find("rikeyid"s) == std::end(args)
-    ) {
-      tree.put("root.resume", 0);
-      tree.put("root.<xmlattr>.status_code", 400);
-      tree.put("root.<xmlattr>.status_message", "Missing a required resume parameter");
-
-      return;
-    }
-
     // Newer Moonlight clients send localAudioPlayMode on /resume too,
     // so we should use it if it's present in the args and there are
     // no active sessions we could be interfering with.
-    const bool no_active_sessions {rtsp_stream::session_count() == 0};
+    const bool no_active_sessions {session_stream::session_count() == 0};
     if (no_active_sessions && args.find("localAudioPlayMode"s) != std::end(args)) {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
@@ -1587,17 +1531,6 @@ namespace nvhttp {
       // probing with a prior stream's capture teardown.
     }
 
-    auto encryption_mode = net::encryption_mode_for_address(request->remote_endpoint().address());
-    if (!launch_session->rtsp_cipher && encryption_mode == config::ENCRYPTION_MODE_MANDATORY) {
-      BOOST_LOG(error) << "Rejecting client that cannot comply with mandatory encryption requirement"sv;
-
-      tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", "Encryption is mandatory for this host but unsupported by the client");
-      tree.put("root.gamesession", 0);
-
-      return;
-    }
-
     launch_session->authentication_session = claim_authentication_session(request);
     if (!launch_session->authentication_session) {
       tree.put("root.<xmlattr>.status_code", 401);
@@ -1614,21 +1547,12 @@ namespace nvhttp {
 #endif
 
     tree.put("root.<xmlattr>.status_code", 200);
-    tree.put(
-      "root.sessionUrl0",
-      std::format(
-        "{}{}:{}",
-        launch_session->rtsp_url_scheme,
-        net::addr_to_url_escaped_string(request->local_endpoint().address()),
-        static_cast<int>(net::map_port(rtsp_stream::RTSP_SETUP_PORT))
-      )
-    );
     tree.put("root.resume", 1);
     tree.put("root.StationConnectCaptureSource", launch_session->capture_source);
     tree.put("root.StationConnectEncoderBackend", launch_session->encoder_backend);
     tree.put("root.StationConnectEncodingMode", launch_session->encoding_mode);
 
-    rtsp_stream::launch_session_raise(launch_session);
+    session_stream::launch_session_raise(launch_session);
   }
 
   /**

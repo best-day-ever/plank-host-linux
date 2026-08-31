@@ -56,7 +56,7 @@ namespace stream {
      * @param launch_session Launch session.
      * @return Allocated object or identifier, or an error value on failure.
      */
-    std::shared_ptr<session_t> alloc(config_t &config, rtsp_stream::launch_session_t &launch_session);
+    std::shared_ptr<session_t> alloc(config_t &config, session_stream::launch_session_t &launch_session);
     /**
      * @brief Start a streaming session for the supplied peer address.
      *
