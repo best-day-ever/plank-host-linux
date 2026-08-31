@@ -56,9 +56,8 @@ docker run -d \
   -e PGID=<gid> \
   -e TZ=<timezone> \
   -v <path to data>:/config \
-  -p 47984-47990:47984-47990/tcp \
-  -p 48010:48010 \
-  -p 47998-48000:47998-48000/udp \
+  -p 47989:47989/tcp \
+  -p 47989:47989/udp \
   <image>
 ```
 
@@ -80,9 +79,8 @@ services:
       - TZ=<timezone>
     ipc: host
     ports:
-      - "47984-47990:47984-47990/tcp"
-      - "48010:48010"
-      - "47998-48000:47998-48000/udp"
+      - "47989:47989/tcp"
+      - "47989:47989/udp"
 ```
 
 ### Using podman run
@@ -98,9 +96,8 @@ podman run -d \
   -e PGID=<gid> \
   -e TZ=<timezone> \
   -v <path to data>:/config \
-  -p 47984-47990:47984-47990/tcp \
-  -p 48010:48010 \
-  -p 47998-48000:47998-48000/udp \
+  -p 47989:47989/tcp \
+  -p 47989:47989/udp \
   <image>
 ```
 

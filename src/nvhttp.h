@@ -10,8 +10,7 @@ namespace nvhttp {
 
   constexpr auto VERSION = "7.1.431.-1";
   constexpr auto GFE_VERSION = "3.23.0.74";
-  constexpr auto PORT_HTTP = 0;
-  constexpr auto PORT_HTTPS = -5;
+  constexpr auto PORT_HTTPS = 0;
 
   /**
    * @brief Start the StationConnect authentication and session-negotiation server.

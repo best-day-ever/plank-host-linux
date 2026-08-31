@@ -284,10 +284,6 @@ namespace nvhttp {
    * @brief HTTPS server type used for GameStream endpoints requiring TLS.
    */
   using https_server_t = SunshineHTTPSServer;
-  /**
-   * @brief Plain HTTP server type used for GameStream endpoints without TLS.
-   */
-  using http_server_t = SimpleWeb::Server<SimpleWeb::HTTP>;
 
   std::atomic<uint32_t> session_id_counter;  ///< Monotonic counter used to allocate GameStream session IDs.
   std::mutex session_start_mutex;  ///< Serializes launch/resume state transitions.
@@ -304,15 +300,6 @@ namespace nvhttp {
    * @brief Shared HTTPS request object received by GameStream handlers.
    */
   using req_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SunshineHTTPS>::Request>;
-  /**
-   * @brief Shared HTTP response object passed to redirect and discovery handlers.
-   */
-  using resp_http_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Response>;
-  /**
-   * @brief Shared HTTP request object received by redirect and discovery handlers.
-   */
-  using req_http_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Request>;
-
   /**
    * @brief Return the normalized peer address used to bind an authentication session.
    *
@@ -1212,7 +1199,7 @@ namespace nvhttp {
     tree.put("root.GfeVersion", GFE_VERSION);
     tree.put("root.uniqueid", http::unique_id);
     tree.put("root.HttpsPort", net::map_port(PORT_HTTPS));
-    tree.put("root.ExternalPort", net::map_port(PORT_HTTP));
+    tree.put("root.ExternalPort", net::map_port(PORT_HTTPS));
     tree.put("root.StationConnectAuth", 1);
     tree.put("root.StationConnectHostMetadataVersion", stationconnect_host_metadata_version);
     tree.put("root.StationConnectHostVersion", PROJECT_VERSION);
@@ -1575,7 +1562,6 @@ namespace nvhttp {
     platf::set_thread_name("nvhttp");
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
 
-    auto port_http = net::map_port(PORT_HTTP);
     auto port_https = net::map_port(PORT_HTTPS);
     auto address_family = net::af_from_enum_string(config::sunshine.address_family);
 
@@ -1605,8 +1591,6 @@ namespace nvhttp {
       config::nvhttp.pkey,
       true,
     };
-    http_server_t http_server;
-
     https_server.default_resource["GET"] = not_found<SunshineHTTPS>;
     https_server.resource["^/serverinfo$"]["GET"] = serverinfo<SunshineHTTPS>;
     https_server.resource["^/stationconnect/auth/start$"]["POST"] = auth_start;
@@ -1641,12 +1625,6 @@ namespace nvhttp {
     https_server.config.address = net::get_bind_address(address_family);
     https_server.config.port = port_https;
 
-    http_server.default_resource["GET"] = not_found<SimpleWeb::HTTP>;
-    http_server.resource["^/serverinfo$"]["GET"] = serverinfo<SimpleWeb::HTTP>;
-    http_server.config.reuse_address = true;
-    http_server.config.address = net::get_bind_address(address_family);
-    http_server.config.port = port_http;
-
     auto accept_and_run = [&](auto *http_server) {
       try {
         std::string name = "nvhttp::" + std::to_string(http_server->config.port);
@@ -1658,22 +1636,19 @@ namespace nvhttp {
           return;
         }
 
-        BOOST_LOG(fatal) << "Couldn't start http server on ports ["sv << port_https << ", "sv << port_https << "]: "sv << err.what();
+        BOOST_LOG(fatal) << "Couldn't start HTTPS server on port "sv << port_https << ": "sv << err.what();
         shutdown_event->raise(true);
         return;
       }
     };
     std::jthread ssl {accept_and_run, &https_server};
-    std::jthread tcp {accept_and_run, &http_server};
 
     // Wait for any event
     shutdown_event->view();
 
     https_server.stop();
-    http_server.stop();
 
     ssl.join();
-    tcp.join();
   }
 
 }  // namespace nvhttp

@@ -467,7 +467,7 @@ namespace platf::publish {
         platf::SERVICE_TYPE,
         nullptr,
         nullptr,
-        net::map_port(nvhttp::PORT_HTTP),
+        net::map_port(nvhttp::PORT_HTTPS),
         nullptr
       );
 
