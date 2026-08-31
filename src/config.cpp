@@ -801,8 +801,6 @@ namespace config {
    */
   stream_t stream {
     10s,  // ping_timeout
-
-    20,  // fecPercentage
   };
 
   /**
@@ -1557,8 +1555,6 @@ namespace config {
     if (to != -1) {
       stream.ping_timeout = std::chrono::milliseconds(to);
     }
-
-    int_between_f(vars, "fec_percentage", stream.fec_percentage, {1, 255});
 
     map_int_int_f(vars, "keybindings"s, input.keybindings);
 

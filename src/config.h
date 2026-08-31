@@ -214,9 +214,6 @@ namespace config {
    */
   struct stream_t {
     std::chrono::milliseconds ping_timeout;  ///< Timeout used when waiting for client ping responses.
-
-    int fec_percentage;  ///< Percentage of forward-error-correction packets to add to the stream.
-
   };
 
   /**

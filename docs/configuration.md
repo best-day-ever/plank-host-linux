@@ -50,11 +50,6 @@ manually configured hostname/IP bookmarks continue to work while disabled.
 Milliseconds allowed for initial media-channel pings and established-client
 inactivity before the host cleans up the stream. Default: `10000`.
 
-### fec_percentage
-
-Forward-error-correction parity as a percentage of video data packets. Valid
-range: `1` through `255`. Default: `20`.
-
 ## Security and state
 
 ### allow_root_login

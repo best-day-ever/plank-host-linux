@@ -121,7 +121,6 @@ TEST(ConfigConsistencyTest, RuntimeOptionsMatchStationConnectProductPolicy) {
     "audio_sink",
     "bind_address",
     "cert",
-    "fec_percentage",
     "file_state",
     "key_repeat_delay",
     "key_repeat_frequency",
