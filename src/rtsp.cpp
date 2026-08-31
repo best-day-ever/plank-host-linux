@@ -1655,12 +1655,12 @@ namespace rtsp_stream {
     ));
     if (sc_datasmash_native_endpoint_wait_ready(endpoint, timeout_ms) !=
         SC_DATASMASH_OK) {
-      std::array<char, 512> error {};
+      std::array<char, 512> last_error {};
       sc_datasmash_native_endpoint_last_error(
-        endpoint, error.data(), error.size()
+        endpoint, last_error.data(), last_error.size()
       );
       BOOST_LOG(error) << "Native QUIC connection did not become ready: "sv
-                       << error.data();
+                       << last_error.data();
       return;
     }
 
