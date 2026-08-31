@@ -1648,13 +1648,24 @@ namespace rtsp_stream {
       return;
     }
 
-    std::vector<std::uint8_t> packet(SC_DATASMASH_SETUP_MAX_PACKET_SIZE);
-    std::size_t packet_size {};
     const auto timeout_ms = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
         config::stream.ping_timeout
       ).count(), 100, 120000
     ));
+    if (sc_datasmash_native_endpoint_wait_ready(endpoint, timeout_ms) !=
+        SC_DATASMASH_OK) {
+      std::array<char, 512> error {};
+      sc_datasmash_native_endpoint_last_error(
+        endpoint, error.data(), error.size()
+      );
+      BOOST_LOG(error) << "Native QUIC connection did not become ready: "sv
+                       << error.data();
+      return;
+    }
+
+    std::vector<std::uint8_t> packet(SC_DATASMASH_SETUP_MAX_PACKET_SIZE);
+    std::size_t packet_size {};
     const auto receive_result = sc_datasmash_native_data_receive(
       endpoint, packet.data(), packet.size(), &packet_size, timeout_ms
     );
