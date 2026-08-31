@@ -475,6 +475,16 @@ namespace stream {
     if (!session->datasmash_endpoint) {
       return -1;
     }
+    auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
+    const auto rate_result = sc_datasmash_native_set_video_bitrate(
+      endpoint, static_cast<std::uint32_t>(requested_kbps)
+    );
+    if (rate_result != SC_DATASMASH_OK) {
+      BOOST_LOG(error) << "Datasmash transport bitrate update failed with result "sv
+                       << rate_result;
+      session::stop(*session);
+      return -1;
+    }
     const std::uint32_t values[] {
       static_cast<std::uint32_t>(requested_kbps),
       static_cast<std::uint32_t>(applied_kbps),
@@ -486,7 +496,6 @@ namespace stream {
       SC_DATASMASH_CONTROL_VIDEO_BITRATE_APPLIED, values, std::size(values),
       packet.data(), packet.size(), &packet_size
     );
-    auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
     const auto result = encode_result != 0 ? SC_DATASMASH_ERROR_INVALID_ARGUMENT :
       sc_datasmash_native_data_send(endpoint, packet.data(), packet_size);
     if (result != SC_DATASMASH_OK) {
