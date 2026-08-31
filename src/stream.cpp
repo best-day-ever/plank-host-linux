@@ -1069,6 +1069,14 @@ namespace stream {
         ScDatasmashNativeStats stats {};
         stats.struct_size = sizeof(stats);
         auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session.datasmash_endpoint.get());
+        std::array<char, 1024> endpoint_error {};
+        const auto endpoint_error_size = sc_datasmash_native_endpoint_last_error(
+          endpoint, endpoint_error.data(), endpoint_error.size()
+        );
+        if (endpoint_error_size != 0) {
+          BOOST_LOG(error) << "Datasmash native endpoint ended: "sv
+                           << endpoint_error.data();
+        }
         if (sc_datasmash_native_endpoint_stats(endpoint, &stats) == SC_DATASMASH_OK) {
           BOOST_LOG(info) << "Datasmash native transport: video_sent="sv
                           << stats.video_frames_sent << " frames/"sv
