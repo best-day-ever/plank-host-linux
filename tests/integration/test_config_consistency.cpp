@@ -66,7 +66,6 @@ TEST(ConfigParserTest, AcceptsIniSectionsAndGlobalKeys) {
   const auto values = config::parse_config(R"(
 # StationConnect host profile
 [network]
-address_family = both
 stationconnect_mdns_discovery = false
 
 [x264-encoder]
@@ -74,8 +73,7 @@ sw_vbv_maxrate_percentage = 150
 sw_vbv_buffer_frames = 4
 )");
 
-  ASSERT_EQ(values.size(), 4);
-  EXPECT_EQ(values.at("address_family"), "both");
+  ASSERT_EQ(values.size(), 3);
   EXPECT_EQ(values.at("stationconnect_mdns_discovery"), "false");
   EXPECT_EQ(values.at("sw_vbv_maxrate_percentage"), "150");
   EXPECT_EQ(values.at("sw_vbv_buffer_frames"), "4");
@@ -116,10 +114,8 @@ TEST(ConfigConsistencyTest, RuntimeAndDocumentedOptionsMatch) {
 TEST(ConfigConsistencyTest, RuntimeOptionsMatchStationConnectProductPolicy) {
   const std::set<std::string, std::less<>> expected {
     "adapter_name",
-    "address_family",
     "allow_root_login",
     "audio_sink",
-    "bind_address",
     "cert",
     "file_state",
     "key_repeat_delay",

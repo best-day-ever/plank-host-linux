@@ -30,14 +30,6 @@ namespace net {
   };
 
   /**
-   * @brief Enumerates supported af options.
-   */
-  enum af_e : int {
-    IPV4,  ///< IPv4 only
-    BOTH  ///< IPv4 and IPv6
-  };
-
-  /**
    * @brief Convert configuration text to a network enum value.
    *
    * @param view Boost.Log record view being formatted.
@@ -59,27 +51,6 @@ namespace net {
    * @return Value converted from address.
    */
   net_e from_address(const std::string_view &view);
-
-  /**
-   * @brief Convert a config address-family string to the matching enum.
-   * @param view The config option value.
-   * @return Address-family enum represented by the string.
-   */
-  af_e af_from_enum_string(const std::string_view &view);
-
-  /**
-   * @brief Get the wildcard binding address for a given address family.
-   * @param af Address family.
-   * @return Normalized address.
-   */
-  std::string_view af_to_any_address_string(af_e af);
-
-  /**
-   * @brief Get the binding address to use based on config.
-   * @param af Address family.
-   * @return The configured bind address or wildcard if not configured.
-   */
-  std::string get_bind_address(af_e af);
 
   /**
    * @brief Convert an address to a normalized form.

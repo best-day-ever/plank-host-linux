@@ -282,8 +282,6 @@ namespace config {
     } cmd;  ///< Command line used to launch the application.
 
     std::uint16_t port;  ///< TCP port used by Sunshine services.
-    std::string address_family;  ///< Address family requested for listening sockets.
-    std::string bind_address;  ///< Local address Sunshine should bind to.
 
     std::string log_file;  ///< Path to the configured log file.
     bool stationconnect_mdns_discovery;  ///< Advertise this StationConnect host with mDNS.

@@ -1584,8 +1584,6 @@ namespace nvhttp {
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
 
     auto port_https = net::map_port(PORT_HTTPS);
-    auto address_family = net::af_from_enum_string(config::sunshine.address_family);
-
     load_state();
 
     // resume doesn't always get the parameter "localAudioPlayMode"
@@ -1634,7 +1632,9 @@ namespace nvhttp {
     };
 
     https_server.config.reuse_address = true;
-    https_server.config.address = net::get_bind_address(address_family);
+    // Preserve the qualified dual-stack wildcard HTTPS listener. Native QUIC
+    // independently uses its qualified IPv4 wildcard socket above.
+    https_server.config.address = "::";
     https_server.config.port = port_https;
 
     auto accept_and_run = [&](auto *http_server) {

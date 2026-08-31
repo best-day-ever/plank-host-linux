@@ -112,40 +112,6 @@ namespace net {
     return "wan"sv;
   }
 
-  af_e af_from_enum_string(const std::string_view &view) {
-    if (view == "ipv4") {
-      return IPV4;
-    }
-    if (view == "both") {
-      return BOTH;
-    }
-
-    // avoid warning
-    return BOTH;
-  }
-
-  std::string_view af_to_any_address_string(const af_e af) {
-    switch (af) {
-      case IPV4:
-        return "0.0.0.0"sv;
-      case BOTH:
-        return "::"sv;
-    }
-
-    // avoid warning
-    return "::"sv;
-  }
-
-  std::string get_bind_address(const af_e af) {
-    // If bind_address is configured, use it
-    if (!config::sunshine.bind_address.empty()) {
-      return config::sunshine.bind_address;
-    }
-
-    // Otherwise use the wildcard address for the given address family
-    return std::string(af_to_any_address_string(af));
-  }
-
   boost::asio::ip::address normalize_address(boost::asio::ip::address address) {
     // Convert IPv6-mapped IPv4 addresses into regular IPv4 addresses
     if (address.is_v6()) {

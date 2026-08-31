@@ -24,16 +24,6 @@ Minimum logged severity. Accepted values: `verbose`, `debug`, `info`,
 
 ## Network
 
-### address_family
-
-Listener address family. Accepted values: `ipv4` or `both`. The packaged
-StationConnect profile uses `both`.
-
-### bind_address
-
-Optional local address on which the host listeners bind. Empty means all
-addresses allowed by `address_family`.
-
 ### port
 
 Base port used by StationConnect HTTPS authentication and native QUIC. Default:

@@ -850,8 +850,6 @@ namespace config {
     platf::appdata().string() + "/sunshine.conf",  // config file
     {},  // cmd args
     28989,  // Base port number
-    "ipv4",  // Address family
-    {},  // Bind address
     platf::appdata().string() + "/sunshine.log",  // log file
     false,  // StationConnect mDNS advertisement
     "physical",  // StationConnect startup display policy
@@ -1577,9 +1575,6 @@ namespace config {
     int port = sunshine.port;
     int_between_f(vars, "port"s, port, {1024 - nvhttp::PORT_HTTPS, 65535});
     sunshine.port = (std::uint16_t) port;
-
-    string_restricted_f(vars, "address_family", sunshine.address_family, {"ipv4"sv, "both"sv});
-    string_f(vars, "bind_address", sunshine.bind_address);
 
     std::string log_level_string;
     string_f(vars, "min_log_level", log_level_string);
