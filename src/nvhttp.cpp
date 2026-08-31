@@ -168,9 +168,10 @@ namespace nvhttp {
     const auto keep_alive_ms = std::clamp<std::int64_t>(idle_ms / 2, 100, 5000);
     endpoint_config.idle_timeout_ms = static_cast<std::uint32_t>(idle_ms);
     endpoint_config.keep_alive_interval_ms = static_cast<std::uint32_t>(keep_alive_ms);
-    endpoint_config.initial_video_bitrate_kbps = static_cast<std::uint32_t>(
-      session.config.monitor.bitrate
-    );
+    // The exact per-bookmark target is authenticated by the native setup
+    // request after this listener starts. Media does not begin until that
+    // request updates the shared encoder/transport rate policy.
+    endpoint_config.initial_video_bitrate_kbps = 0;
     endpoint_config.bind_address = bind_address.c_str();
     endpoint_config.certificate_path = config::nvhttp.cert.c_str();
     endpoint_config.private_key_path = config::nvhttp.pkey.c_str();

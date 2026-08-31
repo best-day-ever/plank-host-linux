@@ -254,6 +254,18 @@ namespace session_stream {
     }
     config.monitor.bitrate = *exact_target;
 
+    auto *datasmash_endpoint = launch_session->datasmash_endpoint ?
+      static_cast<ScDatasmashNativeEndpoint *>(launch_session->datasmash_endpoint.get()) :
+      nullptr;
+    if (!datasmash_endpoint ||
+        sc_datasmash_native_set_video_bitrate(
+          datasmash_endpoint, static_cast<std::uint32_t>(*exact_target)
+        ) != SC_DATASMASH_OK) {
+      result.status = SC_DATASMASH_SETUP_STATUS_INTERNAL_ERROR;
+      result.message = "Unable to apply the negotiated video transport rate";
+      return result;
+    }
+
     const bool identity_gbr_requested =
       (config.monitor.encoderCscMode >> 1) == COLORSPACE_IDENTITY_GBR;
     const bool exact_identity_444 =
