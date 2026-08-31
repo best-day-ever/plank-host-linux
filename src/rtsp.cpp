@@ -43,13 +43,6 @@ using asio::ip::udp;
 using namespace std::literals;
 
 namespace rtsp_stream {
-  // Encryption capability bits shared with the StationConnect Client's RTSP
-  // negotiation. Keep these local to setup instead of importing common-c's
-  // private control/media implementation header.
-  constexpr std::uint32_t encryption_control_v2 = 0x01;
-  constexpr std::uint32_t encryption_video = 0x02;
-  constexpr std::uint32_t encryption_audio = 0x04;
-
   /**
    * @brief Release msg resources.
    *
@@ -917,27 +910,6 @@ namespace rtsp_stream {
                       platf::platform_caps::encoder_target_ack)
        << std::endl;
 
-    // Always request new control stream encryption if the client supports it
-    uint32_t encryption_flags_supported = encryption_control_v2 | encryption_audio;
-    uint32_t encryption_flags_requested = encryption_control_v2;
-
-    // Determine the encryption desired for this remote endpoint
-    auto encryption_mode = net::encryption_mode_for_address(sock.remote_endpoint().address());
-    if (encryption_mode != config::ENCRYPTION_MODE_NEVER) {
-      // Advertise support for video encryption if it's not disabled
-      encryption_flags_supported |= encryption_video;
-
-      // If it's mandatory, also request it to enable use if the client
-      // didn't explicitly opt in, but it otherwise has support.
-      if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY) {
-        encryption_flags_requested |= encryption_video | encryption_audio;
-      }
-    }
-
-    // Report supported and required encryption flags
-    ss << "a=x-ss-general.encryptionSupported:" << encryption_flags_supported << std::endl;
-    ss << "a=x-ss-general.encryptionRequested:" << encryption_flags_requested << std::endl;
-
     if (video::last_encoder_probe_supported_ref_frames_invalidation) {
       ss << "a=x-nv-video[0].refPicInvalidation:1"sv << std::endl;
     }
@@ -1119,13 +1091,11 @@ namespace rtsp_stream {
     args.try_emplace("x-nv-aqos.packetDuration"sv, "5"sv);
     args.try_emplace("x-nv-general.useReliableUdp"sv, "1"sv);
     args.try_emplace("x-nv-vqos[0].fec.minRequiredFecPackets"sv, "0"sv);
-    args.try_emplace("x-nv-general.featureFlags"sv, "135"sv);
     args.try_emplace("x-ml-general.featureFlags"sv, "0"sv);
     args.try_emplace("x-nv-vqos[0].qosTrafficType"sv, "5"sv);
     args.try_emplace("x-nv-aqos.qosTrafficType"sv, "4"sv);
     args.try_emplace("x-ml-video.configuredBitrateKbps"sv, "0"sv);
     args.try_emplace("x-sc-video.encoderTargetKbps"sv, "0"sv);
-    args.try_emplace("x-ss-general.encryptionEnabled"sv, "0"sv);
     args.try_emplace("x-ss-video[0].chromaSamplingType"sv, "0"sv);
     args.try_emplace("x-ss-video[0].intraRefresh"sv, "0"sv);
     args.try_emplace("x-nv-video[0].clientRefreshRateX100"sv, "0"sv);
@@ -1161,13 +1131,6 @@ namespace rtsp_stream {
       config.mlFeatureFlags = (int) util::from_view(args.at("x-ml-general.featureFlags"sv));
       config.audioQosType = (int) util::from_view(args.at("x-nv-aqos.qosTrafficType"sv));
       config.videoQosType = (int) util::from_view(args.at("x-nv-vqos[0].qosTrafficType"sv));
-      config.encryptionFlagsEnabled = (uint32_t) util::from_view(args.at("x-ss-general.encryptionEnabled"sv));
-
-      // Legacy clients use nvFeatureFlags to indicate support for audio encryption
-      if (util::from_view(args.at("x-nv-general.featureFlags"sv)) & 0x20) {
-        config.encryptionFlagsEnabled |= encryption_audio;
-      }
-
       config.monitor.height = (int) util::from_view(args.at("x-nv-video[0].clientViewportHt"sv));
       config.monitor.width = (int) util::from_view(args.at("x-nv-video[0].clientViewportWd"sv));
       config.monitor.framerate = (int) util::from_view(args.at("x-nv-video[0].maxFPS"sv));
@@ -1386,17 +1349,6 @@ namespace rtsp_stream {
     if ((platf::get_capabilities() & platf::platform_caps::local_cursor) == 0) {
       BOOST_LOG(error) << "StationConnect local cursor transport is unavailable on this host"sv;
       respond(sock, session, &option, 500, "StationConnect Local Cursor Unavailable", req->sequenceNumber, {});
-      return;
-    }
-
-    // Check that any required encryption is enabled
-    auto encryption_mode = net::encryption_mode_for_address(sock.remote_endpoint().address());
-    if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY &&
-        (config.encryptionFlagsEnabled & (encryption_video | encryption_audio)) !=
-          (encryption_video | encryption_audio)) {
-      BOOST_LOG(error) << "Rejecting client that cannot comply with mandatory encryption requirement"sv;
-
-      respond(sock, session, &option, 403, "Forbidden", req->sequenceNumber, {});
       return;
     }
 

@@ -36,8 +36,6 @@ namespace stream {
     int audioQosType;  ///< Audio QoS type.
     int videoQosType;  ///< Video QoS type.
 
-    uint32_t encryptionFlagsEnabled;  ///< Bitmask of GameStream encryption features enabled for the session.
-
   };
 
   namespace session {
