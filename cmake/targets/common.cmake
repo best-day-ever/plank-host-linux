@@ -60,11 +60,21 @@ if(STATIONCONNECT_ENABLE_DATASMASH)
             "${CMAKE_BINARY_DIR}/stationconnect-datasmash-cargo")
     set(STATIONCONNECT_DATASMASH_LIBRARY
             "${STATIONCONNECT_DATASMASH_CARGO_TARGET_DIR}/release/libstationconnect_datasmash_transport.a")
+    set(STATIONCONNECT_DATASMASH_CARGO_FEATURES "" CACHE STRING
+            "Comma-separated StationConnect datasmash Cargo features")
+    set(STATIONCONNECT_DATASMASH_CARGO_FEATURE_ARGS)
+    if(STATIONCONNECT_DATASMASH_CARGO_FEATURES)
+        list(APPEND STATIONCONNECT_DATASMASH_CARGO_FEATURE_ARGS
+                --features "${STATIONCONNECT_DATASMASH_CARGO_FEATURES}")
+        message(STATUS
+                "StationConnect datasmash Cargo features: ${STATIONCONNECT_DATASMASH_CARGO_FEATURES}")
+    endif()
     add_custom_target(stationconnect-datasmash-transport-build
             COMMAND ${CMAKE_COMMAND} -E env
                     "CARGO_TARGET_DIR=${STATIONCONNECT_DATASMASH_CARGO_TARGET_DIR}"
                     "${STATIONCONNECT_CARGO_EXECUTABLE}" build
                     --locked --offline --release
+                    ${STATIONCONNECT_DATASMASH_CARGO_FEATURE_ARGS}
                     --manifest-path "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/Cargo.toml"
             WORKING_DIRECTORY "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}"
             COMMENT "Building StationConnect datasmash Rust transport"
