@@ -7,7 +7,7 @@
 #include <format>
 #include <src/config.h>
 #include <src/display_device.h>
-#include <src/rtsp.h>
+#include <src/session_stream.h>
 
 namespace {
   using config_option_e = config::video_t::dd_t::config_option_e;
@@ -61,7 +61,7 @@ TEST_P(ParseDeviceId, IntegrationTest) {
 
   config::video_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
-  rtsp_stream::launch_session_t session {};
+  session_stream::launch_session_t session {};
   session.output_name = input_value;
 
   const auto result {display_device::parse_configuration(video_config, session)};
@@ -120,7 +120,7 @@ TEST_P(ParseHdrOption, IntegrationTest) {
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.hdr_option = input_hdr_option;
 
-  rtsp_stream::launch_session_t session {};
+  session_stream::launch_session_t session {};
   session.enable_hdr = input_enable_hdr;
 
   const auto result {display_device::parse_configuration(video_config, session)};
@@ -174,7 +174,7 @@ TEST_P(ParseResolutionOption, IntegrationTest) {
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.resolution_option = input_resolution_option;
 
-  rtsp_stream::launch_session_t session {};
+  session_stream::launch_session_t session {};
 
   if (const auto *client_res {std::get_if<client_resolution_t>(&input_resolution)}; client_res) {
     video_config.dd.manual_resolution = {};
@@ -257,7 +257,7 @@ TEST_P(ParseRefreshRateOption, IntegrationTest) {
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.refresh_rate_option = input_refresh_rate_option;
 
-  rtsp_stream::launch_session_t session {};
+  session_stream::launch_session_t session {};
   if (const auto *client_refresh_rate {std::get_if<client_fps_t>(&input_refresh_rate)}; client_refresh_rate) {
     video_config.dd.manual_refresh_rate = {};
     session.fps = *client_refresh_rate;
@@ -409,7 +409,7 @@ namespace {
     const auto &[input_res, input_fps, input_entries] = input_value;
 
     config::video_t video_config {};
-    rtsp_stream::launch_session_t session {};
+    session_stream::launch_session_t session {};
 
     {  // resolution
       using enum resolution_option_e;

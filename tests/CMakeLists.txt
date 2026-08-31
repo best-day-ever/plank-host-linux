@@ -165,6 +165,21 @@ target_compile_definitions(${PROJECT_NAME} PUBLIC ${SUNSHINE_DEFINITIONS} ${TEST
 target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>;$<$<COMPILE_LANGUAGE:CUDA>:${SUNSHINE_COMPILE_OPTIONS_CUDA};-std=c++17>)  # cmake-lint: disable=C0301
 target_link_options(${PROJECT_NAME} PRIVATE ${SUNSHINE_LINK_OPTIONS})
 
+if(STATIONCONNECT_ENABLE_DATASMASH)
+    add_dependencies(${PROJECT_NAME} stationconnect-datasmash-transport-build)
+    target_include_directories(${PROJECT_NAME} PRIVATE
+            "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/include")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE STATIONCONNECT_DATASMASH=1)
+    target_link_libraries(${PROJECT_NAME}
+            "${STATIONCONNECT_DATASMASH_LIBRARY}"
+            ${CMAKE_DL_LIBS}
+            Threads::Threads
+            m
+            rt)
+    set_property(TARGET ${PROJECT_NAME} APPEND PROPERTY LINK_DEPENDS
+            "${STATIONCONNECT_DATASMASH_LIBRARY}")
+endif()
+
 if (WIN32)
     # prefer static libraries since we're linking statically
     # this fixes libcurl linking errors when using non MSYS2 version of CMake
