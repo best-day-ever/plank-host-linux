@@ -253,13 +253,15 @@ namespace session_stream {
       return result;
     }
     config.monitor.bitrate = *exact_target;
+    const auto peak_target = *exact_target * config::video.sw.vbv_maxrate_percentage / 100;
 
     auto *datasmash_endpoint = launch_session->datasmash_endpoint ?
       static_cast<ScDatasmashNativeEndpoint *>(launch_session->datasmash_endpoint.get()) :
       nullptr;
     if (!datasmash_endpoint ||
         sc_datasmash_native_set_video_bitrate(
-          datasmash_endpoint, static_cast<std::uint32_t>(*exact_target)
+          datasmash_endpoint, static_cast<std::uint32_t>(*exact_target),
+          static_cast<std::uint32_t>(peak_target)
         ) != SC_DATASMASH_OK) {
       result.status = SC_DATASMASH_SETUP_STATUS_INTERNAL_ERROR;
       result.message = "Unable to apply the negotiated video transport rate";

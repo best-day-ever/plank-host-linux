@@ -477,7 +477,8 @@ namespace stream {
     }
     auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
     const auto rate_result = sc_datasmash_native_set_video_bitrate(
-      endpoint, static_cast<std::uint32_t>(requested_kbps)
+      endpoint, static_cast<std::uint32_t>(requested_kbps),
+      static_cast<std::uint32_t>(peak_kbps)
     );
     if (rate_result != SC_DATASMASH_OK) {
       BOOST_LOG(error) << "Datasmash transport bitrate update failed with result "sv
