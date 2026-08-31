@@ -82,7 +82,9 @@ namespace lifetime {
 void log_publisher_data() {
   BOOST_LOG(info) << "Package Publisher: "sv << SUNSHINE_PUBLISHER_NAME;
   BOOST_LOG(info) << "Publisher Website: "sv << SUNSHINE_PUBLISHER_WEBSITE;
-  BOOST_LOG(info) << "Get support: "sv << SUNSHINE_PUBLISHER_ISSUE_URL;
+  if (std::string_view {SUNSHINE_PUBLISHER_ISSUE_URL}.size() != 0) {
+    BOOST_LOG(info) << "Support: "sv << SUNSHINE_PUBLISHER_ISSUE_URL;
+  }
 }
 
 #ifdef _WIN32
