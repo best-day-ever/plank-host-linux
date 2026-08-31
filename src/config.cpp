@@ -1472,9 +1472,6 @@ namespace config {
     int ret = 0;
     while (*line != '\0') {
       switch (*line) {
-        case '1':
-          config::sunshine.flags[config::flag::FRESH_STATE].flip();
-          break;
         case '2':
           config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE].flip();
           break;

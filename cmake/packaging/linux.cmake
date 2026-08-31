@@ -79,7 +79,6 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
             ${CPACK_DEB_PLATFORM_PACKAGE_DEPENDS} \
             debianutils, \
             libcap2, \
-            libcurl4, \
             libdrm2, \
             libgbm1, \
             libevdev2, \
@@ -94,7 +93,6 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
 set(CPACK_RPM_PACKAGE_REQUIRES "\
             ${CPACK_RPM_PLATFORM_PACKAGE_REQUIRES} \
             libcap >= 2.22, \
-            libcurl >= 7.0, \
             libdrm >= 2.4.97, \
             libevdev >= 1.5.6, \
             libopusenc >= 0.2.1, \

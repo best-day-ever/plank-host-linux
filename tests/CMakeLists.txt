@@ -181,8 +181,7 @@ if(STATIONCONNECT_ENABLE_DATASMASH)
 endif()
 
 if (WIN32)
-    # prefer static libraries since we're linking statically
-    # this fixes libcurl linking errors when using non MSYS2 version of CMake
+    # Prefer static libraries because the Windows package is linked statically.
     set_target_properties(${PROJECT_NAME} PROPERTIES LINK_SEARCH_START_STATIC 1)
 
     # Copy minhook-detours DLL to test binary directory for ARM64

@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <filesystem>
 #include <string>
 
 /**
@@ -45,10 +46,13 @@ namespace file_handler {
    * @brief Writes a file.
    * @param path The path of the file.
    * @param contents The contents to write.
+   * @param permissions Exact permissions to apply to the destination file.
    * @return ``0`` on success, ``-1`` on failure.
    * @examples
-   * int write_status = write_file("path/to/file", "file contents");
+   * int write_status = write_file(
+   *   "path/to/file", "file contents",
+   *   std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
    * @examples_end
    */
-  int write_file(const char *path, const std::string_view &contents);
+  int write_file(const char *path, const std::string_view &contents, std::filesystem::perms permissions);
 }  // namespace file_handler

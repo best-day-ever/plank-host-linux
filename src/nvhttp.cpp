@@ -1579,22 +1579,6 @@ namespace nvhttp {
     session_stream::launch_session_raise(launch_session);
   }
 
-  /**
-   * @brief Return an application asset requested by the client.
-   *
-   * @param response HTTP response object to populate.
-   * @param request HTTP request data from the client.
-   */
-  void appasset(resp_https_t response, req_https_t request) {
-    print_req<SunshineHTTPS>(request);
-
-    std::ifstream in(proc::desktop_image_path, std::ios::binary);
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "image/png");
-    response->write(SimpleWeb::StatusCode::success_ok, in, headers);
-    response->close_connection_after_response = true;
-  }
-
   void start() {
     platf::set_thread_name("nvhttp");
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
@@ -1602,11 +1586,7 @@ namespace nvhttp {
     auto port_https = net::map_port(PORT_HTTPS);
     auto address_family = net::af_from_enum_string(config::sunshine.address_family);
 
-    bool clean_slate = config::sunshine.flags[config::flag::FRESH_STATE];
-
-    if (!clean_slate) {
-      load_state();
-    }
+    load_state();
 
     // resume doesn't always get the parameter "localAudioPlayMode"
     // launch will store it in host_audio
@@ -1640,11 +1620,6 @@ namespace nvhttp {
     https_server.resource["^/applist$"]["GET"] = [](auto resp, auto req) {
       if (require_authentication(resp, req)) {
         applist(resp, req);
-      }
-    };
-    https_server.resource["^/appasset$"]["GET"] = [](auto resp, auto req) {
-      if (require_authentication(resp, req)) {
-        appasset(resp, req);
       }
     };
     https_server.resource["^/launch$"]["GET"] = [&host_audio](auto resp, auto req) {

@@ -22,7 +22,6 @@ namespace proc {
    */
   inline constexpr int desktop_app_id = 881448767;
   inline constexpr std::string_view desktop_app_name = "Desktop";
-  inline constexpr char desktop_image_path[] = SUNSHINE_ASSETS_DIR "/desktop.png";
 
   /**
    * @brief Return whether a GameStream application ID is StationConnect Desktop.

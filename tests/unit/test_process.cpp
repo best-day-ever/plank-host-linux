@@ -21,12 +21,3 @@ TEST(Process, AcceptsOnlyTheDesktopApplicationId) {
   EXPECT_FALSE(proc::is_desktop_app(-1));
   EXPECT_FALSE(proc::is_desktop_app(proc::desktop_app_id + 1));
 }
-
-TEST(Process, UsesThePackagedDesktopArtwork) {
-  EXPECT_EQ(
-    std::string_view {proc::desktop_image_path}.substr(
-      std::string_view {proc::desktop_image_path}.find_last_of('/') + 1
-    ),
-    "desktop.png"
-  );
-}

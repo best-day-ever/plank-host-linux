@@ -262,8 +262,7 @@ namespace config {
      * @brief Enumerates supported flag options.
      */
     enum flag_e : std::size_t {
-      FRESH_STATE = 0,  ///< Do not load or save state
-      FORCE_VIDEO_HEADER_REPLACE,  ///< force replacing headers inside video data
+      FORCE_VIDEO_HEADER_REPLACE = 0,  ///< force replacing headers inside video data
       FLAG_SIZE  ///< Number of flags
     };
   }  // namespace flag

@@ -20,11 +20,6 @@ endif()
 # see gcc bug 98723
 add_definitions(-DUSE_BOOST_REGEX)
 
-# curl
-add_definitions(-DCURL_STATICLIB)
-include_directories(SYSTEM ${CURL_STATIC_INCLUDE_DIRS})
-link_directories(${CURL_STATIC_LIBRARY_DIRS})
-
 # extra tools/binaries for audio/display devices
 add_subdirectory(tools)  # todo - this is temporary, only tools for Windows are needed, for now
 
@@ -78,7 +73,6 @@ set(OPENSSL_LIBRARIES
         libcrypto.a)
 
 list(PREPEND PLATFORM_LIBRARIES
-        ${CURL_STATIC_LIBRARIES}
         avrt
         d3d11
         D3DCompiler

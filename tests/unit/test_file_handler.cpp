@@ -81,7 +81,12 @@ Hey, hey, hey!
 TEST_P(FileHandlerTests, WriteFileTest) {
   auto [fileNum, content] = GetParam();
   const std::string fileName = std::format("write_file_test_{}.txt", fileNum);
-  EXPECT_EQ(file_handler::write_file(fileName.c_str(), content), 0);
+  EXPECT_EQ(
+    file_handler::write_file(
+      fileName.c_str(),
+      content,
+      std::filesystem::perms::owner_read | std::filesystem::perms::owner_write),
+    0);
 }
 
 TEST_P(FileHandlerTests, ReadFileTest) {
@@ -94,3 +99,29 @@ TEST(FileHandlerTests, ReadMissingFileTest) {
   // read missing file
   EXPECT_EQ(file_handler::read_file("non-existing-file.txt"), "");
 }
+
+#ifndef _WIN32
+TEST(FileHandlerTests, WriteFileSetsPermissionsAtCreation) {
+  const std::string file_name = "private_write_file_test.txt";
+  const auto permissions = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write;
+
+  ASSERT_EQ(file_handler::write_file(file_name.c_str(), "secret", permissions), 0);
+  EXPECT_EQ(std::filesystem::status(file_name).permissions() & std::filesystem::perms::all, permissions);
+  std::filesystem::remove(file_name);
+}
+
+TEST(FileHandlerTests, WriteFileRejectsSymbolicLinks) {
+  const std::string target_name = "private_write_file_target.txt";
+  const std::string link_name = "private_write_file_link.txt";
+  const auto permissions = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write;
+
+  ASSERT_EQ(file_handler::write_file(target_name.c_str(), "unchanged", permissions), 0);
+  std::filesystem::create_symlink(target_name, link_name);
+  ASSERT_TRUE(std::filesystem::is_symlink(link_name));
+  EXPECT_EQ(file_handler::write_file(link_name.c_str(), "replaced", permissions), -1);
+  EXPECT_EQ(file_handler::read_file(target_name.c_str()), "unchanged");
+
+  std::filesystem::remove(link_name);
+  std::filesystem::remove(target_name);
+}
+#endif
