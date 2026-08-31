@@ -851,7 +851,7 @@ namespace config {
     0,  // flags
     platf::appdata().string() + "/sunshine.conf",  // config file
     {},  // cmd args
-    47989,  // Base port number
+    28989,  // Base port number
     "ipv4",  // Address family
     {},  // Bind address
     platf::appdata().string() + "/sunshine.log",  // log file

@@ -37,7 +37,7 @@ addresses allowed by `address_family`.
 ### port
 
 Base port used by StationConnect HTTPS authentication and native QUIC. Default:
-`47989`. Changing it requires matching firewall policy and client reachability.
+`28989`. Changing it requires matching firewall policy and client reachability.
 
 ### stationconnect_mdns_discovery
 

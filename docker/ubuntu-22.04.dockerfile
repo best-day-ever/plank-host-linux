@@ -101,8 +101,8 @@ rm -rf /var/lib/apt/lists/*
 _INSTALL_SUNSHINE
 
 # network setup
-EXPOSE 47989/tcp
-EXPOSE 47989/udp
+EXPOSE 28989/tcp
+EXPOSE 28989/udp
 
 # setup user
 ARG PGID=1000
