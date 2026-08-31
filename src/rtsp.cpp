@@ -1618,8 +1618,15 @@ namespace rtsp_stream {
     }
 
     result.status = SC_DATASMASH_SETUP_STATUS_OK;
+    const auto host_feature_flags =
+      static_cast<std::uint32_t>(platf::get_capabilities() |
+                                 platf::platform_caps::dynamic_video_bitrate |
+                                 platf::platform_caps::encoder_target_ack);
     result.response = {
       {"video_format", *negotiated_video_format},
+      {"host_feature_flags", host_feature_flags},
+      {"reference_frame_invalidation",
+       video::last_encoder_probe_supported_ref_frames_invalidation ? 1 : 0},
       {"audio", {
         {"sample_rate", opus.sampleRate},
         {"channels", opus.channelCount},
