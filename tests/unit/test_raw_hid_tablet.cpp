@@ -115,7 +115,7 @@ TEST(RawHidTablet, ReusesIdenticalEndpointsAcrossFocusAndTransportResume) {
   device.bus = util::endian::little<std::uint16_t>(3);
   device.vendor = util::endian::little<std::uint32_t>(0x056a);
   device.product = util::endian::little<std::uint32_t>(0x0358);
-  std::memcpy(device.name, "PLANK Wacom test", 25);
+  std::memcpy(device.name, "PLANK Wacom test", sizeof("PLANK Wacom test"));
   std::memcpy(device.unique, "stable-tablet", 13);
 
   // Minimal valid HID application collection. The reconnect assertion is

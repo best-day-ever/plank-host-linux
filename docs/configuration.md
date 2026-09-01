@@ -11,7 +11,7 @@ consumer NAT discovery, and product behaviors fixed by PLANK.
 
 ## General
 
-### sunshine_name
+### host_name
 
 Host name returned during PLANK negotiation and used for mDNS service
 advertisement. Default: the operating-system hostname.
