@@ -51,11 +51,11 @@ namespace input {
    */
   void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data);
 
-#ifdef STATIONCONNECT_DATASMASH
+#ifdef PLANK_TRANSPORT
   /**
    * @brief Validate and inject one native KyProto input message.
    *
-   * @return true when the typed StationConnect message was accepted.
+   * @return true when the typed PLANK message was accepted.
    */
   bool native(std::shared_ptr<input_t> &input, std::uint8_t type,
               const std::uint8_t *payload, std::size_t payload_size);

@@ -73,7 +73,7 @@ namespace video {
     int enableIntraRefresh;  ///< Intra refresh setting: 0 = disabled, 1 = enabled.
     bool span_desktop {};  ///< Capture and scale the complete virtual desktop rather than one output.
     capture_source_e capture_source {capture_source_e::configured};  ///< Exact capture path negotiated for this session, or configured during probes.
-    std::string encoder_backend;  ///< Exact StationConnect encoder backend selected for this session.
+    std::string encoder_backend;  ///< Exact PLANK encoder backend selected for this session.
   };
 
   namespace amf {
@@ -703,7 +703,7 @@ namespace video {
   /**
    * @brief Build a stable generation identifier for an output topology.
    * @param outputs Output metadata to fingerprint independent of enumeration order.
-   * @return Opaque generation identifier sent to StationConnect clients.
+   * @return Opaque generation identifier sent to PLANK clients.
    */
   std::string output_topology_generation(const std::vector<platf::display_info_t> &outputs);
 
@@ -721,8 +721,8 @@ namespace video {
    *
    * @param encoder Encoder configuration or encoder instance.
    * @param expect_failure Expect failure.
-   * @param test_hevc Probe HEVC support for an exact StationConnect HEVC backend.
-   * @param test_av1 Probe AV1 support when an exact StationConnect AV1 profile exists.
+   * @param test_hevc Probe HEVC support for an exact PLANK HEVC backend.
+   * @param test_av1 Probe AV1 support when an exact PLANK AV1 profile exists.
    * @return True when encoder validation matches `expect_failure`.
    */
   bool validate_encoder(encoder_t &encoder, bool expect_failure,
@@ -739,16 +739,16 @@ namespace video {
    */
   int probe_encoders();
 
-  /** Return whether a named StationConnect per-session encoder was qualified at startup. */
+  /** Return whether a named PLANK per-session encoder was qualified at startup. */
   bool encoder_backend_available(std::string_view backend);
 
-  /** Return whether one exact StationConnect encoding mode passed its real encoder probe. */
+  /** Return whether one exact PLANK encoding mode passed its real encoder probe. */
   bool encoding_mode_available(std::string_view mode);
 
   /**
-   * @brief Report whether a negotiated StationConnect capture source is available.
+   * @brief Report whether a negotiated PLANK capture source is available.
    *
-   * @param source StationConnect protocol capture-source name.
+   * @param source PLANK protocol capture-source name.
    * @return `true` when the platform discovered that exact source.
    */
   bool capture_source_available(std::string_view source);

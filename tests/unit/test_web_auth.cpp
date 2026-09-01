@@ -12,7 +12,7 @@
 
 #include "src/auth/web_auth.h"
 
-namespace auth = stationconnect::auth;
+namespace auth = plank::auth;
 
 namespace {
   struct fake_state_t {
@@ -163,7 +163,7 @@ TEST(WebAuthManager, ResolvesOnlyValidOperatingSystemAccounts) {
   ASSERT_NE(account, nullptr);
   ASSERT_NE(account->pw_name, nullptr);
   EXPECT_EQ(auth::account_uid(account->pw_name), account->pw_uid);
-  EXPECT_FALSE(auth::account_uid("__stationconnect_missing_account__"));
+  EXPECT_FALSE(auth::account_uid("__plank_missing_account__"));
   EXPECT_FALSE(auth::account_uid(""));
 
   std::string embedded_nul {account->pw_name};

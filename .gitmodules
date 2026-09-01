@@ -5,7 +5,7 @@
 [submodule "third-party/build-deps"]
 	path = third-party/build-deps
 	url = https://github.com/instinctual/plank-build-deps.git
-	branch = stationconnect/main
+	branch = plank/main
 [submodule "third-party/doxyconfig"]
 	path = third-party/doxyconfig
 	url = https://github.com/LizardByte/doxyconfig.git
@@ -20,7 +20,7 @@
 [submodule "third-party/libvirtualhid"]
 	path = third-party/libvirtualhid
 	url = https://github.com/instinctual/plank-libvirtualhid.git
-	branch = stationconnect/main
+	branch = plank/main
 [submodule "third-party/lizardbyte-common"]
 	path = third-party/lizardbyte-common
 	url = https://github.com/LizardByte/lizardbyte-common.git

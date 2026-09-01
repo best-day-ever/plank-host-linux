@@ -1,6 +1,6 @@
 /**
- * @file src/stationconnect_bitrate.h
- * @brief Validation for StationConnect active-session bitrate messages.
+ * @file src/plank_bitrate.h
+ * @brief Validation for PLANK active-session bitrate messages.
  */
 #pragma once
 
@@ -11,7 +11,7 @@
 
 #include "utility.h"
 
-namespace stationconnect::bitrate {
+namespace plank::bitrate {
   constexpr int minimum_kbps = 500;
   constexpr int maximum_kbps = 500000;
 
@@ -37,4 +37,4 @@ namespace stationconnect::bitrate {
     std::memcpy(&encoded_bitrate, payload.data(), sizeof(encoded_bitrate));
     return validate_target(util::endian::little(encoded_bitrate));
   }
-}  // namespace stationconnect::bitrate
+}  // namespace plank::bitrate

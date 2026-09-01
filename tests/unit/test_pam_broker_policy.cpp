@@ -4,7 +4,7 @@
 
 #include "src/auth/pam_broker_policy.h"
 
-namespace auth = stationconnect::auth;
+namespace auth = plank::auth;
 
 TEST(PamBrokerPolicy, DefaultsToDenyWhenOptionIsAbsent) {
   std::string error;

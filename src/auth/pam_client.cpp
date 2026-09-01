@@ -16,7 +16,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-namespace stationconnect::auth {
+namespace plank::auth {
   namespace {
     /**
      * @brief Return a terminal protocol-error step.
@@ -241,4 +241,4 @@ namespace stationconnect::auth {
     close();
     return protocol_error();
   }
-}  // namespace stationconnect::auth
+}  // namespace plank::auth

@@ -24,73 +24,76 @@ elseif(UNIX)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    find_library(STATIONCONNECT_SYSTEMD_LIBRARY NAMES systemd REQUIRED)
-    list(APPEND SUNSHINE_EXTERNAL_LIBRARIES ${STATIONCONNECT_SYSTEMD_LIBRARY})
+    find_library(PLANK_SYSTEMD_LIBRARY NAMES systemd REQUIRED)
+    list(APPEND SUNSHINE_EXTERNAL_LIBRARIES ${PLANK_SYSTEMD_LIBRARY})
 endif()
 
 target_link_libraries(sunshine ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})
 target_compile_definitions(sunshine PUBLIC ${SUNSHINE_DEFINITIONS})
+if(PLANK_PRODUCT_BUILD)
+    target_compile_definitions(sunshine PRIVATE PLANK_PRODUCT_BUILD=1)
+endif()
 
-if(STATIONCONNECT_ENABLE_DATASMASH)
+if(PLANK_ENABLE_TRANSPORT)
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        message(FATAL_ERROR "The datasmash experiment is Linux-only")
+        message(FATAL_ERROR "The PLANK transport is Linux-only")
     endif()
-    if(NOT STATIONCONNECT_DATASMASH_TRANSPORT_DIR)
+    if(NOT PLANK_TRANSPORT_DIR)
         cmake_path(ABSOLUTE_PATH CMAKE_SOURCE_DIR
                 BASE_DIRECTORY "${CMAKE_SOURCE_DIR}"
                 NORMALIZE
-                OUTPUT_VARIABLE STATIONCONNECT_HOST_SOURCE_DIR)
-        cmake_path(GET STATIONCONNECT_HOST_SOURCE_DIR PARENT_PATH STATIONCONNECT_HOST_PARENT_DIR)
-        cmake_path(GET STATIONCONNECT_HOST_PARENT_DIR PARENT_PATH STATIONCONNECT_ROOT_DIR)
-        set(STATIONCONNECT_DATASMASH_TRANSPORT_DIR
-                "${STATIONCONNECT_ROOT_DIR}/protocol/datasmash-transport")
+                OUTPUT_VARIABLE PLANK_HOST_SOURCE_DIR)
+        cmake_path(GET PLANK_HOST_SOURCE_DIR PARENT_PATH PLANK_HOST_PARENT_DIR)
+        cmake_path(GET PLANK_HOST_PARENT_DIR PARENT_PATH PLANK_ROOT_DIR)
+        set(PLANK_TRANSPORT_DIR
+                "${PLANK_ROOT_DIR}/protocol/plank-transport")
     endif()
-    if(NOT EXISTS "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/Cargo.toml" OR
-       NOT EXISTS "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/include/stationconnect_datasmash.h" OR
-       NOT EXISTS "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/include/stationconnect_datasmash_control.h" OR
-       NOT EXISTS "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/include/stationconnect_datasmash_event.h" OR
-       NOT EXISTS "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/include/stationconnect_datasmash_input.h")
+    if(NOT EXISTS "${PLANK_TRANSPORT_DIR}/Cargo.toml" OR
+       NOT EXISTS "${PLANK_TRANSPORT_DIR}/include/plank_transport.h" OR
+       NOT EXISTS "${PLANK_TRANSPORT_DIR}/include/plank_transport_control.h" OR
+       NOT EXISTS "${PLANK_TRANSPORT_DIR}/include/plank_transport_event.h" OR
+       NOT EXISTS "${PLANK_TRANSPORT_DIR}/include/plank_transport_input.h")
         message(FATAL_ERROR
-                "StationConnect datasmash transport source is incomplete: "
-                "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}")
+                "PLANK native transport source is incomplete: "
+                "${PLANK_TRANSPORT_DIR}")
     endif()
 
-    find_program(STATIONCONNECT_CARGO_EXECUTABLE NAMES cargo REQUIRED)
-    set(STATIONCONNECT_DATASMASH_CARGO_TARGET_DIR
-            "${CMAKE_BINARY_DIR}/stationconnect-datasmash-cargo")
-    set(STATIONCONNECT_DATASMASH_LIBRARY
-            "${STATIONCONNECT_DATASMASH_CARGO_TARGET_DIR}/release/libstationconnect_datasmash_transport.a")
-    set(STATIONCONNECT_DATASMASH_CARGO_FEATURES "" CACHE STRING
-            "Comma-separated StationConnect datasmash Cargo features")
-    set(STATIONCONNECT_DATASMASH_CARGO_FEATURE_ARGS)
-    if(STATIONCONNECT_DATASMASH_CARGO_FEATURES)
-        list(APPEND STATIONCONNECT_DATASMASH_CARGO_FEATURE_ARGS
-                --features "${STATIONCONNECT_DATASMASH_CARGO_FEATURES}")
+    find_program(PLANK_CARGO_EXECUTABLE NAMES cargo REQUIRED)
+    set(PLANK_TRANSPORT_CARGO_TARGET_DIR
+            "${CMAKE_BINARY_DIR}/plank-transport-cargo")
+    set(PLANK_TRANSPORT_LIBRARY
+            "${PLANK_TRANSPORT_CARGO_TARGET_DIR}/release/libplank_transport.a")
+    set(PLANK_TRANSPORT_CARGO_FEATURES "" CACHE STRING
+            "Comma-separated PLANK transport Cargo features")
+    set(PLANK_TRANSPORT_CARGO_FEATURE_ARGS)
+    if(PLANK_TRANSPORT_CARGO_FEATURES)
+        list(APPEND PLANK_TRANSPORT_CARGO_FEATURE_ARGS
+                --features "${PLANK_TRANSPORT_CARGO_FEATURES}")
         message(STATUS
-                "StationConnect datasmash Cargo features: ${STATIONCONNECT_DATASMASH_CARGO_FEATURES}")
+                "PLANK transport Cargo features: ${PLANK_TRANSPORT_CARGO_FEATURES}")
     endif()
-    add_custom_target(stationconnect-datasmash-transport-build
+    add_custom_target(plank-transport-build
             COMMAND ${CMAKE_COMMAND} -E env
-                    "CARGO_TARGET_DIR=${STATIONCONNECT_DATASMASH_CARGO_TARGET_DIR}"
-                    "${STATIONCONNECT_CARGO_EXECUTABLE}" build
+                    "CARGO_TARGET_DIR=${PLANK_TRANSPORT_CARGO_TARGET_DIR}"
+                    "${PLANK_CARGO_EXECUTABLE}" build
                     --locked --offline --release
-                    ${STATIONCONNECT_DATASMASH_CARGO_FEATURE_ARGS}
-                    --manifest-path "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/Cargo.toml"
-            WORKING_DIRECTORY "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}"
-            COMMENT "Building StationConnect datasmash Rust transport"
+                    ${PLANK_TRANSPORT_CARGO_FEATURE_ARGS}
+                    --manifest-path "${PLANK_TRANSPORT_DIR}/Cargo.toml"
+            WORKING_DIRECTORY "${PLANK_TRANSPORT_DIR}"
+            COMMENT "Building PLANK native transport"
             VERBATIM)
-    add_dependencies(sunshine stationconnect-datasmash-transport-build)
+    add_dependencies(sunshine plank-transport-build)
     target_include_directories(sunshine PRIVATE
-            "${STATIONCONNECT_DATASMASH_TRANSPORT_DIR}/include")
-    target_compile_definitions(sunshine PRIVATE STATIONCONNECT_DATASMASH=1)
+            "${PLANK_TRANSPORT_DIR}/include")
+    target_compile_definitions(sunshine PRIVATE PLANK_TRANSPORT=1)
     target_link_libraries(sunshine
-            "${STATIONCONNECT_DATASMASH_LIBRARY}"
+            "${PLANK_TRANSPORT_LIBRARY}"
             ${CMAKE_DL_LIBS}
             Threads::Threads
             m
             rt)
     set_property(TARGET sunshine APPEND PROPERTY LINK_DEPENDS
-            "${STATIONCONNECT_DATASMASH_LIBRARY}")
+            "${PLANK_TRANSPORT_LIBRARY}")
 endif()
 
 # CLion complains about unknown flags after running cmake, and cannot add symbols to the index for cuda files
@@ -105,28 +108,28 @@ target_link_options(sunshine PRIVATE ${SUNSHINE_LINK_OPTIONS})
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Retain the upstream CMake target name to minimize divergence while
-    # exposing the StationConnect product identity to procfs and operators.
-    set_target_properties(sunshine PROPERTIES OUTPUT_NAME "stationconnect-host")
+    # exposing the PLANK product identity to procfs and operators.
+    set_target_properties(sunshine PROPERTIES OUTPUT_NAME "plank-host")
 
-    find_library(STATIONCONNECT_PAM_LIBRARY NAMES pam REQUIRED)
-    add_executable(stationconnect-pam-broker
+    find_library(PLANK_PAM_LIBRARY NAMES pam REQUIRED)
+    add_executable(plank-pam-broker
             "${CMAKE_SOURCE_DIR}/src/auth/pam_broker.cpp"
             "${CMAKE_SOURCE_DIR}/src/auth/pam_broker_protocol.h")
-    target_link_libraries(stationconnect-pam-broker PRIVATE ${STATIONCONNECT_PAM_LIBRARY})
-    target_compile_options(stationconnect-pam-broker PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
-    target_link_options(stationconnect-pam-broker PRIVATE ${SUNSHINE_LINK_OPTIONS})
-    install(TARGETS stationconnect-pam-broker
+    target_link_libraries(plank-pam-broker PRIVATE ${PLANK_PAM_LIBRARY})
+    target_compile_options(plank-pam-broker PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+    target_link_options(plank-pam-broker PRIVATE ${SUNSHINE_LINK_OPTIONS})
+    install(TARGETS plank-pam-broker
             RUNTIME DESTINATION bin
             COMPONENT sunshine)
 
-    add_executable(stationconnect-host-supervisor
+    add_executable(plank-host-supervisor
             "${CMAKE_SOURCE_DIR}/src/session/host_supervisor.cpp"
             "${CMAKE_SOURCE_DIR}/src/session/session_context.cpp"
             "${CMAKE_SOURCE_DIR}/src/session/session_context.h")
-    target_link_libraries(stationconnect-host-supervisor PRIVATE ${STATIONCONNECT_SYSTEMD_LIBRARY})
-    target_compile_options(stationconnect-host-supervisor PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
-    target_link_options(stationconnect-host-supervisor PRIVATE ${SUNSHINE_LINK_OPTIONS})
-    install(TARGETS stationconnect-host-supervisor
+    target_link_libraries(plank-host-supervisor PRIVATE ${PLANK_SYSTEMD_LIBRARY})
+    target_compile_options(plank-host-supervisor PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+    target_link_options(plank-host-supervisor PRIVATE ${SUNSHINE_LINK_OPTIONS})
+    install(TARGETS plank-host-supervisor
             RUNTIME DESTINATION bin
             COMPONENT sunshine)
 endif()

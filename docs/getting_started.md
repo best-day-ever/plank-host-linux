@@ -589,8 +589,8 @@ All shortcuts start with `Ctrl+Alt+Shift`, just like Moonlight.
 * `Ctrl+Alt+Shift+N`: Hide/Unhide the cursor (This may be useful for Remote Desktop Mode for Moonlight)
 * `Ctrl+Alt+Shift+F1/F12`: Switch to different monitor for Streaming
 
-### StationConnect Desktop
-StationConnect exposes one fixed, process-less Desktop stream. Application
+### PLANK Desktop
+PLANK exposes one fixed, process-less Desktop stream. Application
 catalogs, command launchers, and per-application environment overrides are not
 part of the product.
 

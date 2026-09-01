@@ -1,6 +1,6 @@
 /**
  * @file src/auth/pam_broker.cpp
- * @brief Privileged StationConnect PAM conversation broker.
+ * @brief Privileged PLANK PAM conversation broker.
  */
 
 #include "pam_broker_protocol.h"
@@ -28,12 +28,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-namespace auth = stationconnect::auth;
+namespace auth = plank::auth;
 
 namespace {
-  constexpr std::string_view default_socket_path = "/run/stationconnect/pam/auth.sock";
-  constexpr std::string_view default_config_path = "/etc/stationconnect/stationconnect-host.conf";
-  constexpr std::string_view pam_service = "stationconnect-host";
+  constexpr std::string_view default_socket_path = "/run/plank/pam/auth.sock";
+  constexpr std::string_view default_config_path = "/etc/plank/host.conf";
+  constexpr std::string_view pam_service = "plank-host";
 
   volatile std::sig_atomic_t stopping = 0;  ///< Set by termination signals.
   volatile std::sig_atomic_t listening_descriptor = -1;  ///< Listener closed by the signal handler.
@@ -325,7 +325,7 @@ namespace {
     }
     if (username == "root" && !allow_root_login) {
       send_result(connection.get(), begin.transaction_id, auth::phase_e::account, PAM_PERM_DENIED);
-      std::clog << "StationConnect PAM denied root request from uid " << peer_uid << '\n';
+      std::clog << "PLANK PAM denied root request from uid " << peer_uid << '\n';
       return;
     }
 
@@ -365,16 +365,16 @@ namespace {
     }
     if (status == PAM_SUCCESS) {
       send_result(connection.get(), begin.transaction_id, auth::phase_e::authenticated, PAM_SUCCESS);
-      std::clog << "StationConnect PAM authenticated account " << username
+      std::clog << "PLANK PAM authenticated account " << username
                 << " for local uid " << peer_uid << '\n';
       auth::message_t cancel;
       if (auth::read_message(connection.get(), cancel) &&
           (cancel.type != auth::message_type_e::cancel ||
            cancel.transaction_id != begin.transaction_id)) {
-        std::clog << "StationConnect PAM received invalid session-close message\n";
+        std::clog << "PLANK PAM received invalid session-close message\n";
       }
     } else {
-      std::clog << "StationConnect PAM denied account " << username
+      std::clog << "PLANK PAM denied account " << username
                 << " for local uid " << peer_uid << " with status " << status << '\n';
     }
 
@@ -510,7 +510,7 @@ namespace {
 }  // namespace
 
 /**
- * @brief Run the StationConnect PAM broker.
+ * @brief Run the PLANK PAM broker.
  *
  * @param argc Argument count.
  * @param argv Argument values.
@@ -534,7 +534,7 @@ int main(int argc, char **argv) {
     }
   }
   if (geteuid() != 0) {
-    std::cerr << "stationconnect-pam-broker must run as root\n";
+    std::cerr << "plank-pam-broker must run as root\n";
     return 3;
   }
 
@@ -562,7 +562,7 @@ int main(int argc, char **argv) {
   sigemptyset(&child_action.sa_mask);
   child_action.sa_flags = 0;
   sigaction(SIGCHLD, &child_action, nullptr);
-  std::clog << "StationConnect PAM broker listening on " << socket_path
+  std::clog << "PLANK PAM broker listening on " << socket_path
             << "; root login " << (policy->allow_root_login ? "allowed" : "denied") << '\n';
 
   while (!stopping) {

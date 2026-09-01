@@ -1,6 +1,6 @@
 /**
  * @file src/auth/pam_broker_protocol.h
- * @brief Versioned local IPC framing for the StationConnect PAM broker.
+ * @brief Versioned local IPC framing for the PLANK PAM broker.
  */
 #pragma once
 
@@ -20,8 +20,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-namespace stationconnect::auth {
-  constexpr std::uint32_t wire_magic = 0x53434150U;  ///< ASCII `SCAP` in host notation.
+namespace plank::auth {
+  constexpr std::uint32_t wire_magic = 0x504c4150U;  ///< ASCII `PLAP` in host notation.
   constexpr std::uint16_t wire_version = 1;  ///< Initial PAM broker protocol version.
   constexpr std::size_t maximum_payload_size = 64U * 1024U;  ///< Per-message allocation limit.
   constexpr std::size_t maximum_field_size = 4096U;  ///< Per-string allocation limit.
@@ -336,4 +336,4 @@ namespace stationconnect::auth {
     }
     return decode_message(frame, message);
   }
-}  // namespace stationconnect::auth
+}  // namespace plank::auth

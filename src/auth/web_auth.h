@@ -18,7 +18,7 @@
 
 #include "pam_client.h"
 
-namespace stationconnect::auth {
+namespace plank::auth {
   /**
    * @brief Abstract one PAM conversation for testable web-session orchestration.
    */
@@ -220,4 +220,4 @@ namespace stationconnect::auth {
    * greeter. Once a user session owns seat0, the account UID must match it.
    */
   bool account_authorized_for_desktop(std::string_view username);
-}  // namespace stationconnect::auth
+}  // namespace plank::auth

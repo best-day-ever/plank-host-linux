@@ -108,7 +108,7 @@ namespace platf::virtualhid {
     if (capabilities.supports_keyboard) {
       lvh::CreateKeyboardOptions options;
       options.profile = lvh::profiles::keyboard();
-      options.stable_id = "sunshine-keyboard";
+      options.stable_id = "plank-keyboard";
       auto created = runtime->create_keyboard(options);
       if (created) {
         keyboard = std::move(created.keyboard);
@@ -119,7 +119,7 @@ namespace platf::virtualhid {
     if (capabilities.supports_mouse) {
       lvh::CreateMouseOptions options;
       options.profile = lvh::profiles::mouse();
-      options.stable_id = "sunshine-mouse";
+      options.stable_id = "plank-mouse";
       auto created = runtime->create_mouse(options);
       if (created) {
         mouse = std::move(created.mouse);
@@ -153,8 +153,8 @@ namespace platf::virtualhid {
       // driver interface. Keep libvirtualhid's own USB identity, but expose
       // the generic pen as Wacom-compatible so the stock 70-wacom InputClass
       // can select that driver without any host Xorg configuration changes.
-      options.profile.name = "StationConnect Wacom Tablet";
-      options.stable_id = "sunshine-pen-tablet";
+      options.profile.name = "PLANK Wacom Tablet";
+      options.stable_id = "plank-pen-tablet";
       auto created = context.global->runtime->create_pen_tablet(options);
       if (created) {
         context.pen = std::move(created.pen_tablet);

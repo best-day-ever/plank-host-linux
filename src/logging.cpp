@@ -237,7 +237,7 @@ namespace logging {
         android_priority = ANDROID_LOG_UNKNOWN;
         break;
     }
-    __android_log_print(android_priority, "Sunshine", "%s", message.c_str());
+    __android_log_print(android_priority, "PLANK", "%s", message.c_str());
   }
 
   // custom sink backend for android
@@ -367,7 +367,7 @@ namespace logging {
       << "    Note: The configuration will be created if it doesn't exist."sv << std::endl
       << std::endl
       << "    --help                    | print help"sv << std::endl
-      << "    --version                 | print the StationConnect host version"sv << std::endl
+      << "    --version                 | print the PLANK host version"sv << std::endl
       << std::endl
       << "    flags"sv << std::endl
       << "        -1 | Do not load previously saved state and do retain any state after shutdown"sv << std::endl

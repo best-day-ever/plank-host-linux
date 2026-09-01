@@ -340,7 +340,7 @@ namespace NVENC_NAMESPACE {
     format_config.intraRefreshPeriod = 300;
     format_config.intraRefreshCnt = 299;
 #else
-    // Qualified StationConnect Linux profile: one refresh wave each second,
+    // Qualified PLANK Linux profile: one refresh wave each second,
     // spread over half a second at 60 fps.
     format_config.intraRefreshPeriod = 60;
     format_config.intraRefreshCnt = 30;

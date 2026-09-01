@@ -41,7 +41,7 @@ namespace raw_hid {
     tablet_t &operator=(const tablet_t &) = delete;
 
     /**
-     * @brief Process one complete StationConnect raw HID wire frame.
+     * @brief Process one complete PLANK raw HID wire frame.
      *
      * @param frame Header and payload received from the authenticated client.
      * @return True when the frame was valid and accepted.

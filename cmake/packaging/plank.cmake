@@ -1,12 +1,12 @@
-# Runtime assets for the explicit StationConnect package manifest.
+# Runtime assets for the explicit PLANK package manifest.
 #
 # Do not add install(), CPack, desktop-entry, user-service, or application
 # metadata here. The repository-level RPM builder owns those product surfaces.
 
-file(GLOB_RECURSE STATIONCONNECT_COMMON_ASSETS
+file(GLOB_RECURSE PLANK_COMMON_ASSETS
         RELATIVE "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/"
         "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/*")
-foreach(asset ${STATIONCONNECT_COMMON_ASSETS})
+foreach(asset ${PLANK_COMMON_ASSETS})
     file(COPY "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/${asset}"
             DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/assets")
 endforeach()

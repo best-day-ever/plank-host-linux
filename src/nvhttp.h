@@ -1,6 +1,6 @@
 /**
  * @file src/nvhttp.h
- * @brief Declarations for the StationConnect session-negotiation server.
+ * @brief Declarations for the PLANK session-negotiation server.
  */
 #pragma once
 
@@ -13,12 +13,12 @@ namespace nvhttp {
   constexpr auto PORT_HTTPS = 0;
 
   /**
-   * @brief Start the StationConnect authentication and session-negotiation server.
+   * @brief Start the PLANK authentication and session-negotiation server.
    */
   void start();
 
   /**
-   * @brief Simple-Web-Server HTTPS transport used by StationConnect.
+   * @brief Simple-Web-Server HTTPS transport used by PLANK.
    */
   class SunshineHTTPS: public SimpleWeb::HTTPS {
   public:

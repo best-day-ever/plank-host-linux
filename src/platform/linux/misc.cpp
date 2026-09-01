@@ -221,7 +221,7 @@ namespace platf {
     return fd;
 #else
   #ifndef __FreeBSD__
-    BOOST_LOG(info) << "Sunshine compiled without DRM support. Cannot control Linux DRM master state for "sv << path.string();
+    BOOST_LOG(info) << "PLANK Host compiled without DRM support. Cannot control Linux DRM master state for "sv << path.string();
   #endif
     return open(path.c_str(), flags | O_CLOEXEC);
 #endif
@@ -993,7 +993,7 @@ namespace platf {
       return boost::asio::ip::host_name();
     } catch (boost::system::system_error &err) {
       BOOST_LOG(error) << "Failed to get hostname: "sv << err.what();
-      return "Sunshine"s;
+      return "PLANK"s;
     }
   }
 
@@ -1026,7 +1026,7 @@ namespace platf {
 
   static std::bitset<source::MAX_FLAGS> sources;
 
-  bool stationconnect_capture_source_available(std::string_view source_name) {
+  bool plank_capture_source_available(std::string_view source_name) {
 #ifdef SUNSHINE_BUILD_CUDA
     if (source_name == "nvfbc"sv) {
       return sources[source::NVFBC];
@@ -1288,7 +1288,7 @@ namespace platf {
 #endif
 
 #ifdef SUNSHINE_BUILD_CUDA
-    // StationConnect bookmarks select NvFBC per session. Discover it
+    // PLANK bookmarks select NvFBC per session. Discover it
     // independently instead of allowing a host-global selector to hide it.
     if (verify_nvfbc()) {
       sources[source::NVFBC] = true;

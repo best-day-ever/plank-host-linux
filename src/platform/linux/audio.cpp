@@ -424,9 +424,9 @@ namespace platf {
        * @return Host and virtual sink names when the backend can report them.
        */
       std::optional<sink_t> sink_info() override {
-        constexpr auto stereo = "sink-sunshine-stereo";
-        constexpr auto surround51 = "sink-sunshine-surround51";
-        constexpr auto surround71 = "sink-sunshine-surround71";
+        constexpr auto stereo = "sink-plank-stereo";
+        constexpr auto surround51 = "sink-plank-surround51";
+        constexpr auto surround71 = "sink-plank-surround71";
 
         auto alarm = safe::make_alarm<int>();
 

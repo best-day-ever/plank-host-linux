@@ -28,25 +28,25 @@ namespace session_stream {
     std::string surround_params;  ///< Client-provided surround-sound layout parameters.
     bool continuous_audio;  ///< Whether audio packets continue during silence.
     bool enable_hdr;  ///< Whether HDR streaming is requested.
-    std::string output_id;  ///< Opaque StationConnect output selected by the client.
+    std::string output_id;  ///< Opaque PLANK output selected by the client.
     std::string output_name;  ///< Capture backend name resolved from output_id.
-    std::string display_mode;  ///< StationConnect presentation mode negotiated at launch.
+    std::string display_mode;  ///< PLANK presentation mode negotiated at launch.
     std::string topology_generation;  ///< Client topology generation bound to this launch.
-    std::string host_layout;  ///< Exact StationConnect host display layout required by the bookmark.
+    std::string host_layout;  ///< Exact PLANK host display layout required by the bookmark.
     std::string virtual_mode_1;  ///< Exact qualified mode required for virtual output 1.
     std::string virtual_mode_2;  ///< Exact qualified mode required for virtual output 2.
-    std::string capture_source;  ///< Exact StationConnect capture source requested by the client.
-    std::string encoder_backend;  ///< Exact StationConnect encoder backend requested by the client.
-    std::string encoding_mode;  ///< Exact StationConnect codec/depth/chroma/encoder mode requested by the client.
+    std::string capture_source;  ///< Exact PLANK capture source requested by the client.
+    std::string encoder_backend;  ///< Exact PLANK encoder backend requested by the client.
+    std::string encoding_mode;  ///< Exact PLANK codec/depth/chroma/encoder mode requested by the client.
     std::uint32_t quic_udp_payload_mtu {};  ///< Fixed complete QUIC UDP payload ceiling selected for both peers.
     bool span_desktop {};  ///< Whether the complete virtual desktop is captured for this session.
-    std::uint32_t stationconnect_protocol_version {};  ///< Selected StationConnect extension version.
-    std::uint32_t stationconnect_feature_flags {};  ///< Client-supported StationConnect feature bits.
-    bool stationconnect_display_lease {};  ///< Whether this stream owns a temporary physical-display layout.
-    uid_t stationconnect_display_lease_uid {};  ///< PAM account that owns the temporary display lease.
+    std::uint32_t plank_protocol_version {};  ///< Selected PLANK extension version.
+    std::uint32_t plank_feature_flags {};  ///< Client-supported PLANK feature bits.
+    bool plank_display_lease {};  ///< Whether this stream owns a temporary physical-display layout.
+    uid_t plank_display_lease_uid {};  ///< PAM account that owns the temporary display lease.
 
-    std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained by StationConnect streams.
-    std::shared_ptr<void> datasmash_endpoint;  ///< Experimental QUIC data-plane lifetime.
+    std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained by PLANK streams.
+    std::shared_ptr<void> plank_transport_endpoint;  ///< Experimental QUIC data-plane lifetime.
   };
 
   /**

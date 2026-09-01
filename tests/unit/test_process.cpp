@@ -1,6 +1,6 @@
 /**
  * @file tests/unit/test_process.cpp
- * @brief Tests for the fixed StationConnect Desktop identity.
+ * @brief Tests for the fixed PLANK Desktop identity.
  */
 
 // test imports

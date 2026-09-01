@@ -12,7 +12,7 @@
 // lib includes
 extern "C" {
   // clang-format off
-#include <moonlight-common-c/src/StationConnect.h>
+#include <moonlight-common-c/src/plank.h>
   // clang-format on
 }
 
@@ -28,16 +28,16 @@ extern "C" {
 #include "session_stream.h"
 #include "session/session_context.h"
 #include "stream.h"
-#include "stationconnect_bitrate.h"
+#include "plank_bitrate.h"
 #include "sync.h"
 #include "thread_safe.h"
 #include "utility.h"
 
-#ifdef STATIONCONNECT_DATASMASH
-  #include <stationconnect_datasmash.h>
-  #include <stationconnect_datasmash_control.h>
-  #include <stationconnect_datasmash_event.h>
-  #include <stationconnect_datasmash_input.h>
+#ifdef PLANK_TRANSPORT
+  #include <plank_transport.h>
+  #include <plank_transport_control.h>
+  #include <plank_transport_event.h>
+  #include <plank_transport_input.h>
 #endif
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
@@ -45,8 +45,8 @@ extern "C" {
   #include "platform/linux/x11grab.h"
 #endif
 
-#ifdef STATIONCONNECT_DATASMASH
-constexpr int DATASMASH_CONTROL_DRAIN_LIMIT = 16;
+#ifdef PLANK_TRANSPORT
+constexpr int PLANK_TRANSPORT_CONTROL_DRAIN_LIMIT = 16;
 #endif
 
 using namespace std::literals;
@@ -83,7 +83,7 @@ namespace stream {
     std::jthread audioThread;  ///< Audio thread.
     std::jthread videoThread;  ///< Video thread.
     std::jthread cursorThread;  ///< XFixes cursor-shape monitor for local-cursor clients.
-    std::jthread inputThread;  ///< Native KyProto input receiver for StationConnect sessions.
+    std::jthread inputThread;  ///< Native KyProto input receiver for PLANK sessions.
 
     safe::shared_t<broadcast_ctx_t>::ptr_t broadcast_ref;  ///< Shared broadcast context retained while the session is active.
 
@@ -100,14 +100,14 @@ namespace stream {
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
       raw_hid::feedback_queue_t raw_hid_feedback_queue;
       safe::mail_raw_t::queue_t<std::vector<std::vector<std::uint8_t>>> cursor_shape_queue;
-      safe::mail_raw_t::event_t<SC_CURSOR_POSITION_WIRE_MESSAGE> cursor_position_event;
+      safe::mail_raw_t::event_t<PLANK_CURSOR_POSITION_WIRE_MESSAGE> cursor_position_event;
     } control;  ///< Native Host-to-Client event queues.
 
     std::string input_session_id;  ///< Stable client identity used to retain input devices across resume.
-    bool stationconnect_display_lease {};  ///< Whether this stream owns the temporary physical-display layout.
-    uid_t stationconnect_display_lease_uid {};  ///< PAM account that owns the display lease.
+    bool plank_display_lease {};  ///< Whether this stream owns the temporary physical-display layout.
+    uid_t plank_display_lease_uid {};  ///< PAM account that owns the display lease.
     std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained until this stream is destroyed.
-    std::shared_ptr<void> datasmash_endpoint;  ///< Native QUIC data-plane lifetime.
+    std::shared_ptr<void> plank_transport_endpoint;  ///< Native QUIC data-plane lifetime.
 
     safe::mail_raw_t::event_t<bool> shutdown_event;  ///< Event raised when the stream should shut down.
     safe::signal_t controlEnd;  ///< Signal raised when the control channel exits.
@@ -163,55 +163,55 @@ namespace stream {
    * @param hdr_info HDR info.
    * @return 0 when the control message is queued; nonzero when no control peer is ready.
    */
-#ifdef STATIONCONNECT_DATASMASH
-  int send_datasmash_event(session_t *session, std::uint16_t type,
+#ifdef PLANK_TRANSPORT
+  int send_plank_transport_event(session_t *session, std::uint16_t type,
                            const std::uint8_t *payload,
                            std::size_t payload_size) {
-    if (!session->datasmash_endpoint || !payload || payload_size == 0 ||
+    if (!session->plank_transport_endpoint || !payload || payload_size == 0 ||
         payload_size > UINT16_MAX) {
       return -1;
     }
     std::vector<std::uint8_t> packet(
-      SC_DATASMASH_EVENT_HEADER_SIZE + payload_size
+      PLANK_TRANSPORT_EVENT_HEADER_SIZE + payload_size
     );
     std::size_t packet_size = 0;
-    if (sc_datasmash_event_encode(
+    if (plank_transport_event_encode(
           type, payload, payload_size, packet.data(), packet.size(),
           &packet_size) != 0) {
       return -1;
     }
-    auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(
-      session->datasmash_endpoint.get()
+    auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(
+      session->plank_transport_endpoint.get()
     );
-    return sc_datasmash_native_data_send(
+    return plank_transport_native_data_send(
       endpoint, packet.data(), packet_size
-    ) == SC_DATASMASH_OK ? 0 : -1;
+    ) == PLANK_TRANSPORT_OK ? 0 : -1;
   }
 #endif
 
   int send_hdr_mode(session_t *session, video::hdr_info_t hdr_info) {
-#ifdef STATIONCONNECT_DATASMASH
-    if (!session->datasmash_endpoint) {
+#ifdef PLANK_TRANSPORT
+    if (!session->plank_transport_endpoint) {
       return -1;
     }
-    std::array<std::uint8_t, SC_DATASMASH_EVENT_HDR_MODE_SIZE> payload {};
+    std::array<std::uint8_t, PLANK_TRANSPORT_EVENT_HDR_MODE_SIZE> payload {};
     payload[0] = hdr_info->enabled ? 1 : 0;
     std::size_t offset = 2;
     for (const auto &primary : hdr_info->metadata.displayPrimaries) {
-      sc_datasmash_event_write_u16(payload.data() + offset, primary.x);
-      sc_datasmash_event_write_u16(payload.data() + offset + 2, primary.y);
+      plank_transport_event_write_u16(payload.data() + offset, primary.x);
+      plank_transport_event_write_u16(payload.data() + offset + 2, primary.y);
       offset += 4;
     }
-    sc_datasmash_event_write_u16(payload.data() + offset, hdr_info->metadata.whitePoint.x);
-    sc_datasmash_event_write_u16(payload.data() + offset + 2, hdr_info->metadata.whitePoint.y);
+    plank_transport_event_write_u16(payload.data() + offset, hdr_info->metadata.whitePoint.x);
+    plank_transport_event_write_u16(payload.data() + offset + 2, hdr_info->metadata.whitePoint.y);
     offset += 4;
-    sc_datasmash_event_write_u16(payload.data() + offset, hdr_info->metadata.maxDisplayLuminance);
-    sc_datasmash_event_write_u16(payload.data() + offset + 2, hdr_info->metadata.minDisplayLuminance);
-    sc_datasmash_event_write_u16(payload.data() + offset + 4, hdr_info->metadata.maxContentLightLevel);
-    sc_datasmash_event_write_u16(payload.data() + offset + 6, hdr_info->metadata.maxFrameAverageLightLevel);
-    sc_datasmash_event_write_u16(payload.data() + offset + 8, hdr_info->metadata.maxFullFrameLuminance);
-    const auto result = send_datasmash_event(
-      session, SC_DATASMASH_EVENT_HDR_MODE, payload.data(), payload.size()
+    plank_transport_event_write_u16(payload.data() + offset, hdr_info->metadata.maxDisplayLuminance);
+    plank_transport_event_write_u16(payload.data() + offset + 2, hdr_info->metadata.minDisplayLuminance);
+    plank_transport_event_write_u16(payload.data() + offset + 4, hdr_info->metadata.maxContentLightLevel);
+    plank_transport_event_write_u16(payload.data() + offset + 6, hdr_info->metadata.maxFrameAverageLightLevel);
+    plank_transport_event_write_u16(payload.data() + offset + 8, hdr_info->metadata.maxFullFrameLuminance);
+    const auto result = send_plank_transport_event(
+      session, PLANK_TRANSPORT_EVENT_HDR_MODE, payload.data(), payload.size()
     );
     if (!result) {
       BOOST_LOG(debug) << "Sent HDR mode over native KyProto: "sv << hdr_info->enabled;
@@ -228,20 +228,20 @@ namespace stream {
    * @brief Send one raw HID control frame over the encrypted reliable control stream.
    *
    * @param session Active stream session.
-   * @param frame Complete StationConnect raw HID wire frame.
+   * @param frame Complete PLANK raw HID wire frame.
    * @return Zero when sent, otherwise a transport error.
    */
   int send_raw_hid_control(session_t *session, const std::vector<std::uint8_t> &frame) {
-    if (frame.size() < sizeof(SC_RAW_HID_WIRE_HEADER) ||
-        frame.size() > sizeof(SC_RAW_HID_WIRE_HEADER) + SC_RAW_HID_MAX_PAYLOAD_SIZE) {
+    if (frame.size() < sizeof(PLANK_RAW_HID_WIRE_HEADER) ||
+        frame.size() > sizeof(PLANK_RAW_HID_WIRE_HEADER) + PLANK_RAW_HID_MAX_PAYLOAD_SIZE) {
       return -1;
     }
-#ifdef STATIONCONNECT_DATASMASH
-    if (!session->datasmash_endpoint) {
+#ifdef PLANK_TRANSPORT
+    if (!session->plank_transport_endpoint) {
       return -1;
     }
-    return send_datasmash_event(
-      session, SC_DATASMASH_EVENT_RAW_HID_WACOM, frame.data(), frame.size()
+    return send_plank_transport_event(
+      session, PLANK_TRANSPORT_EVENT_RAW_HID_WACOM, frame.data(), frame.size()
     );
 #else
     (void) session;
@@ -250,16 +250,16 @@ namespace stream {
   }
 
   int send_cursor_shape_control(session_t *session, const std::vector<std::uint8_t> &frame) {
-    if (frame.size() < sizeof(SC_CURSOR_WIRE_HEADER) ||
-        frame.size() > sizeof(SC_CURSOR_WIRE_HEADER) + SC_CURSOR_MAX_CHUNK_SIZE) {
+    if (frame.size() < sizeof(PLANK_CURSOR_WIRE_HEADER) ||
+        frame.size() > sizeof(PLANK_CURSOR_WIRE_HEADER) + PLANK_CURSOR_MAX_CHUNK_SIZE) {
       return -1;
     }
-#ifdef STATIONCONNECT_DATASMASH
-    if (!session->datasmash_endpoint) {
+#ifdef PLANK_TRANSPORT
+    if (!session->plank_transport_endpoint) {
       return -1;
     }
-    return send_datasmash_event(
-      session, SC_DATASMASH_EVENT_CURSOR_SHAPE, frame.data(), frame.size()
+    return send_plank_transport_event(
+      session, PLANK_TRANSPORT_EVENT_CURSOR_SHAPE, frame.data(), frame.size()
     );
 #else
     (void) session;
@@ -269,14 +269,14 @@ namespace stream {
 
   int send_cursor_position_control(
     session_t *session,
-    const SC_CURSOR_POSITION_WIRE_MESSAGE &position
+    const PLANK_CURSOR_POSITION_WIRE_MESSAGE &position
   ) {
-#ifdef STATIONCONNECT_DATASMASH
-    if (!session->datasmash_endpoint) {
+#ifdef PLANK_TRANSPORT
+    if (!session->plank_transport_endpoint) {
       return -1;
     }
-    return send_datasmash_event(
-      session, SC_DATASMASH_EVENT_CURSOR_POSITION,
+    return send_plank_transport_event(
+      session, PLANK_TRANSPORT_EVENT_CURSOR_POSITION,
       reinterpret_cast<const std::uint8_t *>(&position), sizeof(position)
     );
 #else
@@ -309,11 +309,11 @@ namespace stream {
       image.hotspot_y = std::clamp(image.hotspot_y, 0, image.height - 1);
     }
     if (width == 0 || height == 0 ||
-        width > SC_CURSOR_MAX_DIMENSION || height > SC_CURSOR_MAX_DIMENSION ||
-        image_size_64 > SC_CURSOR_MAX_IMAGE_SIZE ||
+        width > PLANK_CURSOR_MAX_DIMENSION || height > PLANK_CURSOR_MAX_DIMENSION ||
+        image_size_64 > PLANK_CURSOR_MAX_IMAGE_SIZE ||
         image.hotspot_x < 0 || image.hotspot_y < 0 ||
         image.hotspot_x >= image.width || image.hotspot_y >= image.height) {
-      BOOST_LOG(error) << "Invalid X11 cursor geometry for StationConnect local cursor transport: "sv
+      BOOST_LOG(error) << "Invalid X11 cursor geometry for PLANK local cursor transport: "sv
                        << image.width << 'x' << image.height << " hotspot="sv
                        << image.hotspot_x << ',' << image.hotspot_y;
       return false;
@@ -323,16 +323,16 @@ namespace stream {
     std::vector<std::vector<std::uint8_t>> frames;
     for (std::uint32_t offset = 0; offset < image_size;) {
       const auto chunk_size = std::min<std::uint32_t>(
-        SC_CURSOR_MAX_CHUNK_SIZE, image_size - offset
+        PLANK_CURSOR_MAX_CHUNK_SIZE, image_size - offset
       );
-      std::vector<std::uint8_t> frame(sizeof(SC_CURSOR_WIRE_HEADER) + chunk_size);
-      SC_CURSOR_WIRE_HEADER header {};
-      write_cursor_little(header.magic, static_cast<std::uint32_t>(SC_CURSOR_WIRE_MAGIC));
-      write_cursor_little(header.version, static_cast<std::uint16_t>(SC_CURSOR_WIRE_VERSION));
-      write_cursor_little(header.pixelFormat, static_cast<std::uint16_t>(SC_CURSOR_PIXEL_FORMAT_ARGB8888));
-      std::uint32_t flags = image.visible ? SC_CURSOR_FLAG_VISIBLE : 0U;
-      if (offset == 0) flags |= SC_CURSOR_FLAG_FIRST_CHUNK;
-      if (offset + chunk_size == image_size) flags |= SC_CURSOR_FLAG_LAST_CHUNK;
+      std::vector<std::uint8_t> frame(sizeof(PLANK_CURSOR_WIRE_HEADER) + chunk_size);
+      PLANK_CURSOR_WIRE_HEADER header {};
+      write_cursor_little(header.magic, static_cast<std::uint32_t>(PLANK_CURSOR_WIRE_MAGIC));
+      write_cursor_little(header.version, static_cast<std::uint16_t>(PLANK_CURSOR_WIRE_VERSION));
+      write_cursor_little(header.pixelFormat, static_cast<std::uint16_t>(PLANK_CURSOR_PIXEL_FORMAT_ARGB8888));
+      std::uint32_t flags = image.visible ? PLANK_CURSOR_FLAG_VISIBLE : 0U;
+      if (offset == 0) flags |= PLANK_CURSOR_FLAG_FIRST_CHUNK;
+      if (offset + chunk_size == image_size) flags |= PLANK_CURSOR_FLAG_LAST_CHUNK;
       write_cursor_little(header.flags, flags);
       write_cursor_little(header.generation, static_cast<std::uint64_t>(image.serial));
       write_cursor_little(header.width, width);
@@ -350,7 +350,7 @@ namespace stream {
     session->control.cursor_shape_queue->raise(std::move(frames));
 
     queued_serial = image.serial;
-    BOOST_LOG(debug) << "Queued StationConnect local cursor generation "sv
+    BOOST_LOG(debug) << "Queued PLANK local cursor generation "sv
                      << static_cast<std::uint64_t>(image.serial) << " ("sv
                      << image.width << 'x' << image.height << ", hotspot "sv
                      << image.hotspot_x << ',' << image.hotspot_y << ")"sv;
@@ -362,7 +362,7 @@ namespace stream {
                              std::uint64_t &position_sequence) {
     if (root_position.desktop_width <= 0 || root_position.desktop_height <= 0 ||
         session->config.monitor.width <= 0 || session->config.monitor.height <= 0) {
-      BOOST_LOG(error) << "Invalid desktop/video geometry for StationConnect cursor position transport"sv;
+      BOOST_LOG(error) << "Invalid desktop/video geometry for PLANK cursor position transport"sv;
       return false;
     }
 
@@ -389,9 +389,9 @@ namespace stream {
       content_y + static_cast<int>(std::lround(root_y * scale)), 0, frame_height - 1
     );
 
-    SC_CURSOR_POSITION_WIRE_MESSAGE position {};
-    write_cursor_little(position.magic, static_cast<std::uint32_t>(SC_CURSOR_POSITION_WIRE_MAGIC));
-    write_cursor_little(position.version, static_cast<std::uint16_t>(SC_CURSOR_POSITION_WIRE_VERSION));
+    PLANK_CURSOR_POSITION_WIRE_MESSAGE position {};
+    write_cursor_little(position.magic, static_cast<std::uint32_t>(PLANK_CURSOR_POSITION_WIRE_MAGIC));
+    write_cursor_little(position.version, static_cast<std::uint16_t>(PLANK_CURSOR_POSITION_WIRE_VERSION));
     write_cursor_little(position.sequence, ++position_sequence);
     write_cursor_little(position.x, static_cast<std::uint32_t>(frame_x));
     write_cursor_little(position.y, static_cast<std::uint32_t>(frame_y));
@@ -407,7 +407,7 @@ namespace stream {
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
     auto cursor = platf::x11::cursor_t::make();
     if (!cursor || !cursor->subscribe_shape_events()) {
-      BOOST_LOG(error) << "Unable to initialize X11 cursor monitoring for StationConnect"sv;
+      BOOST_LOG(error) << "Unable to initialize X11 cursor monitoring for PLANK"sv;
       session::stop(*session);
       return;
     }
@@ -421,7 +421,7 @@ namespace stream {
       return;
     }
 
-    BOOST_LOG(info) << "StationConnect cursor position uses fixed-deadline XQueryPointer sampling; cursor shape uses XFixes notifications"sv;
+    BOOST_LOG(info) << "PLANK cursor position uses fixed-deadline XQueryPointer sampling; cursor shape uses XFixes notifications"sv;
     std::uint64_t position_sequence = 0;
     constexpr auto cursor_sample_period = 16'666'667ns;
     static_assert(cursor_sample_period.count() > 0);
@@ -460,28 +460,28 @@ namespace stream {
       std::this_thread::sleep_until(next_cursor_sample);
     }
 #else
-    BOOST_LOG(error) << "StationConnect local cursor transport requires the Linux X11 host backend"sv;
+    BOOST_LOG(error) << "PLANK local cursor transport requires the Linux X11 host backend"sv;
     session::stop(*session);
 #endif
   }
 
   /**
-   * @brief Confirm an accepted StationConnect encoder target to the client.
+   * @brief Confirm an accepted PLANK encoder target to the client.
    */
   int send_video_bitrate_applied(session_t *session, const int requested_kbps) {
-#ifdef STATIONCONNECT_DATASMASH
+#ifdef PLANK_TRANSPORT
     const int applied_kbps = requested_kbps;
     const int peak_kbps = applied_kbps * config::video.sw.vbv_maxrate_percentage / 100;
-    if (!session->datasmash_endpoint) {
+    if (!session->plank_transport_endpoint) {
       return -1;
     }
-    auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
-    const auto rate_result = sc_datasmash_native_set_video_bitrate(
+    auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(session->plank_transport_endpoint.get());
+    const auto rate_result = plank_transport_native_set_video_bitrate(
       endpoint, static_cast<std::uint32_t>(requested_kbps),
       static_cast<std::uint32_t>(peak_kbps)
     );
-    if (rate_result != SC_DATASMASH_OK) {
-      BOOST_LOG(error) << "Datasmash transport bitrate update failed with result "sv
+    if (rate_result != PLANK_TRANSPORT_OK) {
+      BOOST_LOG(error) << "PLANK transport bitrate update failed with result "sv
                        << rate_result;
       session::stop(*session);
       return -1;
@@ -491,21 +491,21 @@ namespace stream {
       static_cast<std::uint32_t>(applied_kbps),
       static_cast<std::uint32_t>(peak_kbps),
     };
-    std::array<std::uint8_t, SC_DATASMASH_CONTROL_MAX_PACKET_SIZE> packet {};
+    std::array<std::uint8_t, PLANK_TRANSPORT_CONTROL_MAX_PACKET_SIZE> packet {};
     std::size_t packet_size = 0;
-    const auto encode_result = sc_datasmash_control_encode(
-      SC_DATASMASH_CONTROL_VIDEO_BITRATE_APPLIED, values, std::size(values),
+    const auto encode_result = plank_transport_control_encode(
+      PLANK_TRANSPORT_CONTROL_VIDEO_BITRATE_APPLIED, values, std::size(values),
       packet.data(), packet.size(), &packet_size
     );
-    const auto result = encode_result != 0 ? SC_DATASMASH_ERROR_INVALID_ARGUMENT :
-      sc_datasmash_native_data_send(endpoint, packet.data(), packet_size);
-    if (result != SC_DATASMASH_OK) {
-      BOOST_LOG(error) << "Datasmash bitrate acknowledgement failed with result "sv
+    const auto result = encode_result != 0 ? PLANK_TRANSPORT_ERROR_INVALID_ARGUMENT :
+      plank_transport_native_data_send(endpoint, packet.data(), packet_size);
+    if (result != PLANK_TRANSPORT_OK) {
+      BOOST_LOG(error) << "PlankTransport bitrate acknowledgement failed with result "sv
                        << result;
       session::stop(*session);
       return -1;
     }
-    BOOST_LOG(info) << "Confirmed StationConnect encoder target over Datasmash: requested="sv
+    BOOST_LOG(info) << "Confirmed PLANK encoder target over PlankTransport: requested="sv
                     << requested_kbps << " Kbps, applied="sv << applied_kbps
                     << " Kbps, peak="sv << peak_kbps << " Kbps"sv;
     return 0;
@@ -515,75 +515,75 @@ namespace stream {
 #endif
   }
 
-#ifdef STATIONCONNECT_DATASMASH
-  void drain_datasmash_control(session_t *session,
-                               std::array<std::uint8_t, SC_DATASMASH_CONTROL_MAX_PACKET_SIZE> &packet) {
-    if (!session->datasmash_endpoint) {
+#ifdef PLANK_TRANSPORT
+  void drain_plank_transport_control(session_t *session,
+                               std::array<std::uint8_t, PLANK_TRANSPORT_CONTROL_MAX_PACKET_SIZE> &packet) {
+    if (!session->plank_transport_endpoint) {
       return;
     }
 
-    auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
-    for (int drained = 0; drained < DATASMASH_CONTROL_DRAIN_LIMIT; ++drained) {
+    auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(session->plank_transport_endpoint.get());
+    for (int drained = 0; drained < PLANK_TRANSPORT_CONTROL_DRAIN_LIMIT; ++drained) {
       std::size_t packet_size = 0;
-      const auto result = sc_datasmash_native_data_receive(
+      const auto result = plank_transport_native_data_receive(
         endpoint, packet.data(), packet.size(), &packet_size, 0);
-      if (result == SC_DATASMASH_TIMEOUT) {
+      if (result == PLANK_TRANSPORT_TIMEOUT) {
         return;
       }
-      if (result != SC_DATASMASH_OK || packet_size > packet.size()) {
-        const auto state = sc_datasmash_native_endpoint_state(endpoint);
-        if (result == SC_DATASMASH_ERROR_INVALID_STATE || state != SC_DATASMASH_STATE_READY) {
-          BOOST_LOG(info) << "Datasmash peer closed its native control channel"sv;
+      if (result != PLANK_TRANSPORT_OK || packet_size > packet.size()) {
+        const auto state = plank_transport_native_endpoint_state(endpoint);
+        if (result == PLANK_TRANSPORT_ERROR_INVALID_STATE || state != PLANK_TRANSPORT_STATE_READY) {
+          BOOST_LOG(info) << "PlankTransport peer closed its native control channel"sv;
         } else {
-          BOOST_LOG(error) << "Datasmash control receive failed: result="sv << result
+          BOOST_LOG(error) << "PlankTransport control receive failed: result="sv << result
                            << ", packet_size="sv << packet_size;
         }
         session::stop(*session);
         return;
       }
 
-      ScDatasmashControlPacket control {};
-      if (sc_datasmash_control_decode(packet.data(), packet_size, &control)) {
-        BOOST_LOG(error) << "Rejected malformed Datasmash control packet"sv;
+      PlankTransportControlPacket control {};
+      if (plank_transport_control_decode(packet.data(), packet_size, &control)) {
+        BOOST_LOG(error) << "Rejected malformed PlankTransport control packet"sv;
         session::stop(*session);
         return;
       }
       switch (control.type) {
-        case SC_DATASMASH_CONTROL_CLIENT_DISCONNECT:
+        case PLANK_TRANSPORT_CONTROL_CLIENT_DISCONNECT:
           if (control.payload_size != 0) {
-            BOOST_LOG(error) << "Rejected malformed Datasmash disconnect"sv;
+            BOOST_LOG(error) << "Rejected malformed PlankTransport disconnect"sv;
           } else {
-            BOOST_LOG(info) << "Datasmash client requested a clean disconnect"sv;
+            BOOST_LOG(info) << "PlankTransport client requested a clean disconnect"sv;
           }
           session::stop(*session);
           return;
-        case SC_DATASMASH_CONTROL_REQUEST_IDR:
+        case PLANK_TRANSPORT_CONTROL_REQUEST_IDR:
           if (control.payload_size != 0) {
-            BOOST_LOG(error) << "Rejected malformed Datasmash IDR request"sv;
+            BOOST_LOG(error) << "Rejected malformed PlankTransport IDR request"sv;
             session::stop(*session);
             return;
           }
           session->video.idr_events->raise(true);
           break;
-        case SC_DATASMASH_CONTROL_INVALIDATE_REFERENCE_FRAMES:
+        case PLANK_TRANSPORT_CONTROL_INVALIDATE_REFERENCE_FRAMES:
           if (control.payload_size != 2 * sizeof(std::uint32_t) ||
-              sc_datasmash_control_read_u32(control.payload) >
-                sc_datasmash_control_read_u32(control.payload + 4)) {
-            BOOST_LOG(error) << "Rejected malformed Datasmash reference-frame request"sv;
+              plank_transport_control_read_u32(control.payload) >
+                plank_transport_control_read_u32(control.payload + 4)) {
+            BOOST_LOG(error) << "Rejected malformed PlankTransport reference-frame request"sv;
             session::stop(*session);
             return;
           }
           session->video.invalidate_ref_frames_events->raise(
-            std::make_pair(sc_datasmash_control_read_u32(control.payload),
-                           sc_datasmash_control_read_u32(control.payload + 4))
+            std::make_pair(plank_transport_control_read_u32(control.payload),
+                           plank_transport_control_read_u32(control.payload + 4))
           );
           break;
-        case SC_DATASMASH_CONTROL_SET_VIDEO_BITRATE: {
+        case PLANK_TRANSPORT_CONTROL_SET_VIDEO_BITRATE: {
           const auto bitrate = control.payload_size == sizeof(std::uint32_t) ?
-            stationconnect::bitrate::validate_target(
-              sc_datasmash_control_read_u32(control.payload)) : std::nullopt;
+            plank::bitrate::validate_target(
+              plank_transport_control_read_u32(control.payload)) : std::nullopt;
           if (!bitrate) {
-            BOOST_LOG(error) << "Rejected malformed Datasmash bitrate request"sv;
+            BOOST_LOG(error) << "Rejected malformed PlankTransport bitrate request"sv;
             session::stop(*session);
             return;
           }
@@ -592,7 +592,7 @@ namespace stream {
           break;
         }
         default:
-          BOOST_LOG(error) << "Rejected unexpected client Datasmash control type "sv
+          BOOST_LOG(error) << "Rejected unexpected client PlankTransport control type "sv
                            << control.type;
           session::stop(*session);
           return;
@@ -615,8 +615,8 @@ namespace stream {
 
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
     auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
-#ifdef STATIONCONNECT_DATASMASH
-    std::array<std::uint8_t, SC_DATASMASH_CONTROL_MAX_PACKET_SIZE> control_packet;
+#ifdef PLANK_TRANSPORT
+    std::array<std::uint8_t, PLANK_TRANSPORT_CONTROL_MAX_PACKET_SIZE> control_packet;
 #endif
 
     while (!shutdown_event->peek() && !broadcast_shutdown_event->peek()) {
@@ -628,8 +628,8 @@ namespace stream {
           }
 
           auto session = *pos;
-#ifdef STATIONCONNECT_DATASMASH
-          drain_datasmash_control(session, control_packet);
+#ifdef PLANK_TRANSPORT
+          drain_plank_transport_control(session, control_packet);
 #endif
           if (session->state.load(std::memory_order_acquire) == session::state_e::STOPPING) {
             pos = ctx->sessions->erase(pos);
@@ -657,7 +657,7 @@ namespace stream {
             const auto frames = cursor_shape_queue->pop();
             for (const auto &frame : *frames) {
               if (send_cursor_shape_control(session, frame)) {
-                BOOST_LOG(warning) << "Unable to send a StationConnect local cursor chunk"sv;
+                BOOST_LOG(warning) << "Unable to send a PLANK local cursor chunk"sv;
                 session::stop(*session);
                 break;
               }
@@ -666,7 +666,7 @@ namespace stream {
 
           if (const auto position = session->control.cursor_position_event->try_pop()) {
             if (send_cursor_position_control(session, *position)) {
-              BOOST_LOG(debug) << "Unable to send a StationConnect cursor position sample"sv;
+              BOOST_LOG(debug) << "Unable to send a PLANK cursor position sample"sv;
             }
           }
 
@@ -686,22 +686,22 @@ namespace stream {
 
     auto sessions = ctx->sessions.lock();
     for (auto *session : *ctx->sessions) {
-#ifdef STATIONCONNECT_DATASMASH
+#ifdef PLANK_TRANSPORT
       constexpr std::uint32_t reason = 0x80030023;
       const std::uint32_t values[] {reason};
-      std::array<std::uint8_t, SC_DATASMASH_CONTROL_MAX_PACKET_SIZE> packet {};
+      std::array<std::uint8_t, PLANK_TRANSPORT_CONTROL_MAX_PACKET_SIZE> packet {};
       std::size_t packet_size = 0;
-      const auto encode_result = sc_datasmash_control_encode(
-        SC_DATASMASH_CONTROL_HOST_TERMINATE, values, std::size(values),
+      const auto encode_result = plank_transport_control_encode(
+        PLANK_TRANSPORT_CONTROL_HOST_TERMINATE, values, std::size(values),
         packet.data(), packet.size(), &packet_size
       );
-      auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(
-        session->datasmash_endpoint.get()
+      auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(
+        session->plank_transport_endpoint.get()
       );
       if (encode_result != 0 || !endpoint ||
-          sc_datasmash_native_data_send(endpoint, packet.data(), packet_size) !=
-            SC_DATASMASH_OK) {
-        BOOST_LOG(warning) << "Couldn't send Datasmash termination code"sv;
+          plank_transport_native_data_send(endpoint, packet.data(), packet_size) !=
+            PLANK_TRANSPORT_OK) {
+        BOOST_LOG(warning) << "Couldn't send PlankTransport termination code"sv;
       }
 #endif
       session->shutdown_event->raise(true);
@@ -715,7 +715,7 @@ namespace stream {
   void videoBroadcastThread() {
     auto shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
     auto packets = mail::man->queue<video::packet_t>(mail::video_packets);
-#ifdef STATIONCONNECT_DATASMASH
+#ifdef PLANK_TRANSPORT
     const auto video_epoch = std::chrono::steady_clock::now();
 #endif
 
@@ -749,27 +749,27 @@ namespace stream {
         }
       }
 
-#ifdef STATIONCONNECT_DATASMASH
-      if (!session->datasmash_endpoint) {
-        BOOST_LOG(error) << "Native video frame has no Datasmash endpoint"sv;
+#ifdef PLANK_TRANSPORT
+      if (!session->plank_transport_endpoint) {
+        BOOST_LOG(error) << "Native video frame has no PlankTransport endpoint"sv;
         session::stop(*session);
         continue;
       }
 
-      ScDatasmashNativeVideoFrameInfo frame_info {};
+      PlankTransportNativeVideoFrameInfo frame_info {};
       frame_info.struct_size = sizeof(frame_info);
       if (session->config.monitor.videoFormat == 0) {
-        frame_info.codec = SC_DATASMASH_NATIVE_VIDEO_CODEC_H264;
+        frame_info.codec = PLANK_TRANSPORT_NATIVE_VIDEO_CODEC_H264;
       } else if (session->config.monitor.videoFormat == 1) {
-        frame_info.codec = SC_DATASMASH_NATIVE_VIDEO_CODEC_HEVC;
+        frame_info.codec = PLANK_TRANSPORT_NATIVE_VIDEO_CODEC_HEVC;
       } else {
-        BOOST_LOG(error) << "Datasmash native transport cannot carry video format "sv
+        BOOST_LOG(error) << "PlankTransport native transport cannot carry video format "sv
                          << session->config.monitor.videoFormat;
         session::stop(*session);
         continue;
       }
 
-      frame_info.flags = packet->is_idr() ? SC_DATASMASH_NATIVE_VIDEO_FLAG_KEY : 0;
+      frame_info.flags = packet->is_idr() ? PLANK_TRANSPORT_NATIVE_VIDEO_FLAG_KEY : 0;
       frame_info.frame_number = static_cast<std::uint64_t>(packet->frame_index());
       const auto frame_time = packet->frame_timestamp.value_or(
         std::chrono::steady_clock::now()
@@ -794,30 +794,30 @@ namespace stream {
         frame_processing_latency_logger.collect_and_log(latency_tenths_ms / 10.0);
       }
 
-      auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(
-        session->datasmash_endpoint.get()
+      auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(
+        session->plank_transport_endpoint.get()
       );
       frame_transport_latency_logger.first_point_now();
-      const auto result = sc_datasmash_native_video_send(
+      const auto result = plank_transport_native_video_send(
         endpoint, &frame_info,
         reinterpret_cast<const std::uint8_t *>(payload.data()), payload.size()
       );
       frame_transport_latency_logger.second_point_now_and_log();
-      if (result < SC_DATASMASH_OK) {
-        const auto state = sc_datasmash_native_endpoint_state(endpoint);
-        if (result == SC_DATASMASH_ERROR_INVALID_STATE ||
-            state != SC_DATASMASH_STATE_READY) {
-          BOOST_LOG(info) << "Datasmash native video peer has closed"sv;
+      if (result < PLANK_TRANSPORT_OK) {
+        const auto state = plank_transport_native_endpoint_state(endpoint);
+        if (result == PLANK_TRANSPORT_ERROR_INVALID_STATE ||
+            state != PLANK_TRANSPORT_STATE_READY) {
+          BOOST_LOG(info) << "PlankTransport native video peer has closed"sv;
         } else {
-          BOOST_LOG(error) << "Datasmash native video submission failed with result "sv
+          BOOST_LOG(error) << "PlankTransport native video submission failed with result "sv
                            << result;
         }
         session::stop(*session);
-      } else if (result == SC_DATASMASH_DROPPED) {
-        BOOST_LOG(warning) << "Datasmash native video queue replaced an old frame"sv;
+      } else if (result == PLANK_TRANSPORT_DROPPED) {
+        BOOST_LOG(warning) << "PlankTransport native video queue replaced an old frame"sv;
       }
 #else
-      BOOST_LOG(error) << "StationConnect Host was built without native video transport"sv;
+      BOOST_LOG(error) << "PLANK Host was built without native video transport"sv;
       session::stop(*session);
 #endif
     }
@@ -843,41 +843,41 @@ namespace stream {
       auto &channel_data = std::get<0>(*packet);
       auto *session = static_cast<session_t *>(channel_data);
 
-#ifdef STATIONCONNECT_DATASMASH
+#ifdef PLANK_TRANSPORT
       auto &packet_data = std::get<1>(*packet);
-      if (!session->datasmash_endpoint) {
-        BOOST_LOG(error) << "Native audio packet has no Datasmash endpoint"sv;
+      if (!session->plank_transport_endpoint) {
+        BOOST_LOG(error) << "Native audio packet has no PlankTransport endpoint"sv;
         session::stop(*session);
         continue;
       }
 
-      ScDatasmashNativeAudioPacketInfo packet_info {};
+      PlankTransportNativeAudioPacketInfo packet_info {};
       packet_info.struct_size = sizeof(packet_info);
       packet_info.frame_samples = static_cast<std::uint16_t>(
         session->config.audio.packetDuration * 48
       );
       packet_info.pts = session->audio.timestamp;
-      auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(
-        session->datasmash_endpoint.get()
+      auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(
+        session->plank_transport_endpoint.get()
       );
-      const auto result = sc_datasmash_native_audio_send(
+      const auto result = plank_transport_native_audio_send(
         endpoint, &packet_info, packet_data.begin(), packet_data.size()
       );
-      if (result < SC_DATASMASH_OK) {
-        const auto state = sc_datasmash_native_endpoint_state(endpoint);
-        if (result == SC_DATASMASH_ERROR_INVALID_STATE ||
-            state != SC_DATASMASH_STATE_READY) {
-          BOOST_LOG(info) << "Datasmash native audio peer has closed"sv;
+      if (result < PLANK_TRANSPORT_OK) {
+        const auto state = plank_transport_native_endpoint_state(endpoint);
+        if (result == PLANK_TRANSPORT_ERROR_INVALID_STATE ||
+            state != PLANK_TRANSPORT_STATE_READY) {
+          BOOST_LOG(info) << "PlankTransport native audio peer has closed"sv;
         } else {
-          BOOST_LOG(error) << "Datasmash native audio submission failed with result "sv
+          BOOST_LOG(error) << "PlankTransport native audio submission failed with result "sv
                            << result;
         }
         session::stop(*session);
-      } else if (result == SC_DATASMASH_DROPPED) {
-        BOOST_LOG(warning) << "Datasmash native audio queue replaced an old packet"sv;
+      } else if (result == PLANK_TRANSPORT_DROPPED) {
+        BOOST_LOG(warning) << "PlankTransport native audio queue replaced an old packet"sv;
       }
 #else
-      BOOST_LOG(error) << "StationConnect Host was built without native audio transport"sv;
+      BOOST_LOG(error) << "PLANK Host was built without native audio transport"sv;
       session::stop(*session);
 #endif
       session->audio.timestamp += session->config.audio.packetDuration;
@@ -887,10 +887,10 @@ namespace stream {
   }
 
   /**
-   * @brief Start the native StationConnect media and control workers.
+   * @brief Start the native PLANK media and control workers.
    */
   int start_broadcast(broadcast_ctx_t &ctx) {
-    // Datasmash owns the only active data-plane socket. These workers retain
+    // PlankTransport owns the only active data-plane socket. These workers retain
     // the capture/encode and client-callback contracts without binding the
     // superseded GameStream control, video, or audio ports.
     ctx.video_thread = std::jthread {videoBroadcastThread};
@@ -962,27 +962,27 @@ namespace stream {
     audio::capture(session->mail, session->config.audio, session);
   }
 
-#ifdef STATIONCONNECT_DATASMASH
+#ifdef PLANK_TRANSPORT
   void nativeInputThread(std::stop_token stop_token, session_t *session) {
     platf::set_thread_name("session::input");
     platf::adjust_thread_priority(platf::thread_priority_e::critical);
-    auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session->datasmash_endpoint.get());
-    std::array<std::uint8_t, SC_DATASMASH_INPUT_MAX_PAYLOAD_SIZE> payload {};
+    auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(session->plank_transport_endpoint.get());
+    std::array<std::uint8_t, PLANK_TRANSPORT_INPUT_MAX_PAYLOAD_SIZE> payload {};
 
     while_starting_do_nothing(session->state);
     while (!stop_token.stop_requested() && !session->shutdown_event->peek()) {
       std::uint8_t type = 0;
       std::size_t payload_size = 0;
-      const auto result = sc_datasmash_native_input_receive(
+      const auto result = plank_transport_native_input_receive(
         endpoint, &type, payload.data(), payload.size(), &payload_size, 50
       );
-      if (result == SC_DATASMASH_TIMEOUT) {
+      if (result == PLANK_TRANSPORT_TIMEOUT) {
         continue;
       }
-      if (result != SC_DATASMASH_OK) {
-        const auto state = sc_datasmash_native_endpoint_state(endpoint);
+      if (result != PLANK_TRANSPORT_OK) {
+        const auto state = plank_transport_native_endpoint_state(endpoint);
         if (!stop_token.stop_requested() && !session->shutdown_event->peek()) {
-          if (result == SC_DATASMASH_ERROR_INVALID_STATE || state != SC_DATASMASH_STATE_READY) {
+          if (result == PLANK_TRANSPORT_ERROR_INVALID_STATE || state != PLANK_TRANSPORT_STATE_READY) {
             BOOST_LOG(info) << "KyProto native input peer closed"sv;
           } else {
             BOOST_LOG(error) << "KyProto native input receive failed: result="sv << result;
@@ -1064,21 +1064,21 @@ namespace stream {
       BOOST_LOG(debug) << "Resetting Input..."sv;
       input::reset(session.input, session.input_connection_id);
 
-#ifdef STATIONCONNECT_DATASMASH
-      if (session.datasmash_endpoint) {
-        ScDatasmashNativeStats stats {};
+#ifdef PLANK_TRANSPORT
+      if (session.plank_transport_endpoint) {
+        PlankTransportNativeStats stats {};
         stats.struct_size = sizeof(stats);
-        auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(session.datasmash_endpoint.get());
+        auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(session.plank_transport_endpoint.get());
         std::array<char, 1024> endpoint_error {};
-        const auto endpoint_error_size = sc_datasmash_native_endpoint_last_error(
+        const auto endpoint_error_size = plank_transport_native_endpoint_last_error(
           endpoint, endpoint_error.data(), endpoint_error.size()
         );
         if (endpoint_error_size != 0) {
-          BOOST_LOG(error) << "Datasmash native endpoint ended: "sv
+          BOOST_LOG(error) << "PlankTransport native endpoint ended: "sv
                            << endpoint_error.data();
         }
-        if (sc_datasmash_native_endpoint_stats(endpoint, &stats) == SC_DATASMASH_OK) {
-          BOOST_LOG(info) << "Datasmash native transport: video_sent="sv
+        if (plank_transport_native_endpoint_stats(endpoint, &stats) == PLANK_TRANSPORT_OK) {
+          BOOST_LOG(info) << "PlankTransport native transport: video_sent="sv
                           << stats.video_frames_sent << " frames/"sv
                           << stats.video_bytes_sent << " bytes, send_queue_drops="sv
                           << stats.video_send_drops << "; audio_sent="sv
@@ -1110,12 +1110,12 @@ namespace stream {
         }
 
         platf::streaming_will_stop();
-        if (session.stationconnect_display_lease) {
-          const auto released = stationconnect::session::release_display_lease(
-            session.stationconnect_display_lease_uid
+        if (session.plank_display_lease) {
+          const auto released = plank::session::release_display_lease(
+            session.plank_display_lease_uid
           );
-          if (released != stationconnect::session::display_request_status::submitted) {
-            BOOST_LOG(error) << "Unable to submit the temporary StationConnect display-lease release"sv;
+          if (released != plank::session::display_request_status::submitted) {
+            BOOST_LOG(error) << "Unable to submit the temporary PLANK display-lease release"sv;
           }
         }
       }
@@ -1128,8 +1128,8 @@ namespace stream {
      */
     int start(session_t &session, const std::string &addr_string) {
       (void) addr_string;
-      if (!session.datasmash_endpoint) {
-        BOOST_LOG(error) << "Refusing to start a session without the required Datasmash endpoint"sv;
+      if (!session.plank_transport_endpoint) {
+        BOOST_LOG(error) << "Refusing to start a session without the required PlankTransport endpoint"sv;
         return -1;
       }
 
@@ -1147,7 +1147,7 @@ namespace stream {
 
       session.audioThread = std::jthread {audioThread, &session};
       session.videoThread = std::jthread {videoThread, &session};
-#ifdef STATIONCONNECT_DATASMASH
+#ifdef PLANK_TRANSPORT
       session.inputThread = std::jthread {nativeInputThread, &session};
 #endif
 
@@ -1171,17 +1171,17 @@ namespace stream {
 
       session->shutdown_event = mail->event<bool>(mail::shutdown);
       session->input_session_id = launch_session.unique_id;
-      session->stationconnect_display_lease = launch_session.stationconnect_display_lease;
-      session->stationconnect_display_lease_uid =
-        launch_session.stationconnect_display_lease_uid;
+      session->plank_display_lease = launch_session.plank_display_lease;
+      session->plank_display_lease_uid =
+        launch_session.plank_display_lease_uid;
       session->authentication_session = launch_session.authentication_session;
-      session->datasmash_endpoint = launch_session.datasmash_endpoint;
+      session->plank_transport_endpoint = launch_session.plank_transport_endpoint;
 
-      if (session->stationconnect_display_lease &&
-          stationconnect::session::activate_display_lease(
-            session->stationconnect_display_lease_uid
-          ) != stationconnect::session::display_request_status::submitted) {
-        BOOST_LOG(error) << "Unable to activate the temporary StationConnect display lease"sv;
+      if (session->plank_display_lease &&
+          plank::session::activate_display_lease(
+            session->plank_display_lease_uid
+          ) != plank::session::display_request_status::submitted) {
+        BOOST_LOG(error) << "Unable to activate the temporary PLANK display lease"sv;
       }
 
       session->config = config;
@@ -1191,7 +1191,7 @@ namespace stream {
       session->control.cursor_shape_queue =
         mail->queue<std::vector<std::vector<std::uint8_t>>>(mail::cursor_shape);
       session->control.cursor_position_event =
-        mail->event<SC_CURSOR_POSITION_WIRE_MESSAGE>(mail::cursor_position);
+        mail->event<PLANK_CURSOR_POSITION_WIRE_MESSAGE>(mail::cursor_position);
       session->video.idr_events = mail->event<bool>(mail::idr);
       session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
       session->audio.timestamp = 0;

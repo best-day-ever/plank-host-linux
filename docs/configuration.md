@@ -1,19 +1,19 @@
-# StationConnect host configuration
+# PLANK host configuration
 
-The host reads `/etc/stationconnect/stationconnect-host.conf`. It uses INI-style
+The host reads `/etc/plank/host.conf`. It uses INI-style
 section headings and globally scoped `key = value` entries. Section names are
 organizational only. Blank lines and text following `#` are ignored.
 
 This document is the complete accepted runtime key set. A setting absent from
 this document is intentionally rejected, including inherited Sunshine options
 for unsupported platforms, encoders, display control, update notifications,
-consumer NAT discovery, and product behaviors fixed by StationConnect.
+consumer NAT discovery, and product behaviors fixed by PLANK.
 
 ## General
 
 ### sunshine_name
 
-Host name returned during StationConnect negotiation and used for mDNS service
+Host name returned during PLANK negotiation and used for mDNS service
 advertisement. Default: the operating-system hostname.
 
 ### min_log_level
@@ -26,10 +26,10 @@ Minimum logged severity. Accepted values: `verbose`, `debug`, `info`,
 
 ### port
 
-Base port used by StationConnect HTTPS authentication and native QUIC. Default:
+Base port used by PLANK HTTPS authentication and native QUIC. Default:
 `28989`. Changing it requires matching firewall policy and client reachability.
 
-### stationconnect_mdns_discovery
+### mdns_discovery
 
 Publish the host through mDNS/Avahi for automatic client discovery. Accepted
 values: `true` or `false`. Default: `false`. This controls advertisement only;
@@ -50,22 +50,22 @@ bypass PAM/SSSD/HBAC policy or active-desktop ownership checks.
 ### pkey
 
 Path to the host TLS private key. The packaged profile uses
-`/etc/stationconnect/tls/key.pem`.
+`/etc/plank/tls/key.pem`.
 
 ### cert
 
 Path to the host TLS certificate. The packaged profile uses
-`/etc/stationconnect/tls/cert.pem`.
+`/etc/plank/tls/cert.pem`.
 
 ### file_state
 
 Path to mutable workstation identity state. The packaged profile uses
-`/var/lib/stationconnect/stationconnect_state.json`.
+`/var/lib/plank/plank-state.json`.
 
 ### log_path
 
 Path to the persistent host log. The packaged profile uses
-`/var/log/stationconnect/stationconnect-host.log`.
+`/var/log/plank/host.log`.
 
 ## Audio
 
@@ -79,7 +79,7 @@ operating system's current output sink.
 ### keybindings
 
 Optional comma-separated client-keycode/host-keycode replacement pairs. The
-default StationConnect modifier mappings remain in effect when omitted.
+default PLANK modifier mappings remain in effect when omitted.
 
 ### key_repeat_delay
 
@@ -90,7 +90,7 @@ Milliseconds before a held remote key begins repeating. Default: `500`.
 Remote key-repeat events per second. Default: approximately `24.9`.
 
 Keyboard, mouse, high-resolution scrolling, and native scancodes are mandatory
-StationConnect behaviors and are not configurable.
+PLANK behaviors and are not configurable.
 
 ## Display
 
@@ -115,7 +115,7 @@ through `1000`. `0` derives the target from half the requested stream rate.
 
 ### min_threads
 
-Minimum software-encoder thread/slice count. The packaged StationConnect
+Minimum software-encoder thread/slice count. The packaged PLANK
 profile uses `16`.
 
 ## NVIDIA NVENC
@@ -157,12 +157,12 @@ or `false`. Default: `false`.
 
 ### sw_preset
 
-x264 speed/quality preset. The packaged StationConnect profile uses
+x264 speed/quality preset. The packaged PLANK profile uses
 `ultrafast`.
 
 ### sw_tune
 
-x264 tuning policy. The packaged StationConnect profile uses `zerolatency`.
+x264 tuning policy. The packaged PLANK profile uses `zerolatency`.
 
 ### sw_vbv_maxrate_percentage
 

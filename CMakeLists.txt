@@ -5,8 +5,8 @@ cmake_minimum_required(VERSION 3.24)
 # `third-party/libvirtualhid` requires 3.24
 # todo - set this conditionally
 
-project(StationConnectHost VERSION 0.0.0
-        DESCRIPTION "StationConnect remote workstation host"
+project(PlankHost VERSION 0.0.0
+        DESCRIPTION "PLANK remote workstation host"
         HOMEPAGE_URL "https://instinctual.la")
 
 set(CMAKE_CXX_STANDARD 23)
@@ -18,15 +18,15 @@ endif()
 
 set(PROJECT_LICENSE "GPL-3.0-only")
 
-set(PROJECT_FQDN "la.instinctual.StationConnect.Host")
+set(PROJECT_FQDN "la.instinctual.Plank.Host")
 
-option(STATIONCONNECT_PRODUCT_BUILD
-        "Build the StationConnect product without inherited Sunshine packaging metadata." ON)
+option(PLANK_PRODUCT_BUILD
+        "Build the PLANK product without inherited Sunshine packaging metadata." ON)
 
-set(PROJECT_BRIEF_DESCRIPTION "StationConnect workstation host")  # must be <= 35 characters
+set(PROJECT_BRIEF_DESCRIPTION "PLANK workstation host")  # must be <= 35 characters
 
-set(PROJECT_LONG_DESCRIPTION "StationConnect provides low-latency remote workstation capture, encoding, input, \
-authentication, and session management for the StationConnect client.")
+set(PROJECT_LONG_DESCRIPTION "PLANK provides low-latency remote workstation capture, encoding, input, \
+authentication, and session management for the PLANK client.")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     message(STATUS "Setting build type to 'Release' as none was specified.")
@@ -56,11 +56,11 @@ include(${CMAKE_MODULE_PATH}/prep/options.cmake)
 # initial prep
 include(${CMAKE_MODULE_PATH}/prep/init.cmake)
 
-# The StationConnect RPM has its own explicit, audited package manifest. Do not
+# The PLANK RPM has its own explicit, audited package manifest. Do not
 # generate inherited desktop, Flatpak, AppImage, or user-service metadata for
 # that product build. The upstream packaging path remains available for source
-# portability work by explicitly disabling STATIONCONNECT_PRODUCT_BUILD.
-if(STATIONCONNECT_PRODUCT_BUILD)
+# portability work by explicitly disabling PLANK_PRODUCT_BUILD.
+if(PLANK_PRODUCT_BUILD)
     set(END_BUILD OFF)
 else()
     include(${CMAKE_MODULE_PATH}/prep/special_package_configuration.cmake)
@@ -87,10 +87,10 @@ include(${CMAKE_MODULE_PATH}/compile_definitions/common.cmake)
 include(${CMAKE_MODULE_PATH}/targets/common.cmake)
 
 # The product package consumes only runtime assets from this CMake build. Its
-# RPM metadata and filesystem manifest live at the StationConnect repository
+# RPM metadata and filesystem manifest live at the PLANK repository
 # root, not in the inherited CPack layer.
-if(STATIONCONNECT_PRODUCT_BUILD)
-    include(${CMAKE_MODULE_PATH}/packaging/stationconnect.cmake)
+if(PLANK_PRODUCT_BUILD)
+    include(${CMAKE_MODULE_PATH}/packaging/plank.cmake)
 else()
     include(${CMAKE_MODULE_PATH}/packaging/common.cmake)
 endif()

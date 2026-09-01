@@ -1,6 +1,6 @@
 /**
- * @file src/stationconnect_topology.h
- * @brief Versioned StationConnect display-layout negotiation primitives.
+ * @file src/plank_topology.h
+ * @brief Versioned PLANK display-layout negotiation primitives.
  */
 #pragma once
 
@@ -8,9 +8,9 @@
 #include <cstdint>
 #include <string_view>
 
-namespace stationconnect::topology {
+namespace plank::topology {
   constexpr int maximum_virtual_canvas_width = 8192;
-  constexpr std::uint32_t protocol_version = 11;
+  constexpr std::uint32_t protocol_version = 12;
   constexpr std::uint32_t feature_output_topology = 0x1;
   constexpr std::uint32_t feature_selected_output = 0x2;
   constexpr std::uint32_t feature_unified_absolute_input = 0x4;
@@ -167,4 +167,4 @@ namespace stationconnect::topology {
     }
     return layout_error::none;
   }
-}  // namespace stationconnect::topology
+}  // namespace plank::topology

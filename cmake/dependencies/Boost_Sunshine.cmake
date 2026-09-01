@@ -52,7 +52,7 @@ if(NOT Boost_FOUND)
             format
             property_tree)
 
-    # StationConnect's qualified Linux host has no arbitrary command-launch
+    # PLANK's qualified Linux host has no arbitrary command-launch
     # surface. Retain Boost.Process only for dormant upstream platform code
     # that is not part of the Linux product build.
     if(WIN32 OR APPLE)

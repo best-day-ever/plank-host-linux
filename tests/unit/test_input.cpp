@@ -10,7 +10,7 @@
 #include <vector>
 
 extern "C" {
-#include <moonlight-common-c/src/StationConnect.h>
+#include <moonlight-common-c/src/plank.h>
 }
 
 // local includes
@@ -23,16 +23,16 @@ extern "C" {
 
 namespace {
   std::vector<std::uint8_t> make_raw_hid_frame(
-    const SC_RAW_HID_MESSAGE_TYPE type,
+    const PLANK_RAW_HID_MESSAGE_TYPE type,
     const std::uint16_t interface_id,
     const std::uint16_t generation,
     const void *payload,
     const std::size_t payload_size
   ) {
-    std::vector<std::uint8_t> frame(sizeof(SC_RAW_HID_WIRE_HEADER) + payload_size);
-    SC_RAW_HID_WIRE_HEADER header {};
-    header.magic = util::endian::little(static_cast<std::uint32_t>(SC_RAW_HID_WIRE_MAGIC));
-    header.version = util::endian::little(static_cast<std::uint16_t>(SC_RAW_HID_WIRE_VERSION));
+    std::vector<std::uint8_t> frame(sizeof(PLANK_RAW_HID_WIRE_HEADER) + payload_size);
+    PLANK_RAW_HID_WIRE_HEADER header {};
+    header.magic = util::endian::little(static_cast<std::uint32_t>(PLANK_RAW_HID_WIRE_MAGIC));
+    header.version = util::endian::little(static_cast<std::uint16_t>(PLANK_RAW_HID_WIRE_VERSION));
     header.type = util::endian::little(static_cast<std::uint16_t>(type));
     header.interfaceId = util::endian::little(interface_id);
     header.generation = util::endian::little(generation);
@@ -48,14 +48,14 @@ namespace {
     const std::uint16_t generation,
     const std::uint32_t product = 0x0357
   ) {
-    SC_RAW_HID_DEVICE_MESSAGE device {};
+    PLANK_RAW_HID_DEVICE_MESSAGE device {};
     device.interfaceCount = util::endian::little<std::uint16_t>(1);
     device.bus = util::endian::little<std::uint16_t>(3);
     device.vendor = util::endian::little<std::uint32_t>(0x056a);
     device.product = util::endian::little(product);
     std::memcpy(device.name, "Any exact raw tablet", 20);
     std::memcpy(device.unique, "model-independent", 17);
-    return make_raw_hid_frame(SC_RAW_HID_DEVICE, 0, generation, &device, sizeof(device));
+    return make_raw_hid_frame(PLANK_RAW_HID_DEVICE, 0, generation, &device, sizeof(device));
   }
 
   /**
@@ -151,7 +151,7 @@ TEST_F(InputRetainedSessionTest, ExactRawTabletSuppressesNormalizedFallbackUntil
     0xc0,  // End Collection
   };
   ASSERT_TRUE(input::testing::handle_raw_hid(session, make_raw_hid_frame(
-                                                        SC_RAW_HID_DESCRIPTOR,
+                                                        PLANK_RAW_HID_DESCRIPTOR,
                                                         0,
                                                         generation,
                                                         descriptor,
@@ -160,7 +160,7 @@ TEST_F(InputRetainedSessionTest, ExactRawTabletSuppressesNormalizedFallbackUntil
   EXPECT_FALSE(input::testing::normalized_pen_enabled(session));
 
   ASSERT_TRUE(input::testing::handle_raw_hid(session, make_raw_hid_frame(
-                                                        SC_RAW_HID_SUSPEND,
+                                                        PLANK_RAW_HID_SUSPEND,
                                                         0,
                                                         generation,
                                                         nullptr,
@@ -169,7 +169,7 @@ TEST_F(InputRetainedSessionTest, ExactRawTabletSuppressesNormalizedFallbackUntil
   EXPECT_FALSE(input::testing::normalized_pen_enabled(session));
 
   ASSERT_TRUE(input::testing::handle_raw_hid(session, make_raw_hid_frame(
-                                                        SC_RAW_HID_DETACH,
+                                                        PLANK_RAW_HID_DETACH,
                                                         0,
                                                         generation,
                                                         nullptr,
@@ -196,7 +196,7 @@ TEST_F(InputRetainedSessionTest, NormalizedPenReleasesRetainedRawTabletEndpoints
     0xc0,
   };
   ASSERT_TRUE(input::testing::handle_raw_hid(session, make_raw_hid_frame(
-                                                        SC_RAW_HID_DESCRIPTOR,
+                                                        PLANK_RAW_HID_DESCRIPTOR,
                                                         0,
                                                         generation,
                                                         descriptor,

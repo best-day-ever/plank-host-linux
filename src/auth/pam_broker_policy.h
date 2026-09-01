@@ -1,6 +1,6 @@
 /**
  * @file src/auth/pam_broker_policy.h
- * @brief Root-login policy loaded by the StationConnect PAM broker.
+ * @brief Root-login policy loaded by the PLANK PAM broker.
  */
 #pragma once
 
@@ -17,7 +17,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-namespace stationconnect::auth {
+namespace plank::auth {
   /** Administrator-owned authentication policy. */
   struct broker_policy_t {
     bool allow_root_login {false};  ///< Root remains denied unless explicitly enabled.
@@ -44,7 +44,7 @@ namespace stationconnect::auth {
   }  // namespace detail
 
   /**
-   * @brief Parse the authentication policy from StationConnect INI text.
+   * @brief Parse the authentication policy from PLANK INI text.
    *
    * A missing option preserves the secure default. Duplicate or malformed
    * declarations fail closed so an administrator typo cannot enable root.
@@ -152,4 +152,4 @@ namespace stationconnect::auth {
     }
     return parse_broker_policy(contents, error);
   }
-}  // namespace stationconnect::auth
+}  // namespace plank::auth

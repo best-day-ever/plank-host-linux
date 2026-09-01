@@ -1,6 +1,6 @@
 /**
  * @file src/session/session_context.h
- * @brief Logind-backed graphical-session selection for StationConnect.
+ * @brief Logind-backed graphical-session selection for PLANK.
  */
 #pragma once
 
@@ -13,7 +13,7 @@
 
 #include <sys/types.h>
 
-namespace stationconnect::session {
+namespace plank::session {
   struct descriptor_t {
     std::string id;
     uid_t uid {};
@@ -134,4 +134,4 @@ namespace stationconnect::session {
 
   /** Return the most recently accepted desktop attachment generation. */
   std::uint64_t desktop_generation();
-}  // namespace stationconnect::session
+}  // namespace plank::session

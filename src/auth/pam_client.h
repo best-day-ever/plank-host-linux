@@ -12,7 +12,7 @@
 
 #include "pam_broker_protocol.h"
 
-namespace stationconnect::auth {
+namespace plank::auth {
   /**
    * @brief Result of advancing a PAM conversation.
    */
@@ -116,4 +116,4 @@ namespace stationconnect::auth {
     std::size_t expected_responses_ = 0;  ///< Entries required by the last challenge.
     bool authenticated_ = false;  ///< Whether the broker opened the PAM session.
   };
-}  // namespace stationconnect::auth
+}  // namespace plank::auth

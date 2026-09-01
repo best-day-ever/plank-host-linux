@@ -124,7 +124,7 @@ namespace video {
     }
 
     /**
-     * @brief Log aggregate StationConnect timing statistics for one boundary.
+     * @brief Log aggregate PLANK timing statistics for one boundary.
      *
      * @param name Stable boundary name for qualification log parsing.
      * @param samples Durations in microseconds.
@@ -141,7 +141,7 @@ namespace video {
         return duration_us > frame_budget_us;
       });
       BOOST_LOG(info)
-        << "StationConnect timing " << name
+        << "PLANK timing " << name
         << ": samples=" << sorted.size()
         << " mean_ms=" << total / sorted.size() / 1000.0
         << " p50_ms=" << timing_percentile(sorted, 0.50) / 1000.0
@@ -698,7 +698,7 @@ namespace video {
     // inject sps/vps data into idr pictures
     int inject;  ///< Number of upcoming IDR frames that should receive rewritten parameter sets.
     bool warmup_pending;  ///< Whether the first encode should be discarded to absorb x264 startup allocation.
-    bool measure_timing;  ///< Whether this StationConnect x264 session should emit timing statistics.
+    bool measure_timing;  ///< Whether this PLANK x264 session should emit timing statistics.
     std::vector<double> encode_completion_us;  ///< Frame submission to first encoded packet availability.
   };
 
@@ -1764,7 +1764,7 @@ namespace video {
 
   bool capture_source_available(std::string_view source) {
 #if defined(__linux__)
-    return platf::stationconnect_capture_source_available(source);
+    return platf::plank_capture_source_available(source);
 #else
     return false;
 #endif
@@ -1776,7 +1776,7 @@ namespace video {
     }
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
     chosen_encoder = backend == "nvenc-direct"sv ? &nvenc_direct : &software_cuda;
-    BOOST_LOG(info) << "StationConnect selected per-session encoder backend ["sv
+    BOOST_LOG(info) << "PLANK selected per-session encoder backend ["sv
                     << chosen_encoder->name << ']';
     return true;
 #else
@@ -1910,7 +1910,7 @@ namespace video {
     auto desktop_reattach_event =
       mail::man->event<std::uint64_t>(mail::desktop_reattach);
 #ifdef __linux__
-    auto attached_generation = stationconnect::session::desktop_generation();
+    auto attached_generation = plank::session::desktop_generation();
 #endif
 
     // Wait for the initial capture context or a request to stop the queue
@@ -2071,21 +2071,21 @@ namespace video {
         return true;
       };
 
-      // StationConnect always transports cursor shape separately. It is never
+      // PLANK always transports cursor shape separately. It is never
       // composited into the captured video frame.
       bool capture_cursor = false;
       auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &capture_cursor);
 
 #ifdef __linux__
       if (status == platf::capture_e::error &&
-          getenv("STATIONCONNECT_SESSION_CONTROL_FD") != nullptr) {
+          getenv("PLANK_SESSION_CONTROL_FD") != nullptr) {
         const auto deadline = std::chrono::steady_clock::now() + 10s;
         while (capture_ctx_queue->running() &&
-               stationconnect::session::desktop_generation() == attached_generation &&
+               plank::session::desktop_generation() == attached_generation &&
                std::chrono::steady_clock::now() < deadline) {
           std::this_thread::sleep_for(50ms);
         }
-        if (stationconnect::session::desktop_generation() != attached_generation) {
+        if (plank::session::desktop_generation() != attached_generation) {
           status = platf::capture_e::reinit;
         }
       }
@@ -2108,7 +2108,7 @@ namespace video {
               }
             }
 #ifdef __linux__
-            attached_generation = stationconnect::session::desktop_generation();
+            attached_generation = plank::session::desktop_generation();
 #endif
             reinit_event.raise(true);
 
@@ -2909,12 +2909,12 @@ namespace video {
       }
       if (requested_bitrate_kbps && *requested_bitrate_kbps != config.bitrate) {
         // x264 only supports changing an active bitrate when its ABR engine is
-        // operating as CBR. StationConnect's qualified bounded-ABR profile
+        // operating as CBR. PLANK's qualified bounded-ABR profile
         // deliberately uses a raised VBV peak, so changing AVCodecContext fields
         // would update public parameters while leaving x264's real sustained
         // target unchanged. Return to capture_async(), which preserves the
         // stream and display while creating a fresh encoder at the new target.
-        BOOST_LOG(info) << "Recreating active StationConnect ABR encoder: old="sv
+        BOOST_LOG(info) << "Recreating active PLANK ABR encoder: old="sv
                         << config.bitrate << " Kbps, new="sv
                         << *requested_bitrate_kbps << " Kbps"sv;
         config.bitrate = *requested_bitrate_kbps;
@@ -3210,7 +3210,7 @@ namespace video {
     auto desktop_reattach_event =
       mail::man->event<std::uint64_t>(mail::desktop_reattach);
 #ifdef __linux__
-    const auto attached_generation = stationconnect::session::desktop_generation();
+    const auto attached_generation = plank::session::desktop_generation();
 #endif
 
     if (synced_session_ctxs.empty()) {
@@ -3310,13 +3310,13 @@ namespace video {
             requested_bitrate_kbps = ctx->bitrate_events->pop(0ms);
           }
           if (requested_bitrate_kbps && *requested_bitrate_kbps != ctx->config.bitrate) {
-            BOOST_LOG(info) << "Recreating active StationConnect ABR encoder: old="sv
+            BOOST_LOG(info) << "Recreating active PLANK ABR encoder: old="sv
                             << ctx->config.bitrate << " Kbps, new="sv
                             << *requested_bitrate_kbps << " Kbps"sv;
             ctx->config.bitrate = *requested_bitrate_kbps;
             auto replacement = make_synced_session(disp.get(), encoder, *img, *ctx);
             if (!replacement) {
-              BOOST_LOG(error) << "Failed to recreate active StationConnect ABR encoder"sv;
+              BOOST_LOG(error) << "Failed to recreate active PLANK ABR encoder"sv;
               ctx->shutdown_event->raise(true);
               continue;
             }
@@ -3361,20 +3361,20 @@ namespace video {
         return true;
       };
 
-      // StationConnect always transports cursor shape separately. It is never
+      // PLANK always transports cursor shape separately. It is never
       // composited into the captured video frame.
       bool capture_cursor = false;
       auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &capture_cursor);
 #ifdef __linux__
       if (status == platf::capture_e::error &&
-          getenv("STATIONCONNECT_SESSION_CONTROL_FD") != nullptr) {
+          getenv("PLANK_SESSION_CONTROL_FD") != nullptr) {
         const auto deadline = std::chrono::steady_clock::now() + 10s;
         while (encode_session_ctx_queue.running() &&
-               stationconnect::session::desktop_generation() == attached_generation &&
+               plank::session::desktop_generation() == attached_generation &&
                std::chrono::steady_clock::now() < deadline) {
           std::this_thread::sleep_for(50ms);
         }
-        if (stationconnect::session::desktop_generation() != attached_generation) {
+        if (plank::session::desktop_generation() != attached_generation) {
           return encode_e::reinit;
         }
       }
@@ -3531,7 +3531,7 @@ namespace video {
 
     idr_events->raise(true);
     if (!select_encoder_backend_for_session(config.encoder_backend)) {
-      BOOST_LOG(error) << "Unable to activate requested StationConnect encoder backend ["sv
+      BOOST_LOG(error) << "Unable to activate requested PLANK encoder backend ["sv
                        << config.encoder_backend << ']';
       mail->event<bool>(mail::shutdown)->raise(true);
       return;
@@ -3882,7 +3882,7 @@ namespace video {
       };
 
       test_yuv444(encoder.h264, 0);
-      // H.264 dynamic range denotes the StationConnect 10-bit 4:4:4 mode.
+      // H.264 dynamic range denotes the PLANK 10-bit 4:4:4 mode.
       // It remains SDR identity GBR rather than HDR.
       encoder.h264[encoder_t::DYNAMIC_RANGE] = false;
       test_yuv444_hdr(encoder.h264, 0);
@@ -3938,7 +3938,7 @@ namespace video {
     BOOST_LOG(info) << "// Testing for available encoders, this may generate errors. You can safely ignore those errors. //"sv;
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    // StationConnect profiles select their backend per session. Qualify both
+    // PLANK profiles select their backend per session. Qualify both
     // exact product backends independently instead of using Sunshine's
     // inherited global encoder selector or generic fallback order.
     const bool software_cuda_qualified =
@@ -3948,7 +3948,7 @@ namespace video {
       validate_encoder(nvenc_direct, previous_encoder && previous_encoder != &nvenc_direct,
                        true, false);
     if (!software_cuda_qualified && !nvenc_direct_qualified) {
-      BOOST_LOG(fatal) << "No exact StationConnect encoder backend is available."sv;
+      BOOST_LOG(fatal) << "No exact PLANK encoder backend is available."sv;
       return -1;
     }
     chosen_encoder = software_cuda_qualified ? &software_cuda : &nvenc_direct;
@@ -4050,7 +4050,7 @@ namespace video {
     last_encoder_probe_supported_yuv444_for_codec[1] =
       nvenc_direct.hevc[encoder_t::PASSED] && nvenc_direct.hevc[encoder_t::YUV444];
     last_encoder_probe_supported_yuv444_for_codec[2] = false;
-    BOOST_LOG(info) << "StationConnect nvenc-direct modes: h264-444-8="sv
+    BOOST_LOG(info) << "PLANK nvenc-direct modes: h264-444-8="sv
                     << nvenc_direct_supports_h264_444_8bit()
                     << " hevc-444-8="sv << nvenc_direct_supports_hevc_444_8bit()
                     << " hevc-444-10="sv << nvenc_direct_supports_hevc_444_10bit();

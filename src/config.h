@@ -217,13 +217,13 @@ namespace config {
   };
 
   /**
-   * @brief HTTP and HTTPS settings used by StationConnect negotiation.
+   * @brief HTTP and HTTPS settings used by PLANK negotiation.
    */
   struct nvhttp_t {
     std::string pkey;  ///< Private key PEM string or path.
     std::string cert;  ///< Certificate PEM string or path.
 
-    std::string sunshine_name;  ///< Host name advertised to Moonlight clients.
+    std::string host_name;  ///< Host name advertised to Moonlight clients.
 
     std::string file_state;  ///< Path to the persisted Sunshine state file.
 
@@ -284,8 +284,8 @@ namespace config {
     std::uint16_t port;  ///< TCP port used by Sunshine services.
 
     std::string log_file;  ///< Path to the configured log file.
-    bool stationconnect_mdns_discovery;  ///< Advertise this StationConnect host with mDNS.
-    std::string startup_layout;  ///< StationConnect physical or virtual display policy applied before the display manager starts.
+    bool mdns_discovery;  ///< Advertise this PLANK host with mDNS.
+    std::string startup_layout;  ///< PLANK physical or virtual display policy applied before the display manager starts.
   };
 
   extern video_t video;
@@ -304,7 +304,7 @@ namespace config {
    */
   int parse(int argc, char *argv[]);
   /**
-   * @brief Parse INI-style StationConnect configuration text into key-value entries.
+   * @brief Parse INI-style PLANK configuration text into key-value entries.
    *
    * @param file_content Raw configuration file contents to parse.
    * @return Parsed globally scoped key-value entries; section headers are organizational.

@@ -1,6 +1,6 @@
 /**
  * @file src/process.h
- * @brief StationConnect Desktop stream reservation state.
+ * @brief PLANK Desktop stream reservation state.
  */
 #pragma once
 
@@ -14,7 +14,7 @@
 
 namespace proc {
   /**
-   * Stable GameStream application identity for the one StationConnect stream.
+   * Stable GameStream application identity for the one PLANK stream.
    *
    * The value preserves the ID previously derived from the packaged Desktop
    * name and image. Keeping it independent from mutable artwork prevents an
@@ -24,7 +24,7 @@ namespace proc {
   inline constexpr std::string_view desktop_app_name = "Desktop";
 
   /**
-   * @brief Return whether a GameStream application ID is StationConnect Desktop.
+   * @brief Return whether a GameStream application ID is PLANK Desktop.
    */
   bool is_desktop_app(int app_id) noexcept;
 
@@ -34,7 +34,7 @@ namespace proc {
   class proc_t {
   public:
     /**
-     * @brief Replace any previous reservation with StationConnect Desktop.
+     * @brief Replace any previous reservation with PLANK Desktop.
      * @return Zero on success or the GameStream not-found status.
      */
     int execute(int app_id);

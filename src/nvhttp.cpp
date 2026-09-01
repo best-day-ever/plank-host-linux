@@ -31,12 +31,12 @@
 
 #include <unistd.h>
 
-#ifdef STATIONCONNECT_DATASMASH
+#ifdef PLANK_TRANSPORT
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/rand.h>
-#include "stationconnect_datasmash.h"
+#include "plank_transport.h"
 #endif
 
 // local includes
@@ -52,7 +52,7 @@
 #include "process.h"
 #include "session_stream.h"
 #include "session/session_context.h"
-#include "stationconnect_topology.h"
+#include "plank_topology.h"
 #include "utility.h"
 #include "uuid.h"
 #include "video.h"
@@ -61,47 +61,47 @@ using namespace std::literals;
 
 namespace nvhttp {
 
-  static constexpr std::string_view EMPTY_PROPERTY_TREE_ERROR_MSG = "Property tree is empty. Probably, control flow got interrupted by an unexpected C++ exception. This is a bug in Sunshine. Moonlight-qt will report Malformed XML (missing root element)."sv;
+  static constexpr std::string_view EMPTY_PROPERTY_TREE_ERROR_MSG = "Property tree is empty. Probably, control flow got interrupted by an unexpected C++ exception. This is a bug in PLANK Host. PLANK Client will report Malformed XML (missing root element)."sv;
 
   namespace fs = std::filesystem;
   namespace pt = boost::property_tree;
 
-  constexpr std::string_view pam_broker_socket = "/run/stationconnect/pam/auth.sock"sv;  ///< Privileged broker activation path.
+  constexpr std::string_view pam_broker_socket = "/run/plank/pam/auth.sock"sv;  ///< Privileged broker activation path.
   constexpr std::string_view runtime_display_state =
-    "/run/stationconnect/host/display-state"sv;
-  std::unique_ptr<stationconnect::auth::web_auth_manager_t> web_auth;  ///< PAM conversations and ephemeral tokens.
-  constexpr auto stationconnect_topology_version = stationconnect::topology::protocol_version;
-  constexpr std::uint32_t stationconnect_host_metadata_version = 1;
-  constexpr auto stationconnect_feature_selected_output =
-    stationconnect::topology::feature_selected_output;
-  constexpr auto stationconnect_feature_scaled_span =
-    stationconnect::topology::feature_scaled_span;
-  constexpr auto stationconnect_feature_topology_generation =
-    stationconnect::topology::feature_topology_generation;
-  constexpr auto stationconnect_feature_composite_source_regions =
-    stationconnect::topology::feature_composite_source_regions;
-  constexpr auto stationconnect_feature_host_layout_binding =
-    stationconnect::topology::feature_host_layout_binding;
-  constexpr auto stationconnect_feature_independent_virtual_modes =
-    stationconnect::topology::feature_independent_virtual_modes;
-  constexpr auto stationconnect_feature_dynamic_host_layout =
-    stationconnect::topology::feature_dynamic_host_layout;
-  constexpr auto stationconnect_feature_temporary_physical_layout =
-    stationconnect::topology::feature_temporary_physical_layout;
-  constexpr auto stationconnect_feature_capture_source_selection =
-    stationconnect::topology::feature_capture_source_selection;
-  constexpr auto stationconnect_feature_encoder_backend_selection =
-    stationconnect::topology::feature_encoder_backend_selection;
-  constexpr auto stationconnect_feature_nvfbc_hevc10_nvenc =
-    stationconnect::topology::feature_nvfbc_hevc10_nvenc;
-  constexpr auto stationconnect_feature_fixed_transport_mtu =
-    stationconnect::topology::feature_fixed_transport_mtu;
-  constexpr auto stationconnect_topology_features = stationconnect::topology::feature_flags;
+    "/run/plank/host/display-state"sv;
+  std::unique_ptr<plank::auth::web_auth_manager_t> web_auth;  ///< PAM conversations and ephemeral tokens.
+  constexpr auto plank_topology_version = plank::topology::protocol_version;
+  constexpr std::uint32_t plank_host_metadata_version = 1;
+  constexpr auto plank_feature_selected_output =
+    plank::topology::feature_selected_output;
+  constexpr auto plank_feature_scaled_span =
+    plank::topology::feature_scaled_span;
+  constexpr auto plank_feature_topology_generation =
+    plank::topology::feature_topology_generation;
+  constexpr auto plank_feature_composite_source_regions =
+    plank::topology::feature_composite_source_regions;
+  constexpr auto plank_feature_host_layout_binding =
+    plank::topology::feature_host_layout_binding;
+  constexpr auto plank_feature_independent_virtual_modes =
+    plank::topology::feature_independent_virtual_modes;
+  constexpr auto plank_feature_dynamic_host_layout =
+    plank::topology::feature_dynamic_host_layout;
+  constexpr auto plank_feature_temporary_physical_layout =
+    plank::topology::feature_temporary_physical_layout;
+  constexpr auto plank_feature_capture_source_selection =
+    plank::topology::feature_capture_source_selection;
+  constexpr auto plank_feature_encoder_backend_selection =
+    plank::topology::feature_encoder_backend_selection;
+  constexpr auto plank_feature_nvfbc_hevc10_nvenc =
+    plank::topology::feature_nvfbc_hevc10_nvenc;
+  constexpr auto plank_feature_fixed_transport_mtu =
+    plank::topology::feature_fixed_transport_mtu;
+  constexpr auto plank_topology_features = plank::topology::feature_flags;
 
-#ifdef STATIONCONNECT_DATASMASH
-  std::string datasmash_last_error(ScDatasmashNativeEndpoint *endpoint) {
+#ifdef PLANK_TRANSPORT
+  std::string plank_transport_last_error(PlankTransportNativeEndpoint *endpoint) {
     std::array<char, 512> error {};
-    sc_datasmash_native_endpoint_last_error(endpoint, error.data(), error.size());
+    plank_transport_native_endpoint_last_error(endpoint, error.data(), error.size());
     return error.data();
   }
 
@@ -133,13 +133,13 @@ namespace nvhttp {
     ), true);
   }
 
-  bool start_datasmash_data_plane(session_stream::launch_session_t &session,
+  bool start_plank_transport_data_plane(session_stream::launch_session_t &session,
                                   pt::ptree &tree) {
     const auto fingerprint = certificate_sha256(config::nvhttp.cert);
     if (!fingerprint) {
       tree.put("root.<xmlattr>.status_code", 503);
       tree.put("root.<xmlattr>.status_message",
-               "Unable to fingerprint the StationConnect data-plane certificate");
+               "Unable to fingerprint the PLANK data-plane certificate");
       return false;
     }
 
@@ -147,7 +147,7 @@ namespace nvhttp {
     if (RAND_bytes(token_bytes.data(), token_bytes.size()) != 1) {
       tree.put("root.<xmlattr>.status_code", 503);
       tree.put("root.<xmlattr>.status_message",
-               "Unable to create the StationConnect data-plane token");
+               "Unable to create the PLANK data-plane token");
       return false;
     }
     std::string token = util::hex_vec(std::vector<std::uint8_t>(
@@ -157,10 +157,10 @@ namespace nvhttp {
 
     const auto port = net::map_port(0);
     const std::string bind_address = "0.0.0.0:" + std::to_string(port);
-    ScDatasmashConfig endpoint_config {};
+    PlankTransportConfig endpoint_config {};
     endpoint_config.struct_size = sizeof(endpoint_config);
-    endpoint_config.abi_version = SC_DATASMASH_ABI_VERSION;
-    endpoint_config.mode = SC_DATASMASH_MODE_SERVER;
+    endpoint_config.abi_version = PLANK_TRANSPORT_ABI_VERSION;
+    endpoint_config.mode = PLANK_TRANSPORT_MODE_SERVER;
     endpoint_config.handshake_timeout_ms = 10000;
     const auto configured_idle_ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -180,37 +180,37 @@ namespace nvhttp {
     endpoint_config.private_key_path = config::nvhttp.pkey.c_str();
     endpoint_config.session_token = token.c_str();
 
-    ScDatasmashNativeEndpoint *endpoint = nullptr;
-    int result = sc_datasmash_native_endpoint_create(&endpoint_config, &endpoint);
-    if (result == SC_DATASMASH_OK) {
-      result = sc_datasmash_native_endpoint_start(endpoint);
+    PlankTransportNativeEndpoint *endpoint = nullptr;
+    int result = plank_transport_native_endpoint_create(&endpoint_config, &endpoint);
+    if (result == PLANK_TRANSPORT_OK) {
+      result = plank_transport_native_endpoint_start(endpoint);
     }
-    if (result != SC_DATASMASH_OK) {
+    if (result != PLANK_TRANSPORT_OK) {
       const std::string error_message = endpoint == nullptr ?
-        "endpoint creation failed" : datasmash_last_error(endpoint);
+        "endpoint creation failed" : plank_transport_last_error(endpoint);
       if (endpoint != nullptr) {
-        sc_datasmash_native_endpoint_destroy(endpoint);
+        plank_transport_native_endpoint_destroy(endpoint);
       }
       OPENSSL_cleanse(token.data(), token.size());
-      BOOST_LOG(error) << "Unable to start experimental datasmash listener: "sv
+      BOOST_LOG(error) << "Unable to start PLANK transport listener: "sv
                        << error_message;
       tree.put("root.<xmlattr>.status_code", 503);
       tree.put("root.<xmlattr>.status_message",
-               "Unable to start the experimental StationConnect data plane");
+               "Unable to start the experimental PLANK data plane");
       return false;
     }
 
-    session.datasmash_endpoint = std::shared_ptr<void>(endpoint, [](void *raw_endpoint) {
-      auto *endpoint = static_cast<ScDatasmashNativeEndpoint *>(raw_endpoint);
-      sc_datasmash_native_endpoint_stop(endpoint);
-      sc_datasmash_native_endpoint_destroy(endpoint);
+    session.plank_transport_endpoint = std::shared_ptr<void>(endpoint, [](void *raw_endpoint) {
+      auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(raw_endpoint);
+      plank_transport_native_endpoint_stop(endpoint);
+      plank_transport_native_endpoint_destroy(endpoint);
     });
-    tree.put("root.StationConnectDatasmashPort", port);
-    tree.put("root.StationConnectDatasmashCertificateSha256", *fingerprint);
-    tree.put("root.StationConnectDatasmashToken", token);
-    tree.put("root.StationConnectQuicUdpPayloadMtu", session.quic_udp_payload_mtu);
+    tree.put("root.PlankTransportPort", port);
+    tree.put("root.PlankTransportCertificateSha256", *fingerprint);
+    tree.put("root.PlankTransportToken", token);
+    tree.put("root.PlankQuicUdpPayloadMtu", session.quic_udp_payload_mtu);
     OPENSSL_cleanse(token.data(), token.size());
-    BOOST_LOG(info) << "Experimental datasmash listener started on UDP port "sv << port
+    BOOST_LOG(info) << "Experimental plank_transport listener started on UDP port "sv << port
                     << " (idle timeout "sv << idle_ms << " ms, fixed QUIC UDP payload "sv
                     << session.quic_udp_payload_mtu << " bytes)"sv;
     return true;
@@ -236,7 +236,7 @@ namespace nvhttp {
       context.set_options(boost::asio::ssl::context::no_tlsv1);
       context.set_options(boost::asio::ssl::context::no_tlsv1_1);
       if (tls13_only && SSL_CTX_set_min_proto_version(context.native_handle(), TLS1_3_VERSION) != 1) {
-        throw std::runtime_error("Unable to require TLS 1.3 for StationConnect authentication");
+        throw std::runtime_error("Unable to require TLS 1.3 for PLANK authentication");
       }
       context.use_certificate_chain_file(certification_file);
       context.use_private_key_file(private_key_file, boost::asio::ssl::context::pem);
@@ -343,8 +343,8 @@ namespace nvhttp {
    * @param step Internal authentication state.
    * @return JSON response without credential data.
    */
-  nlohmann::json auth_step_json(const stationconnect::auth::web_auth_step_t &step) {
-    using state_e = stationconnect::auth::step_t::state_e;
+  nlohmann::json auth_step_json(const plank::auth::web_auth_step_t &step) {
+    using state_e = plank::auth::step_t::state_e;
     nlohmann::json body;
     if (step.state == state_e::challenge) {
       body["state"] = "challenge";
@@ -502,11 +502,11 @@ namespace nvhttp {
     if (!identity) {
       return std::nullopt;
     }
-    const auto uid = stationconnect::auth::account_uid(*identity);
+    const auto uid = plank::auth::account_uid(*identity);
     if (!uid ||
-        !stationconnect::session::supervisor_attests_account_for_active_seat0(*uid)) {
+        !plank::session::supervisor_attests_account_for_active_seat0(*uid)) {
       web_auth->cancel(token);
-      BOOST_LOG(warning) << "Rejecting StationConnect stream for an account that is not authorized for the active desktop"sv;
+      BOOST_LOG(warning) << "Rejecting PLANK stream for an account that is not authorized for the active desktop"sv;
       return std::nullopt;
     }
     return uid;
@@ -552,7 +552,7 @@ namespace nvhttp {
     // always initialize one 1920x1080 output before bookmark negotiation.
     result.startup_kind = config::sunshine.startup_layout == "virtual" ?
       "single" : "physical";
-    if (const auto runtime = stationconnect::session::read_runtime_display_state(
+    if (const auto runtime = plank::session::read_runtime_display_state(
           runtime_display_state
         )) {
       result.kind = runtime->layout;
@@ -611,8 +611,8 @@ namespace nvhttp {
     allowed_layouts.push_back("single");
     allowed_layouts.push_back("dual-horizontal");
     nlohmann::json body {
-      {"schema_version", stationconnect_topology_version},
-      {"feature_flags", stationconnect_topology_features},
+      {"schema_version", plank_topology_version},
+      {"feature_flags", plank_topology_features},
       {"layout", {
         {"kind", live_layout.kind},
         {"virtual", live_layout.virtual_layout},
@@ -659,15 +659,15 @@ namespace nvhttp {
                         const std::vector<platf::display_info_t> &outputs,
                         uid_t authenticated_uid,
                         pt::ptree &tree) {
-    if (session.stationconnect_protocol_version != stationconnect_topology_version ||
-        (session.stationconnect_feature_flags & stationconnect_feature_fixed_transport_mtu) == 0 ||
-        (session.stationconnect_feature_flags & stationconnect_feature_host_layout_binding) == 0 ||
-        (session.stationconnect_feature_flags & stationconnect_feature_independent_virtual_modes) == 0 ||
-        (session.stationconnect_feature_flags & stationconnect_feature_dynamic_host_layout) == 0 ||
-        (session.stationconnect_feature_flags & stationconnect_feature_temporary_physical_layout) == 0 ||
+    if (session.plank_protocol_version != plank_topology_version ||
+        (session.plank_feature_flags & plank_feature_fixed_transport_mtu) == 0 ||
+        (session.plank_feature_flags & plank_feature_host_layout_binding) == 0 ||
+        (session.plank_feature_flags & plank_feature_independent_virtual_modes) == 0 ||
+        (session.plank_feature_flags & plank_feature_dynamic_host_layout) == 0 ||
+        (session.plank_feature_flags & plank_feature_temporary_physical_layout) == 0 ||
         session.host_layout.empty()) {
       tree.put("root.<xmlattr>.status_code", 400);
-      tree.put("root.<xmlattr>.status_message", "Missing StationConnect host-layout binding");
+      tree.put("root.<xmlattr>.status_message", "Missing PLANK host-layout binding");
       return false;
     }
 
@@ -683,7 +683,7 @@ namespace nvhttp {
     });
 
     const auto live_layout = live_display_layout(outputs);
-    if (!stationconnect::topology::layout_allowed_by_startup_layout(
+    if (!plank::topology::layout_allowed_by_startup_layout(
           session.host_layout, live_layout.startup_kind
         )) {
       tree.put("root.<xmlattr>.status_code", 409);
@@ -699,7 +699,7 @@ namespace nvhttp {
     const auto actual_mode_2 = actual_layout == "dual-horizontal" ?
       live_layout.virtual_modes.size() > 1 ? live_layout.virtual_modes[1] : std::string {} :
       std::string {};
-    const auto validation = stationconnect::topology::validate_layout_binding(
+    const auto validation = plank::topology::validate_layout_binding(
       session.host_layout,
       session.virtual_mode_1,
       session.virtual_mode_2,
@@ -708,24 +708,24 @@ namespace nvhttp {
       actual_mode_2,
       outputs.size()
     );
-    if (validation == stationconnect::topology::layout_error::invalid_request) {
+    if (validation == plank::topology::layout_error::invalid_request) {
       tree.put("root.<xmlattr>.status_code", 400);
-      tree.put("root.<xmlattr>.status_message", "Invalid StationConnect host-layout binding");
+      tree.put("root.<xmlattr>.status_message", "Invalid PLANK host-layout binding");
       return false;
     }
-    if (validation == stationconnect::topology::layout_error::mismatch) {
-      const auto transition = stationconnect::session::request_display_transition({
-        stationconnect::session::display_request_t::action_t::acquire,
+    if (validation == plank::topology::layout_error::mismatch) {
+      const auto transition = plank::session::request_display_transition({
+        plank::session::display_request_t::action_t::acquire,
         session.host_layout, session.virtual_mode_1, session.virtual_mode_2,
         authenticated_uid
       });
-      if (transition == stationconnect::session::display_request_status::submitted) {
+      if (transition == plank::session::display_request_status::submitted) {
         tree.put("root.<xmlattr>.status_code", 425);
         tree.put("root.<xmlattr>.status_message",
-                 "StationConnect host display transition started");
+                 "PLANK host display transition started");
         return false;
       }
-      if (transition == stationconnect::session::display_request_status::wrong_user) {
+      if (transition == plank::session::display_request_status::wrong_user) {
         tree.put("root.<xmlattr>.status_code", 423);
         tree.put("root.<xmlattr>.status_message",
                  "Only the active desktop user may change its display layout");
@@ -738,18 +738,18 @@ namespace nvhttp {
       );
       return false;
     }
-    if (validation == stationconnect::topology::layout_error::unhealthy) {
+    if (validation == plank::topology::layout_error::unhealthy) {
       tree.put("root.<xmlattr>.status_code", 409);
       tree.put("root.<xmlattr>.status_message", "Configured host display layout is not healthy");
       return false;
     }
     if (live_layout.virtual_layout) {
-      const auto mode_1 = stationconnect::topology::virtual_mode_size(actual_mode_1);
+      const auto mode_1 = plank::topology::virtual_mode_size(actual_mode_1);
       const bool first_matches = ordered_outputs[0].get().width == mode_1.width &&
                                  ordered_outputs[0].get().height == mode_1.height;
       bool second_matches = true;
       if (actual_layout == "dual-horizontal") {
-        const auto mode_2 = stationconnect::topology::virtual_mode_size(actual_mode_2);
+        const auto mode_2 = plank::topology::virtual_mode_size(actual_mode_2);
         second_matches = ordered_outputs[1].get().width == mode_2.width &&
                          ordered_outputs[1].get().height == mode_2.height &&
                          ordered_outputs[1].get().x ==
@@ -768,8 +768,8 @@ namespace nvhttp {
                  "The temporary workstation display layout belongs to another account");
         return false;
       }
-      session.stationconnect_display_lease = true;
-      session.stationconnect_display_lease_uid = authenticated_uid;
+      session.plank_display_lease = true;
+      session.plank_display_lease_uid = authenticated_uid;
     }
     return true;
   }
@@ -784,14 +784,14 @@ namespace nvhttp {
     // Bind the requested output layout atomically at launch. Do not poll the
     // display server from the capture callback: NVIDIA/X11 enumeration can
     // block physical presentation as well as the capture pipeline.
-    if ((session.stationconnect_feature_flags & stationconnect_feature_topology_generation) == 0) {
+    if ((session.plank_feature_flags & plank_feature_topology_generation) == 0) {
       session.topology_generation.clear();
       return true;
     }
-    if (session.stationconnect_protocol_version != stationconnect_topology_version ||
+    if (session.plank_protocol_version != plank_topology_version ||
         session.topology_generation.empty()) {
       tree.put("root.<xmlattr>.status_code", 400);
-      tree.put("root.<xmlattr>.status_message", "Missing StationConnect topology generation");
+      tree.put("root.<xmlattr>.status_message", "Missing PLANK topology generation");
       return false;
     }
     const auto current_generation = video::output_topology_generation(outputs);
@@ -811,13 +811,13 @@ namespace nvhttp {
       return false;
     }
     if (session.display_mode == "scaled-span" || session.display_mode == "separate-displays") {
-      if (session.stationconnect_protocol_version != stationconnect_topology_version ||
-          (session.stationconnect_feature_flags & stationconnect_feature_scaled_span) == 0 ||
+      if (session.plank_protocol_version != plank_topology_version ||
+          (session.plank_feature_flags & plank_feature_scaled_span) == 0 ||
           (session.display_mode == "separate-displays" &&
-           (session.stationconnect_feature_flags & stationconnect_feature_composite_source_regions) == 0) ||
+           (session.plank_feature_flags & plank_feature_composite_source_regions) == 0) ||
           !session.output_id.empty()) {
         tree.put("root.<xmlattr>.status_code", 400);
-        tree.put("root.<xmlattr>.status_message", "Invalid StationConnect composite-display negotiation");
+        tree.put("root.<xmlattr>.status_message", "Invalid PLANK composite-display negotiation");
         return false;
       }
       if (outputs.empty()) {
@@ -830,23 +830,23 @@ namespace nvhttp {
       }
       session.output_name.clear();
       session.span_desktop = true;
-      BOOST_LOG(info) << "StationConnect selected "sv << session.display_mode
+      BOOST_LOG(info) << "PLANK selected "sv << session.display_mode
                       << " virtual-desktop span"sv;
       return true;
     }
     if (!session.display_mode.empty() && session.display_mode != "single-output") {
       tree.put("root.<xmlattr>.status_code", 400);
-      tree.put("root.<xmlattr>.status_message", "Unknown StationConnect display mode");
+      tree.put("root.<xmlattr>.status_message", "Unknown PLANK display mode");
       return false;
     }
     if (session.output_id.empty()) {
       session.output_name.clear();
       return true;
     }
-    if (session.stationconnect_protocol_version != stationconnect_topology_version ||
-        (session.stationconnect_feature_flags & stationconnect_feature_selected_output) == 0) {
+    if (session.plank_protocol_version != plank_topology_version ||
+        (session.plank_feature_flags & plank_feature_selected_output) == 0) {
       tree.put("root.<xmlattr>.status_code", 400);
-      tree.put("root.<xmlattr>.status_message", "Invalid StationConnect output negotiation");
+      tree.put("root.<xmlattr>.status_message", "Invalid PLANK output negotiation");
       return false;
     }
     if (!bind_topology_generation(session, outputs, tree)) {
@@ -859,32 +859,32 @@ namespace nvhttp {
       return false;
     }
     session.output_name = *capture_name;
-    BOOST_LOG(info) << "StationConnect selected output "sv << logging::bracket(session.output_id)
+    BOOST_LOG(info) << "PLANK selected output "sv << logging::bracket(session.output_id)
                     << " using capture name "sv << logging::bracket(session.output_name);
     return true;
   }
 
   bool validate_capture_source(session_stream::launch_session_t &session,
                                pt::ptree &tree) {
-    if (session.stationconnect_protocol_version != stationconnect_topology_version ||
-        (session.stationconnect_feature_flags &
-         stationconnect_feature_capture_source_selection) == 0) {
+    if (session.plank_protocol_version != plank_topology_version ||
+        (session.plank_feature_flags &
+         plank_feature_capture_source_selection) == 0) {
       tree.put("root.<xmlattr>.status_code", 400);
       tree.put("root.<xmlattr>.status_message",
-               "StationConnect capture-source negotiation is required");
+               "PLANK capture-source negotiation is required");
       return false;
     }
     if (session.capture_source != "nvfbc" &&
         session.capture_source != "x11-native10") {
       tree.put("root.<xmlattr>.status_code", 400);
       tree.put("root.<xmlattr>.status_message",
-               "Unsupported StationConnect capture source");
+               "Unsupported PLANK capture source");
       return false;
     }
     if (!video::capture_source_available(session.capture_source)) {
       tree.put("root.<xmlattr>.status_code", 503);
       tree.put("root.<xmlattr>.status_message",
-               "Requested StationConnect capture source is unavailable");
+               "Requested PLANK capture source is unavailable");
       return false;
     }
     return true;
@@ -892,27 +892,27 @@ namespace nvhttp {
 
   bool validate_encoder_backend(session_stream::launch_session_t &session,
                                 pt::ptree &tree) {
-    if (session.stationconnect_protocol_version != stationconnect_topology_version ||
-        (session.stationconnect_feature_flags &
-         stationconnect_feature_encoder_backend_selection) == 0) {
+    if (session.plank_protocol_version != plank_topology_version ||
+        (session.plank_feature_flags &
+         plank_feature_encoder_backend_selection) == 0) {
       tree.put("root.<xmlattr>.status_code", 400);
       tree.put("root.<xmlattr>.status_message",
-               "StationConnect encoder-backend negotiation is required");
+               "PLANK encoder-backend negotiation is required");
       return false;
     }
     const bool nvenc_hevc10_mode = session.encoding_mode == "hevc-10-444-nvenc";
-    if (!stationconnect::topology::valid_encoding_tuple(
+    if (!plank::topology::valid_encoding_tuple(
           session.capture_source,
           session.encoder_backend,
           session.encoding_mode)) {
       tree.put("root.<xmlattr>.status_code", 400);
       tree.put("root.<xmlattr>.status_message",
-               "Unsupported StationConnect capture and encoding mode combination");
+               "Unsupported PLANK capture and encoding mode combination");
       return false;
     }
     if (session.capture_source == "nvfbc" && nvenc_hevc10_mode &&
-        (session.stationconnect_feature_flags &
-         stationconnect_feature_nvfbc_hevc10_nvenc) == 0) {
+        (session.plank_feature_flags &
+         plank_feature_nvfbc_hevc10_nvenc) == 0) {
       tree.put("root.<xmlattr>.status_code", 400);
       tree.put("root.<xmlattr>.status_message",
                "NvFBC HEVC 10-bit NVENC negotiation is required");
@@ -923,7 +923,7 @@ namespace nvhttp {
     if (!exact_mode_available) {
       tree.put("root.<xmlattr>.status_code", 503);
       tree.put("root.<xmlattr>.status_message",
-               "Requested StationConnect encoding mode is unavailable");
+               "Requested PLANK encoding mode is unavailable");
       return false;
     }
     return true;
@@ -931,14 +931,14 @@ namespace nvhttp {
 
   bool validate_transport_mtu(session_stream::launch_session_t &session,
                               pt::ptree &tree) {
-    if (session.stationconnect_protocol_version != stationconnect_topology_version ||
-        (session.stationconnect_feature_flags &
-         stationconnect_feature_fixed_transport_mtu) == 0 ||
-        !stationconnect::topology::valid_quic_udp_payload_mtu(
+    if (session.plank_protocol_version != plank_topology_version ||
+        (session.plank_feature_flags &
+         plank_feature_fixed_transport_mtu) == 0 ||
+        !plank::topology::valid_quic_udp_payload_mtu(
           session.quic_udp_payload_mtu)) {
       tree.put("root.<xmlattr>.status_code", 400);
       tree.put("root.<xmlattr>.status_message",
-               "A valid fixed StationConnect QUIC UDP payload is required");
+               "A valid fixed PLANK QUIC UDP payload is required");
       return false;
     }
     return true;
@@ -1043,23 +1043,23 @@ namespace nvhttp {
     launch_session->surround_params = (get_arg(args, "surroundParams", ""));
     launch_session->continuous_audio = util::from_view(get_arg(args, "continuousAudio", "0"));
     launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
-    launch_session->output_id = get_arg(args, "scOutputId", "");
-    launch_session->display_mode = get_arg(args, "scDisplayMode", "");
-    launch_session->topology_generation = get_arg(args, "scTopologyGeneration", "");
-    launch_session->host_layout = get_arg(args, "scHostLayout", "");
-    launch_session->virtual_mode_1 = get_arg(args, "scVirtualMode1", "");
-    launch_session->virtual_mode_2 = get_arg(args, "scVirtualMode2", "");
-    launch_session->capture_source = get_arg(args, "scCaptureSource", "");
-    launch_session->encoder_backend = get_arg(args, "scEncoderBackend", "");
-    launch_session->encoding_mode = get_arg(args, "scEncodingMode", "");
+    launch_session->output_id = get_arg(args, "plankOutputId", "");
+    launch_session->display_mode = get_arg(args, "plankDisplayMode", "");
+    launch_session->topology_generation = get_arg(args, "plankTopologyGeneration", "");
+    launch_session->host_layout = get_arg(args, "plankHostLayout", "");
+    launch_session->virtual_mode_1 = get_arg(args, "plankVirtualMode1", "");
+    launch_session->virtual_mode_2 = get_arg(args, "plankVirtualMode2", "");
+    launch_session->capture_source = get_arg(args, "plankCaptureSource", "");
+    launch_session->encoder_backend = get_arg(args, "plankEncoderBackend", "");
+    launch_session->encoding_mode = get_arg(args, "plankEncodingMode", "");
     launch_session->quic_udp_payload_mtu =
       static_cast<std::uint32_t>(util::from_view(
-        get_arg(args, "scQuicUdpPayloadMtu", "0")
+        get_arg(args, "plankQuicUdpPayloadMtu", "0")
       ));
-    launch_session->stationconnect_protocol_version =
-      static_cast<std::uint32_t>(util::from_view(get_arg(args, "scProtocolVersion", "0")));
-    launch_session->stationconnect_feature_flags =
-      static_cast<std::uint32_t>(util::from_view(get_arg(args, "scFeatureFlags", "0")));
+    launch_session->plank_protocol_version =
+      static_cast<std::uint32_t>(util::from_view(get_arg(args, "plankProtocolVersion", "0")));
+    launch_session->plank_feature_flags =
+      static_cast<std::uint32_t>(util::from_view(get_arg(args, "plankFeatureFlags", "0")));
 
     return launch_session;
   }
@@ -1140,7 +1140,7 @@ namespace nvhttp {
   /**
    * @brief Get codec mode flags.
    *
-   * @return Codec capability bitmask for the exact StationConnect profiles.
+   * @return Codec capability bitmask for the exact PLANK profiles.
    */
   uint32_t get_codec_mode_flags() {
     uint32_t codec_mode_flags = SCM_H264;
@@ -1179,7 +1179,7 @@ namespace nvhttp {
     return codec_mode_flags;
   }
 
-  std::string get_stationconnect_encoding_modes() {
+  std::string get_plank_encoding_modes() {
     static constexpr std::array modes {
       "h264-8-422-software"sv,
       "h264-8-444-software"sv,
@@ -1222,21 +1222,21 @@ namespace nvhttp {
     pt::ptree tree;
 
     tree.put("root.<xmlattr>.status_code", 200);
-    tree.put("root.hostname", config::nvhttp.sunshine_name);
+    tree.put("root.hostname", config::nvhttp.host_name);
 
     tree.put("root.appversion", VERSION);
     tree.put("root.GfeVersion", GFE_VERSION);
     tree.put("root.uniqueid", http::unique_id);
     tree.put("root.HttpsPort", net::map_port(PORT_HTTPS));
     tree.put("root.ExternalPort", net::map_port(PORT_HTTPS));
-    tree.put("root.StationConnectAuth", 1);
-    tree.put("root.StationConnectHostMetadataVersion", stationconnect_host_metadata_version);
-    tree.put("root.StationConnectHostVersion", PROJECT_VERSION);
-    tree.put("root.StationConnectTopologyVersion", stationconnect_topology_version);
-    tree.put("root.StationConnectFeatureFlags", stationconnect_topology_features);
-    tree.put("root.StationConnectCaptureSources", "nvfbc,x11-native10");
-    tree.put("root.StationConnectEncoderBackends", "software-cuda,nvenc-direct");
-    tree.put("root.StationConnectEncodingModes", get_stationconnect_encoding_modes());
+    tree.put("root.PlankAuth", 1);
+    tree.put("root.PlankHostMetadataVersion", plank_host_metadata_version);
+    tree.put("root.PlankHostVersion", PROJECT_VERSION);
+    tree.put("root.PlankTopologyVersion", plank_topology_version);
+    tree.put("root.PlankFeatureFlags", plank_topology_features);
+    tree.put("root.PlankCaptureSources", "nvfbc,x11-native10");
+    tree.put("root.PlankEncoderBackends", "software-cuda,nvenc-direct");
+    tree.put("root.PlankEncodingModes", get_plank_encoding_modes());
     tree.put("root.MaxLumaPixelsHEVC",
              video::nvenc_direct_supports_hevc_444_8bit() ||
                  video::nvenc_direct_supports_hevc_444_10bit() ?
@@ -1358,7 +1358,7 @@ namespace nvhttp {
     if (!proc::is_desktop_app((int) appid)) {
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", "StationConnect permits only the Desktop session");
+      tree.put("root.<xmlattr>.status_message", "PLANK permits only the Desktop session");
       return;
     }
 
@@ -1372,7 +1372,7 @@ namespace nvhttp {
       // session_count() above synchronously removes STOPPING sessions. Once no
       // active or pending native session owns this reservation, clear it before
       // admitting the replacement launch.
-      BOOST_LOG(info) << "Clearing orphaned StationConnect Desktop reservation before launch"sv;
+      BOOST_LOG(info) << "Clearing orphaned PLANK Desktop reservation before launch"sv;
       proc::proc.terminate();
       current_appid = 0;
     }
@@ -1408,7 +1408,7 @@ namespace nvhttp {
               launch_session->encoder_backend)) {
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message",
-                 "Requested StationConnect encoder backend is unavailable");
+                 "Requested PLANK encoder backend is unavailable");
         tree.put("root.gamesession", 0);
         return;
       }
@@ -1443,8 +1443,8 @@ namespace nvhttp {
       return;
     }
 
-#ifdef STATIONCONNECT_DATASMASH
-    if (!start_datasmash_data_plane(*launch_session, tree)) {
+#ifdef PLANK_TRANSPORT
+    if (!start_plank_transport_data_plane(*launch_session, tree)) {
       tree.put("root.gamesession", 0);
       return;
     }
@@ -1452,9 +1452,9 @@ namespace nvhttp {
 
     tree.put("root.<xmlattr>.status_code", 200);
     tree.put("root.gamesession", 1);
-    tree.put("root.StationConnectCaptureSource", launch_session->capture_source);
-    tree.put("root.StationConnectEncoderBackend", launch_session->encoder_backend);
-    tree.put("root.StationConnectEncodingMode", launch_session->encoding_mode);
+    tree.put("root.PlankCaptureSource", launch_session->capture_source);
+    tree.put("root.PlankEncoderBackend", launch_session->encoder_backend);
+    tree.put("root.PlankEncodingMode", launch_session->encoding_mode);
 
     session_stream::launch_session_raise(launch_session);
 
@@ -1507,7 +1507,7 @@ namespace nvhttp {
     if (!proc::is_desktop_app(current_appid)) {
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", "StationConnect permits only the Desktop session");
+      tree.put("root.<xmlattr>.status_message", "PLANK permits only the Desktop session");
       return;
     }
 
@@ -1542,7 +1542,7 @@ namespace nvhttp {
               launch_session->encoder_backend)) {
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message",
-                 "Requested StationConnect encoder backend is unavailable");
+                 "Requested PLANK encoder backend is unavailable");
         tree.put("root.resume", 0);
         return;
       }
@@ -1563,8 +1563,8 @@ namespace nvhttp {
       return;
     }
 
-#ifdef STATIONCONNECT_DATASMASH
-    if (!start_datasmash_data_plane(*launch_session, tree)) {
+#ifdef PLANK_TRANSPORT
+    if (!start_plank_transport_data_plane(*launch_session, tree)) {
       tree.put("root.resume", 0);
       return;
     }
@@ -1572,9 +1572,9 @@ namespace nvhttp {
 
     tree.put("root.<xmlattr>.status_code", 200);
     tree.put("root.resume", 1);
-    tree.put("root.StationConnectCaptureSource", launch_session->capture_source);
-    tree.put("root.StationConnectEncoderBackend", launch_session->encoder_backend);
-    tree.put("root.StationConnectEncodingMode", launch_session->encoding_mode);
+    tree.put("root.PlankCaptureSource", launch_session->capture_source);
+    tree.put("root.PlankEncoderBackend", launch_session->encoder_backend);
+    tree.put("root.PlankEncodingMode", launch_session->encoding_mode);
 
     session_stream::launch_session_raise(launch_session);
   }
@@ -1591,15 +1591,15 @@ namespace nvhttp {
     bool host_audio {};
 
     if (access(pam_broker_socket.data(), R_OK | W_OK) != 0) {
-      BOOST_LOG(fatal) << "StationConnect PAM broker is unavailable; refusing to start session negotiation"sv;
+      BOOST_LOG(fatal) << "PLANK PAM broker is unavailable; refusing to start session negotiation"sv;
       shutdown_event->raise(true);
       return;
     }
-    web_auth = std::make_unique<stationconnect::auth::web_auth_manager_t>(
-      stationconnect::auth::pam_conversation_factory(std::filesystem::path {pam_broker_socket}),
-      stationconnect::auth::secure_random_hex
+    web_auth = std::make_unique<plank::auth::web_auth_manager_t>(
+      plank::auth::pam_conversation_factory(std::filesystem::path {pam_broker_socket}),
+      plank::auth::secure_random_hex
     );
-    BOOST_LOG(info) << "StationConnect PAM authentication active"sv;
+    BOOST_LOG(info) << "PLANK PAM authentication active"sv;
 
     https_server_t https_server {
       config::nvhttp.cert,
@@ -1608,9 +1608,9 @@ namespace nvhttp {
     };
     https_server.default_resource["GET"] = not_found<SunshineHTTPS>;
     https_server.resource["^/serverinfo$"]["GET"] = serverinfo<SunshineHTTPS>;
-    https_server.resource["^/stationconnect/auth/start$"]["POST"] = auth_start;
-    https_server.resource["^/stationconnect/auth/respond$"]["POST"] = auth_respond;
-    https_server.resource["^/stationconnect/topology$"]["GET"] = [](auto resp, auto req) {
+    https_server.resource["^/plank/auth/start$"]["POST"] = auth_start;
+    https_server.resource["^/plank/auth/respond$"]["POST"] = auth_respond;
+    https_server.resource["^/plank/topology$"]["GET"] = [](auto resp, auto req) {
       if (require_authentication(resp, req)) {
         output_topology(resp, req);
       }

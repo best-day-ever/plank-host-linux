@@ -810,8 +810,8 @@ namespace config {
     PRIVATE_KEY_FILE,
     CERTIFICATE_FILE,
 
-    platf::get_host_name(),  // sunshine_name,
-    "stationconnect_state.json"s,  // file_state
+    platf::get_host_name(),  // host_name,
+    "plank-state.json"s,  // file_state
   };
 
   /**
@@ -847,12 +847,20 @@ namespace config {
   sunshine_t sunshine {
     2,  // min_log_level
     0,  // flags
+#ifdef PLANK_PRODUCT_BUILD
+    "/etc/plank/host.conf",  // config file
+#else
     platf::appdata().string() + "/sunshine.conf",  // config file
+#endif
     {},  // cmd args
     28989,  // Base port number
+#ifdef PLANK_PRODUCT_BUILD
+    "/var/log/plank/host.log",  // log file
+#else
     platf::appdata().string() + "/sunshine.log",  // log file
-    false,  // StationConnect mDNS advertisement
-    "physical",  // StationConnect startup display policy
+#endif
+    false,  // PLANK mDNS advertisement
+    "physical",  // PLANK startup display policy
   };
 
   /**
@@ -1001,7 +1009,7 @@ namespace config {
   }
 
   /**
-   * @brief Parse INI-style StationConnect configuration text into key-value entries.
+   * @brief Parse INI-style PLANK configuration text into key-value entries.
    *
    * Section headers organize the file but do not namespace option names.
    */
@@ -1537,7 +1545,7 @@ namespace config {
 
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);
-    string_f(vars, "sunshine_name", nvhttp.sunshine_name);
+    string_f(vars, "host_name", nvhttp.host_name);
     path_f(vars, "log_path", config::sunshine.log_file);
     path_f(vars, "file_state", nvhttp.file_state);
 
@@ -1569,7 +1577,7 @@ namespace config {
       input.key_repeat_delay = std::chrono::milliseconds {to};
     }
 
-    bool_f(vars, "stationconnect_mdns_discovery", sunshine.stationconnect_mdns_discovery);
+    bool_f(vars, "mdns_discovery", sunshine.mdns_discovery);
     string_restricted_f(vars, "startup_layout", sunshine.startup_layout, {"physical"sv, "virtual"sv});
 
     int port = sunshine.port;
@@ -1676,9 +1684,13 @@ namespace config {
       // Create appdata folder if it does not exist
       file_handler::make_directory(platf::appdata().string());
 
-      // Create empty config file if it does not exist
+      // A packaged PLANK host has one administrator-owned configuration source.
       if (!fs::exists(sunshine.config_file)) {
+#ifdef PLANK_PRODUCT_BUILD
+        throw std::runtime_error("PLANK host configuration does not exist: " + sunshine.config_file);
+#else
         std::ofstream {sunshine.config_file};
+#endif
       }
 
       // Read config file

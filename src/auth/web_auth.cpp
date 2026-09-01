@@ -17,7 +17,7 @@
 #include <pwd.h>
 #include <unistd.h>
 
-namespace stationconnect::auth {
+namespace plank::auth {
   namespace {
     /**
      * @brief Production adapter around @ref pam_client_t.
@@ -36,7 +36,7 @@ namespace stationconnect::auth {
       step_t begin(std::uint64_t transaction_id, std::string_view username,
                    std::string_view remote_host) override {
         return client_.begin(socket_path_, transaction_id, username, remote_host,
-                             "stationconnect");
+                             "plank");
       }
 
       step_t respond(std::vector<std::string> responses) override {
@@ -271,6 +271,6 @@ namespace stationconnect::auth {
 
   bool account_authorized_for_desktop(std::string_view username) {
     const auto uid = account_uid(username);
-    return uid && stationconnect::session::supervisor_attests_account_for_active_seat0(*uid);
+    return uid && plank::session::supervisor_attests_account_for_active_seat0(*uid);
   }
-}  // namespace stationconnect::auth
+}  // namespace plank::auth

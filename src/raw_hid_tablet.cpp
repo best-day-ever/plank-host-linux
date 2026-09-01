@@ -24,7 +24,7 @@
 #endif
 
 extern "C" {
-#include <moonlight-common-c/src/StationConnect.h>
+#include <moonlight-common-c/src/plank.h>
 }
 
 #include "logging.h"
@@ -89,27 +89,27 @@ namespace raw_hid {
      * @return True when the frame was accepted.
      */
     bool handle(const std::vector<std::uint8_t> &frame) {
-      if (frame.size() < sizeof(SC_RAW_HID_WIRE_HEADER)) {
+      if (frame.size() < sizeof(PLANK_RAW_HID_WIRE_HEADER)) {
         return false;
       }
 
-      SC_RAW_HID_WIRE_HEADER header;
+      PLANK_RAW_HID_WIRE_HEADER header;
       std::memcpy(&header, frame.data(), sizeof(header));
       const auto payload_length = read_little(header.payloadLength);
-      if (read_little(header.magic) != SC_RAW_HID_WIRE_MAGIC ||
-          read_little(header.version) != SC_RAW_HID_WIRE_VERSION ||
-          payload_length > SC_RAW_HID_MAX_PAYLOAD_SIZE ||
+      if (read_little(header.magic) != PLANK_RAW_HID_WIRE_MAGIC ||
+          read_little(header.version) != PLANK_RAW_HID_WIRE_VERSION ||
+          payload_length > PLANK_RAW_HID_MAX_PAYLOAD_SIZE ||
           frame.size() != sizeof(header) + payload_length) {
         return false;
       }
 
-      const auto type = static_cast<SC_RAW_HID_MESSAGE_TYPE>(read_little(header.type));
+      const auto type = static_cast<PLANK_RAW_HID_MESSAGE_TYPE>(read_little(header.type));
       const auto interface_id = read_little(header.interfaceId);
       const auto generation = read_little(header.generation);
       const auto transaction_id = read_little(header.transactionId);
       const std::span<const std::uint8_t> payload {frame.data() + sizeof(header), payload_length};
 
-      if (type == SC_RAW_HID_DEVICE) {
+      if (type == PLANK_RAW_HID_DEVICE) {
         return begin_attach(generation, payload);
       }
 
@@ -117,19 +117,19 @@ namespace raw_hid {
       if (!device_ || generation != generation_) {
         return false;
       }
-      if (type == SC_RAW_HID_DESCRIPTOR) {
+      if (type == PLANK_RAW_HID_DESCRIPTOR) {
         const bool accepted = accept_descriptor(interface_id, payload);
         const bool replace_interfaces = replace_interfaces_;
         replace_interfaces_ = false;
         lock.unlock();
         return accepted && (!replace_interfaces || replace_group());
       }
-      if (type == SC_RAW_HID_DETACH) {
+      if (type == PLANK_RAW_HID_DETACH) {
         lock.unlock();
         reset();
         return true;
       }
-      if (type == SC_RAW_HID_SUSPEND) {
+      if (type == PLANK_RAW_HID_SUSPEND) {
         if (interface_id != 0 || transaction_id != 0 || !payload.empty() || uhid_fds_.empty()) {
           return false;
         }
@@ -145,14 +145,14 @@ namespace raw_hid {
       }
 
 #ifdef __linux__
-      if (type == SC_RAW_HID_INPUT && !payload.empty() && payload.size() <= UHID_DATA_MAX) {
+      if (type == PLANK_RAW_HID_INPUT && !payload.empty() && payload.size() <= UHID_DATA_MAX) {
         uhid_event event {};
         event.type = UHID_INPUT2;
         event.u.input2.size = static_cast<std::uint16_t>(payload.size());
         std::ranges::copy(payload, event.u.input2.data);
         return write_event(uhid_fds_[interface_id], event);
       }
-      if (type == SC_RAW_HID_GET_REPORT_REPLY && payload.size() >= sizeof(std::int32_t)) {
+      if (type == PLANK_RAW_HID_GET_REPORT_REPLY && payload.size() >= sizeof(std::int32_t)) {
         std::int32_t error;
         std::memcpy(&error, payload.data(), sizeof(error));
         error = util::endian::little(error);
@@ -167,7 +167,7 @@ namespace raw_hid {
         std::copy(payload.begin() + sizeof(error), payload.end(), event.u.get_report_reply.data);
         return write_event(uhid_fds_[interface_id], event);
       }
-      if (type == SC_RAW_HID_SET_REPORT_REPLY && payload.size() == sizeof(std::int32_t)) {
+      if (type == PLANK_RAW_HID_SET_REPORT_REPLY && payload.size() == sizeof(std::int32_t)) {
         std::int32_t error;
         std::memcpy(&error, payload.data(), sizeof(error));
         error = util::endian::little(error);
@@ -253,13 +253,13 @@ namespace raw_hid {
      * @return True when metadata was accepted.
      */
     bool begin_attach(std::uint16_t generation, std::span<const std::uint8_t> payload) {
-      if (payload.size() != sizeof(SC_RAW_HID_DEVICE_MESSAGE)) {
+      if (payload.size() != sizeof(PLANK_RAW_HID_DEVICE_MESSAGE)) {
         return false;
       }
-      SC_RAW_HID_DEVICE_MESSAGE device;
+      PLANK_RAW_HID_DEVICE_MESSAGE device;
       std::memcpy(&device, payload.data(), sizeof(device));
       const auto interface_count = read_little(device.interfaceCount);
-      if (generation == 0 || interface_count == 0 || interface_count > SC_RAW_HID_MAX_INTERFACES) {
+      if (generation == 0 || interface_count == 0 || interface_count > PLANK_RAW_HID_MAX_INTERFACES) {
         send_attach_result(generation, EINVAL);
         return false;
       }
@@ -285,7 +285,7 @@ namespace raw_hid {
      */
     bool accept_descriptor(std::uint16_t interface_id, std::span<const std::uint8_t> descriptor) {
       if (interface_id >= descriptors_.size() || descriptor.empty() ||
-          descriptor.size() > SC_RAW_HID_MAX_DESCRIPTOR_SIZE || !descriptors_[interface_id].empty()) {
+          descriptor.size() > PLANK_RAW_HID_MAX_DESCRIPTOR_SIZE || !descriptors_[interface_id].empty()) {
         return false;
       }
       descriptors_[interface_id].assign(descriptor.begin(), descriptor.end());
@@ -335,7 +335,7 @@ namespace raw_hid {
         uhid_event create {};
         create.type = UHID_CREATE2;
         std::memcpy(create.u.create2.name, device.name, sizeof(device.name));
-        const std::string physical = "stationconnect/raw-tablet/" + std::to_string(generation_);
+        const std::string physical = "plank/raw-tablet/" + std::to_string(generation_);
         std::memcpy(create.u.create2.phys, physical.data(), std::min(physical.size(), sizeof(create.u.create2.phys) - 1));
         std::memcpy(create.u.create2.uniq, device.unique, sizeof(device.unique));
         create.u.create2.rd_size = static_cast<std::uint16_t>(descriptor.size());
@@ -473,20 +473,20 @@ namespace raw_hid {
           send_attach_result(generation_, success);
         }
       } else if (event.type == UHID_OPEN) {
-        send_frame(SC_RAW_HID_OPEN, interface_id, 0, {});
+        send_frame(PLANK_RAW_HID_OPEN, interface_id, 0, {});
       } else if (event.type == UHID_CLOSE) {
-        send_frame(SC_RAW_HID_CLOSE, interface_id, 0, {});
+        send_frame(PLANK_RAW_HID_CLOSE, interface_id, 0, {});
       } else if (event.type == UHID_GET_REPORT) {
         const std::array<std::uint8_t, 2> request {event.u.get_report.rnum, event.u.get_report.rtype};
-        send_frame(SC_RAW_HID_GET_REPORT, interface_id, event.u.get_report.id, request);
+        send_frame(PLANK_RAW_HID_GET_REPORT, interface_id, event.u.get_report.id, request);
       } else if (event.type == UHID_SET_REPORT) {
         std::vector<std::uint8_t> request {event.u.set_report.rtype};
         request.insert(request.end(), event.u.set_report.data, event.u.set_report.data + event.u.set_report.size);
-        send_frame(SC_RAW_HID_SET_REPORT, interface_id, event.u.set_report.id, request);
+        send_frame(PLANK_RAW_HID_SET_REPORT, interface_id, event.u.set_report.id, request);
       } else if (event.type == UHID_OUTPUT) {
         std::vector<std::uint8_t> output {event.u.output.rtype};
         output.insert(output.end(), event.u.output.data, event.u.output.data + event.u.output.size);
-        send_frame(SC_RAW_HID_OUTPUT, interface_id, 0, output);
+        send_frame(PLANK_RAW_HID_OUTPUT, interface_id, 0, output);
       }
     }
 #endif
@@ -500,7 +500,7 @@ namespace raw_hid {
     void send_attach_result(std::uint16_t generation, std::int32_t error) {
       const auto little_error = util::endian::little(error);
       const std::span<const std::uint8_t> payload {reinterpret_cast<const std::uint8_t *>(&little_error), sizeof(little_error)};
-      send_frame(SC_RAW_HID_ATTACH_RESULT, 0, 0, payload, generation);
+      send_frame(PLANK_RAW_HID_ATTACH_RESULT, 0, 0, payload, generation);
     }
 
     /**
@@ -512,12 +512,12 @@ namespace raw_hid {
      * @param payload Message payload.
      * @param generation Optional generation override for attach failures.
      */
-    void send_frame(SC_RAW_HID_MESSAGE_TYPE type, std::uint16_t interface_id, std::uint32_t transaction_id,
+    void send_frame(PLANK_RAW_HID_MESSAGE_TYPE type, std::uint16_t interface_id, std::uint32_t transaction_id,
                     std::span<const std::uint8_t> payload, std::uint16_t generation = 0) {
-      std::vector<std::uint8_t> frame(sizeof(SC_RAW_HID_WIRE_HEADER) + payload.size());
-      SC_RAW_HID_WIRE_HEADER header {};
-      write_little(header.magic, static_cast<std::uint32_t>(SC_RAW_HID_WIRE_MAGIC));
-      write_little(header.version, static_cast<std::uint16_t>(SC_RAW_HID_WIRE_VERSION));
+      std::vector<std::uint8_t> frame(sizeof(PLANK_RAW_HID_WIRE_HEADER) + payload.size());
+      PLANK_RAW_HID_WIRE_HEADER header {};
+      write_little(header.magic, static_cast<std::uint32_t>(PLANK_RAW_HID_WIRE_MAGIC));
+      write_little(header.version, static_cast<std::uint16_t>(PLANK_RAW_HID_WIRE_VERSION));
       write_little(header.type, static_cast<std::uint16_t>(type));
       write_little(header.interfaceId, interface_id);
       write_little(header.generation, generation == 0 ? generation_ : generation);
@@ -538,12 +538,12 @@ namespace raw_hid {
 
     std::recursive_mutex mutex_;  ///< Protects device state and the outbound queue binding.
     feedback_queue_t feedback_queue_;  ///< Current session control queue.
-    std::optional<SC_RAW_HID_DEVICE_MESSAGE> device_;  ///< Client USB identity for the pending group.
+    std::optional<PLANK_RAW_HID_DEVICE_MESSAGE> device_;  ///< Client USB identity for the pending group.
     std::uint16_t generation_ = 0;  ///< Active client generation.
     std::vector<std::vector<std::uint8_t>> descriptors_;  ///< Original report descriptors by interface.
     std::vector<bool> started_;  ///< Kernel start state by interface.
     std::vector<int> uhid_fds_;  ///< UHID endpoints by interface.
-    std::optional<SC_RAW_HID_DEVICE_MESSAGE> retained_device_;  ///< Identity backing retained UHID endpoints.
+    std::optional<PLANK_RAW_HID_DEVICE_MESSAGE> retained_device_;  ///< Identity backing retained UHID endpoints.
     std::vector<std::vector<std::uint8_t>> retained_descriptors_;  ///< Descriptors backing retained endpoints.
     bool transport_active_ = false;  ///< Whether the current transport may deliver tablet frames.
     bool replace_interfaces_ = false;  ///< Whether a completed attach requires endpoint replacement.

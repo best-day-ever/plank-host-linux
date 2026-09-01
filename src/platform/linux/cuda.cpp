@@ -96,7 +96,7 @@ namespace cuda {
       std::ranges::sort(sorted);
       const auto total = std::accumulate(sorted.begin(), sorted.end(), 0.0);
       BOOST_LOG(info)
-        << "StationConnect timing " << name
+        << "PLANK timing " << name
         << ": samples=" << sorted.size()
         << " mean_ms=" << total / sorted.size() / 1000.0
         << " p50_ms=" << timing_percentile(sorted, 0.50) / 1000.0
@@ -509,7 +509,7 @@ namespace cuda {
       content_offset_x = (output_width - content_width) / 2;
       content_offset_y = (output_height - content_height) / 2;
       BOOST_LOG(info)
-        << "StationConnect software capture geometry: source=" << width << 'x' << height
+        << "PLANK software capture geometry: source=" << width << 'x' << height
         << " content=" << content_width << 'x' << content_height
         << '+' << content_offset_x << '+' << content_offset_y
         << " encode=" << output_width << 'x' << output_height;
@@ -575,7 +575,7 @@ namespace cuda {
       sws = std::move(*converter);
       mode = identity_8bit ? mode_e::identity_8bit : mode_e::identity_10bit;
       BOOST_LOG(info)
-        << "StationConnect software identity input: planar GBR, codec depth="
+        << "PLANK software identity input: planar GBR, codec depth="
         << (identity_8bit ? 8 : 10)
         << "-bit, CUDA readback depth=8-bit";
       if (mode == mode_e::identity_10bit) {

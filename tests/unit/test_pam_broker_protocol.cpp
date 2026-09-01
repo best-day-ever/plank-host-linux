@@ -11,13 +11,13 @@
 #include "src/auth/pam_broker_protocol.h"
 #include "src/auth/pam_client.h"
 
-namespace auth = stationconnect::auth;
+namespace auth = plank::auth;
 
 TEST(PamBrokerProtocol, RoundTripsBoundedMessage) {
   std::vector<std::uint8_t> payload;
   ASSERT_TRUE(auth::append_string(payload, "test-user"));
   ASSERT_TRUE(auth::append_string(payload, "198.51.100.250"));
-  ASSERT_TRUE(auth::append_string(payload, "stationconnect"));
+  ASSERT_TRUE(auth::append_string(payload, "plank"));
   const auth::message_t original {
     auth::message_type_e::begin,
     42,
@@ -41,7 +41,7 @@ TEST(PamBrokerProtocol, RoundTripsBoundedMessage) {
   EXPECT_EQ(offset, decoded.payload.size());
   EXPECT_EQ(username, "test-user");
   EXPECT_EQ(remote_host, "198.51.100.250");
-  EXPECT_EQ(tty, "stationconnect");
+  EXPECT_EQ(tty, "plank");
 }
 
 TEST(PamBrokerProtocol, RejectsMalformedAndOversizeFrames) {

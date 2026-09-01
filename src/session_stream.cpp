@@ -5,8 +5,8 @@
 
 extern "C" {
 #include <moonlight-common-c/src/Limelight.h>
-#include <stationconnect_datasmash.h>
-#include <stationconnect_datasmash_setup.h>
+#include <plank_transport.h>
+#include <plank_transport_setup.h>
 }
 
 // standard includes
@@ -28,8 +28,8 @@ extern "C" {
 #include "input.h"
 #include "logging.h"
 #include "session_stream.h"
-#include "stationconnect_bitrate.h"
-#include "stationconnect_topology.h"
+#include "plank_bitrate.h"
+#include "plank_topology.h"
 #include "stream.h"
 #include "sync.h"
 #include "thread_safe.h"
@@ -123,7 +123,7 @@ namespace session_stream {
   }
 
   struct native_start_result_t {
-    int status {SC_DATASMASH_SETUP_STATUS_INTERNAL_ERROR};
+    int status {PLANK_TRANSPORT_SETUP_STATUS_INTERNAL_ERROR};
     std::string message;
     nlohmann::json response;
   };
@@ -159,7 +159,7 @@ namespace session_stream {
   ) {
     native_start_result_t result;
     if (!launch_session || !request.is_object()) {
-      result.status = SC_DATASMASH_SETUP_STATUS_INVALID_REQUEST;
+      result.status = PLANK_TRANSPORT_SETUP_STATUS_INVALID_REQUEST;
       result.message = "Malformed native session request";
       return result;
     }
@@ -174,7 +174,7 @@ namespace session_stream {
     } else if (launch_session->capture_source == "x11-native10") {
       config.monitor.capture_source = video::capture_source_e::x11_native10;
     } else {
-      result.status = SC_DATASMASH_SETUP_STATUS_UNSUPPORTED;
+      result.status = PLANK_TRANSPORT_SETUP_STATUS_UNSUPPORTED;
       result.message = "Unsupported capture source";
       return result;
     }
@@ -204,7 +204,7 @@ namespace session_stream {
       config.audio.packetDuration = audio_request.value("packet_duration_ms", 5);
       high_quality_audio = audio_request.value("high_quality", false);
     } catch (const nlohmann::json::exception &) {
-      result.status = SC_DATASMASH_SETUP_STATUS_INVALID_REQUEST;
+      result.status = PLANK_TRANSPORT_SETUP_STATUS_INVALID_REQUEST;
       result.message = "Missing or invalid native session field";
       return result;
     }
@@ -222,7 +222,7 @@ namespace session_stream {
         config.audio.packetDuration <= 0 || config.audio.packetDuration > 120 ||
         (config.audio.channels != 2 && config.audio.channels != 6 &&
          config.audio.channels != 8)) {
-      result.status = SC_DATASMASH_SETUP_STATUS_INVALID_REQUEST;
+      result.status = PLANK_TRANSPORT_SETUP_STATUS_INVALID_REQUEST;
       result.message = "Native session values are outside qualified bounds";
       return result;
     }
@@ -239,31 +239,31 @@ namespace session_stream {
     );
     if (!negotiated_video_format ||
         requested_video_format != *negotiated_video_format) {
-      result.status = SC_DATASMASH_SETUP_STATUS_UNSUPPORTED;
+      result.status = PLANK_TRANSPORT_SETUP_STATUS_UNSUPPORTED;
       result.message = "Native decoder format differs from accepted encoding mode";
       return result;
     }
 
-    const auto exact_target = stationconnect::bitrate::validate_target(
+    const auto exact_target = plank::bitrate::validate_target(
       encoder_target_kbps
     );
     if (!exact_target) {
-      result.status = SC_DATASMASH_SETUP_STATUS_INVALID_REQUEST;
+      result.status = PLANK_TRANSPORT_SETUP_STATUS_INVALID_REQUEST;
       result.message = "Encoder target is outside the qualified range";
       return result;
     }
     config.monitor.bitrate = *exact_target;
     const auto peak_target = *exact_target * config::video.sw.vbv_maxrate_percentage / 100;
 
-    auto *datasmash_endpoint = launch_session->datasmash_endpoint ?
-      static_cast<ScDatasmashNativeEndpoint *>(launch_session->datasmash_endpoint.get()) :
+    auto *plank_transport_endpoint = launch_session->plank_transport_endpoint ?
+      static_cast<PlankTransportNativeEndpoint *>(launch_session->plank_transport_endpoint.get()) :
       nullptr;
-    if (!datasmash_endpoint ||
-        sc_datasmash_native_set_video_bitrate(
-          datasmash_endpoint, static_cast<std::uint32_t>(*exact_target),
+    if (!plank_transport_endpoint ||
+        plank_transport_native_set_video_bitrate(
+          plank_transport_endpoint, static_cast<std::uint32_t>(*exact_target),
           static_cast<std::uint32_t>(peak_target)
-        ) != SC_DATASMASH_OK) {
-      result.status = SC_DATASMASH_SETUP_STATUS_INTERNAL_ERROR;
+        ) != PLANK_TRANSPORT_OK) {
+      result.status = PLANK_TRANSPORT_SETUP_STATUS_INTERNAL_ERROR;
       result.message = "Unable to apply the negotiated video transport rate";
       return result;
     }
@@ -297,7 +297,7 @@ namespace session_stream {
        config.monitor.videoFormat == 1 && config.monitor.dynamicRange == 1 &&
        exact_identity_444);
     if (!encoding_mode_matches) {
-      result.status = SC_DATASMASH_SETUP_STATUS_UNSUPPORTED;
+      result.status = PLANK_TRANSPORT_SETUP_STATUS_UNSUPPORTED;
       result.message = "Native stream format differs from accepted encoding mode";
       return result;
     }
@@ -309,14 +309,14 @@ namespace session_stream {
         ((config.monitor.dynamicRange == 0 &&
           (config.monitor.videoFormat == 0 || config.monitor.videoFormat == 1)) ||
          (config.monitor.dynamicRange == 1 && config.monitor.videoFormat == 1 &&
-          (launch_session->stationconnect_feature_flags &
-           stationconnect::topology::feature_nvfbc_hevc10_nvenc) != 0));
+          (launch_session->plank_feature_flags &
+           plank::topology::feature_nvfbc_hevc10_nvenc) != 0));
       const bool native10_mode =
         config.monitor.capture_source == video::capture_source_e::x11_native10 &&
         config.monitor.videoFormat == 1 && config.monitor.dynamicRange == 1 &&
         exact_identity_444;
       if (!nvfbc_mode && !native10_mode) {
-        result.status = SC_DATASMASH_SETUP_STATUS_UNSUPPORTED;
+        result.status = PLANK_TRANSPORT_SETUP_STATUS_UNSUPPORTED;
         result.message = "Unsupported native NVENC capture/profile combination";
         return result;
       }
@@ -324,19 +324,19 @@ namespace session_stream {
       if (config.monitor.videoFormat != 0 ||
           (config.monitor.capture_source == video::capture_source_e::x11_native10 &&
            (config.monitor.dynamicRange != 1 || !exact_identity_444))) {
-        result.status = SC_DATASMASH_SETUP_STATUS_UNSUPPORTED;
+        result.status = PLANK_TRANSPORT_SETUP_STATUS_UNSUPPORTED;
         result.message = "Unsupported native software capture/profile combination";
         return result;
       }
     } else {
-      result.status = SC_DATASMASH_SETUP_STATUS_UNSUPPORTED;
+      result.status = PLANK_TRANSPORT_SETUP_STATUS_UNSUPPORTED;
       result.message = "Unsupported encoder backend";
       return result;
     }
 
     if ((platf::get_capabilities() & platf::platform_caps::local_cursor) == 0) {
-      result.status = SC_DATASMASH_SETUP_STATUS_INTERNAL_ERROR;
-      result.message = "StationConnect local cursor transport is unavailable";
+      result.status = PLANK_TRANSPORT_SETUP_STATUS_INTERNAL_ERROR;
+      result.message = "PLANK local cursor transport is unavailable";
       return result;
     }
 
@@ -348,7 +348,7 @@ namespace session_stream {
       config.audio.channels, high_quality_audio
     );
     if (audio_index < 0 || audio_index >= audio::MAX_STREAM_CONFIG) {
-      result.status = SC_DATASMASH_SETUP_STATUS_UNSUPPORTED;
+      result.status = PLANK_TRANSPORT_SETUP_STATUS_UNSUPPORTED;
       result.message = "Unsupported audio layout";
       return result;
     }
@@ -358,12 +358,12 @@ namespace session_stream {
     server.insert(stream_session);
     if (stream::session::start(*stream_session, {})) {
       server.remove(stream_session);
-      result.status = SC_DATASMASH_SETUP_STATUS_INTERNAL_ERROR;
+      result.status = PLANK_TRANSPORT_SETUP_STATUS_INTERNAL_ERROR;
       result.message = "Failed to start native streaming session";
       return result;
     }
 
-    result.status = SC_DATASMASH_SETUP_STATUS_OK;
+    result.status = PLANK_TRANSPORT_SETUP_STATUS_OK;
     const auto host_feature_flags =
       static_cast<std::uint32_t>(platf::get_capabilities() |
                                  platf::platform_caps::dynamic_video_bitrate |
@@ -393,11 +393,11 @@ namespace session_stream {
   }
 
   void process_native_launch(const std::shared_ptr<launch_session_t> &launch_session) {
-    auto *endpoint = launch_session && launch_session->datasmash_endpoint ?
-      static_cast<ScDatasmashNativeEndpoint *>(launch_session->datasmash_endpoint.get()) :
+    auto *endpoint = launch_session && launch_session->plank_transport_endpoint ?
+      static_cast<PlankTransportNativeEndpoint *>(launch_session->plank_transport_endpoint.get()) :
       nullptr;
     if (!endpoint) {
-      BOOST_LOG(error) << "Pending native launch has no Datasmash endpoint"sv;
+      BOOST_LOG(error) << "Pending native launch has no PlankTransport endpoint"sv;
       return;
     }
 
@@ -406,10 +406,10 @@ namespace session_stream {
         config::stream.ping_timeout
       ).count(), 100, 120000
     ));
-    if (sc_datasmash_native_endpoint_wait_ready(endpoint, timeout_ms) !=
-        SC_DATASMASH_OK) {
+    if (plank_transport_native_endpoint_wait_ready(endpoint, timeout_ms) !=
+        PLANK_TRANSPORT_OK) {
       std::array<char, 512> last_error {};
-      sc_datasmash_native_endpoint_last_error(
+      plank_transport_native_endpoint_last_error(
         endpoint, last_error.data(), last_error.size()
       );
       BOOST_LOG(error) << "Native QUIC connection did not become ready: "sv
@@ -417,16 +417,16 @@ namespace session_stream {
       return;
     }
 
-    std::vector<std::uint8_t> packet(SC_DATASMASH_SETUP_MAX_PACKET_SIZE);
+    std::vector<std::uint8_t> packet(PLANK_TRANSPORT_SETUP_MAX_PACKET_SIZE);
     std::size_t packet_size {};
-    const auto receive_result = sc_datasmash_native_data_receive(
+    const auto receive_result = plank_transport_native_data_receive(
       endpoint, packet.data(), packet.size(), &packet_size, timeout_ms
     );
-    ScDatasmashSetupPacket request_packet {};
-    if (receive_result != SC_DATASMASH_OK ||
-        sc_datasmash_setup_decode(packet.data(), packet_size, &request_packet) != 0 ||
-        request_packet.type != SC_DATASMASH_SETUP_LAUNCH_REQUEST ||
-        (request_packet.flags & SC_DATASMASH_SETUP_FLAG_RESPONSE) != 0) {
+    PlankTransportSetupPacket request_packet {};
+    if (receive_result != PLANK_TRANSPORT_OK ||
+        plank_transport_setup_decode(packet.data(), packet_size, &request_packet) != 0 ||
+        request_packet.type != PLANK_TRANSPORT_SETUP_LAUNCH_REQUEST ||
+        (request_packet.flags & PLANK_TRANSPORT_SETUP_FLAG_RESPONSE) != 0) {
       BOOST_LOG(error) << "Native session negotiation did not receive a valid launch request"sv;
       return;
     }
@@ -443,20 +443,20 @@ namespace session_stream {
       response_json["message"] = start_result.message;
     }
     const auto response_payload = response_json.dump();
-    packet.resize(SC_DATASMASH_SETUP_HEADER_SIZE + response_payload.size());
+    packet.resize(PLANK_TRANSPORT_SETUP_HEADER_SIZE + response_payload.size());
     std::size_t response_size {};
-    const auto response_type = start_result.status == SC_DATASMASH_SETUP_STATUS_OK ?
-      SC_DATASMASH_SETUP_LAUNCH_RESPONSE : SC_DATASMASH_SETUP_ERROR;
-    if (sc_datasmash_setup_encode(
+    const auto response_type = start_result.status == PLANK_TRANSPORT_SETUP_STATUS_OK ?
+      PLANK_TRANSPORT_SETUP_LAUNCH_RESPONSE : PLANK_TRANSPORT_SETUP_ERROR;
+    if (plank_transport_setup_encode(
           response_type,
-          SC_DATASMASH_SETUP_FLAG_RESPONSE,
+          PLANK_TRANSPORT_SETUP_FLAG_RESPONSE,
           static_cast<std::uint16_t>(start_result.status),
           request_packet.request_id,
           reinterpret_cast<const std::uint8_t *>(response_payload.data()),
           response_payload.size(), packet.data(), packet.size(), &response_size
         ) != 0 ||
-        sc_datasmash_native_data_send(endpoint, packet.data(), response_size) !=
-          SC_DATASMASH_OK) {
+        plank_transport_native_data_send(endpoint, packet.data(), response_size) !=
+          PLANK_TRANSPORT_OK) {
       BOOST_LOG(error) << "Unable to return native session negotiation result"sv;
     }
   }

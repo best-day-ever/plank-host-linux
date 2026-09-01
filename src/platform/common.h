@@ -470,7 +470,7 @@ namespace platf {
     std::uint8_t percentage;  ///< Battery charge percentage.
   };
 
-  // Retained cross-platform ABI type. StationConnect's production input
+  // Retained cross-platform ABI type. PLANK's production input
   // dispatcher does not accept touchscreen packets.
   struct touch_input_t {
     std::uint8_t eventType;
@@ -922,7 +922,7 @@ namespace platf {
   std::vector<std::string> display_names(mem_type_e hwdevice_type);
 
   /**
-   * @brief Stable output metadata used by StationConnect topology negotiation.
+   * @brief Stable output metadata used by PLANK topology negotiation.
    */
   struct display_info_t {
     std::string id;  ///< Opaque stable protocol identifier.
@@ -946,12 +946,12 @@ namespace platf {
   std::vector<display_info_t> display_infos(mem_type_e hwdevice_type);
 
   /**
-   * @brief Report whether an exact StationConnect capture source was discovered.
+   * @brief Report whether an exact PLANK capture source was discovered.
    *
-   * @param source StationConnect protocol capture-source name.
+   * @param source PLANK protocol capture-source name.
    * @return `true` when the source is available for a negotiated session.
    */
-  bool stationconnect_capture_source_available(std::string_view source);
+  bool plank_capture_source_available(std::string_view source);
 
   /**
    * @brief Check if GPUs/drivers have changed since the last call to this function.
@@ -1221,7 +1221,7 @@ namespace platf {
    */
   bool normalized_pen_enabled(client_input_t *input);
 
-  // Retained for dormant upstream platform backends. The StationConnect Linux
+  // Retained for dormant upstream platform backends. The PLANK Linux
   // build has no touchscreen device or packet route.
   void touch_update(client_input_t *input, const touch_port_t &touch_port, const touch_input_t &touch);
 
@@ -1286,7 +1286,7 @@ namespace platf {
    */
   platform_caps::caps_t get_capabilities();
 
-  constexpr auto SERVICE_NAME = "Sunshine";  ///< mDNS service instance name advertised for GameStream discovery.
+  constexpr auto SERVICE_NAME = "PLANK";  ///< mDNS service instance name advertised for GameStream discovery.
   constexpr auto SERVICE_TYPE = "_nvstream._tcp";  ///< mDNS service type advertised for GameStream discovery.
 
   namespace publish {

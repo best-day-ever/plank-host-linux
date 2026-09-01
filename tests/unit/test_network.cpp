@@ -20,9 +20,9 @@ INSTANTIATE_TEST_SUITE_P(
     std::make_tuple("shortname-123", "shortname-123"),
     std::make_tuple("space 123", "space-123"),
     std::make_tuple("hostname.domain.test", "hostname"),
-    std::make_tuple("&", "Sunshine"),
-    std::make_tuple("", "Sunshine"),
-    std::make_tuple("😁", "Sunshine"),
+    std::make_tuple("&", "PLANK"),
+    std::make_tuple("", "PLANK"),
+    std::make_tuple("😁", "PLANK"),
     std::make_tuple(std::string(128, 'a'), std::string(63, 'a'))
   )
 );
@@ -36,7 +36,7 @@ TEST_P(NetworkScopeTest, ClassifiesRemotePeerAddress) {
 }
 
 INSTANTIATE_TEST_SUITE_P(
-  StationConnectNetworkScopes,
+  PlankNetworkScopes,
   NetworkScopeTest,
   testing::Values(
     std::make_tuple("127.0.0.1", net::net_e::PC),

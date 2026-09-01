@@ -734,7 +734,7 @@ namespace platf {
     int source_height;  ///< Packed XShm source height.
     int output_width {0};  ///< Planar x264 destination width.
     int output_height {0};  ///< Planar x264 destination height.
-    pix_fmt_e requested_format;  ///< Negotiated StationConnect format.
+    pix_fmt_e requested_format;  ///< Negotiated PLANK format.
   };
 
   static void blend_cursor(Display *display, img_t &img, int offsetX, int offsetY) {

@@ -29,8 +29,8 @@
 #endif
 #include "video.h"
 
-#ifdef STATIONCONNECT_DATASMASH
-  #include <stationconnect_datasmash.h>
+#ifdef PLANK_TRANSPORT
+  #include <plank_transport.h>
 #endif
 
 using namespace std::literals;
@@ -190,16 +190,16 @@ int main(int argc, char *argv[]) {
   // logging can begin at this point
   // if anything is logged prior to this point, it will appear in stdout, but not in the log viewer in the UI
   // the version should be printed to the log before anything else
-  BOOST_LOG(info) << "StationConnect Host version: "sv << PROJECT_VERSION
+  BOOST_LOG(info) << "PLANK Host version: "sv << PROJECT_VERSION
                   << " commit: "sv << PROJECT_VERSION_COMMIT;
 
-#ifdef STATIONCONNECT_DATASMASH
-  if (sc_datasmash_abi_version() != SC_DATASMASH_ABI_VERSION) {
-    BOOST_LOG(fatal) << "StationConnect datasmash transport ABI mismatch"sv;
+#ifdef PLANK_TRANSPORT
+  if (plank_transport_abi_version() != PLANK_TRANSPORT_ABI_VERSION) {
+    BOOST_LOG(fatal) << "PLANK native transport ABI mismatch"sv;
     return 9;
   }
-  BOOST_LOG(info) << "StationConnect datasmash transport ABI "sv
-                  << sc_datasmash_abi_version() << " is available"sv;
+  BOOST_LOG(info) << "PLANK native transport ABI "sv
+                  << plank_transport_abi_version() << " is available"sv;
 #endif
 
   // Log publisher metadata
@@ -210,13 +210,13 @@ int main(int argc, char *argv[]) {
   config::modified_config_settings.clear();
 
 #ifdef __linux__
-  auto supervisor_control = stationconnect::session::start_supervisor_control(
+  auto supervisor_control = plank::session::start_supervisor_control(
     [](std::uint64_t generation) {
       BOOST_LOG(info) << "Desktop attachment changed to generation "sv << generation;
       mail::man->event<std::uint64_t>(mail::desktop_reattach)->raise(generation);
     }
   );
-  if (getenv("STATIONCONNECT_SESSION_CONTROL_FD") != nullptr && !supervisor_control) {
+  if (getenv("PLANK_SESSION_CONTROL_FD") != nullptr && !supervisor_control) {
     BOOST_LOG(fatal) << "Supervisor desktop control channel was rejected"sv;
     return 8;
   }
@@ -405,9 +405,9 @@ int main(int argc, char *argv[]) {
   }
 
   std::unique_ptr<platf::deinit_t> mDNS;
-  const bool mdns_discovery_enabled = config::sunshine.stationconnect_mdns_discovery;
+  const bool mdns_discovery_enabled = config::sunshine.mdns_discovery;
   if (!mdns_discovery_enabled) {
-    BOOST_LOG(info) << "StationConnect mDNS advertisement is disabled"sv;
+    BOOST_LOG(info) << "PLANK mDNS advertisement is disabled"sv;
   }
   auto sync_mDNS = std::async(std::launch::async, [&mDNS, mdns_discovery_enabled]() {
     if (mdns_discovery_enabled) {
@@ -426,8 +426,8 @@ int main(int argc, char *argv[]) {
 #ifdef _WIN32
   // If we're using the default port and GameStream is enabled, warn the user
   if (config::sunshine.port == 47989 && is_gamestream_enabled()) {
-    BOOST_LOG(fatal) << "GameStream is still enabled in GeForce Experience and conflicts with the StationConnect streaming ports."sv;
-    BOOST_LOG(fatal) << "Disable GameStream on the SHIELD tab in GeForce Experience or change the StationConnect port in stationconnect-host.conf."sv;
+    BOOST_LOG(fatal) << "GameStream is still enabled in GeForce Experience and conflicts with the PLANK streaming ports."sv;
+    BOOST_LOG(fatal) << "Disable GameStream on the SHIELD tab in GeForce Experience or change the PLANK port in /etc/plank/host.conf."sv;
   }
 #endif
 

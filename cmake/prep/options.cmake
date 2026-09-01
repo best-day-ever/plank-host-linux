@@ -9,10 +9,10 @@ set(SUNSHINE_PUBLISHER_ISSUE_URL ""
 option(BUILD_DOCS "Build documentation" ON)
 option(BUILD_TESTS "Build tests" ON)
 option(BUILD_WERROR "Enable -Werror flag." OFF)
-option(STATIONCONNECT_ENABLE_DATASMASH
-        "Link the experimental StationConnect datasmash transport boundary." OFF)
-set(STATIONCONNECT_DATASMASH_TRANSPORT_DIR "" CACHE PATH
-        "Path to the StationConnect datasmash Rust transport crate.")
+option(PLANK_ENABLE_TRANSPORT
+        "Link the PLANK native transport boundary." OFF)
+set(PLANK_TRANSPORT_DIR "" CACHE PATH
+        "Path to the PLANK transport Rust transport crate.")
 
 # if this option is set, the build will exit after configuring special package configuration files
 option(SUNSHINE_CONFIGURE_ONLY "Configure special files only, then exit." OFF)

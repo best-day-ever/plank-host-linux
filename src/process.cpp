@@ -1,6 +1,6 @@
 /**
  * @file src/process.cpp
- * @brief StationConnect Desktop stream reservation state.
+ * @brief PLANK Desktop stream reservation state.
  */
 
 // local includes
@@ -40,7 +40,7 @@ namespace proc {
     }
 
     _app_id.store(app_id, std::memory_order_release);
-    BOOST_LOG(info) << "Reserving StationConnect Desktop stream"sv;
+    BOOST_LOG(info) << "Reserving PLANK Desktop stream"sv;
     return 0;
   }
 

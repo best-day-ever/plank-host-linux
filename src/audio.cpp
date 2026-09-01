@@ -177,7 +177,7 @@ namespace audio {
 
     auto generation = []() -> std::uint64_t {
 #ifdef __linux__
-      return stationconnect::session::desktop_generation();
+      return plank::session::desktop_generation();
 #else
       return 0;
 #endif
@@ -272,7 +272,7 @@ namespace audio {
     static std::map<std::uint64_t, std::unique_ptr<safe::shared_t<audio_ctx_t>>> controls;
     std::uint64_t generation = 0;
 #ifdef __linux__
-    generation = stationconnect::session::desktop_generation();
+    generation = plank::session::desktop_generation();
 #endif
     std::lock_guard lock {controls_mutex};
     auto &control = controls[generation];

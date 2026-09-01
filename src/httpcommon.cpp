@@ -34,7 +34,7 @@ namespace http {
     fs::path pkey_path = pkey;
     fs::path cert_path = cert;
 
-    auto creds = crypto::gen_creds("StationConnect Host"sv, 3072);
+    auto creds = crypto::gen_creds("PLANK Host"sv, 3072);
 
     auto pkey_dir = pkey_path;
     auto cert_dir = cert_path;

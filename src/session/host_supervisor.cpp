@@ -1,9 +1,9 @@
 /**
  * @file src/session/host_supervisor.cpp
- * @brief Boot-time StationConnect graphical-session worker supervisor.
+ * @brief Boot-time PLANK graphical-session worker supervisor.
  */
 #include "session_context.h"
-#include "../stationconnect_topology.h"
+#include "../plank_topology.h"
 
 #include <algorithm>
 #include <array>
@@ -37,22 +37,22 @@
 #include <unistd.h>
 
 namespace {
-  constexpr std::string_view default_worker = "/usr/bin/stationconnect-host";
-  constexpr std::string_view machine_home = "/var/lib/stationconnect";
+  constexpr std::string_view default_worker = "/usr/bin/plank-host";
+  constexpr std::string_view machine_home = "/var/lib/plank";
   constexpr std::string_view runtime_pulse_cookie =
-    "/run/stationconnect/host/pulse-cookie";
+    "/run/plank/host/pulse-cookie";
   constexpr std::string_view systemctl_path = "/usr/bin/systemctl";
   constexpr std::string_view systemd_run_path = "/usr/bin/systemd-run";
   constexpr std::string_view display_prepare_path =
-    "/usr/libexec/stationconnect/stationconnect-display-prepare";
+    "/usr/libexec/plank/plank-display-prepare";
   constexpr std::string_view xrandr_path = "/usr/bin/xrandr";
   constexpr std::string_view nvidia_settings_path = "/usr/bin/nvidia-settings";
   constexpr std::string_view display_overlay_path =
-    "/etc/X11/xorg.conf.d/99-stationconnect-headless.conf";
-  constexpr std::string_view stationconnect_config_path =
-    "/etc/stationconnect/stationconnect-host.conf";
+    "/etc/X11/xorg.conf.d/99-plank-headless.conf";
+  constexpr std::string_view plank_config_path =
+    "/etc/plank/host.conf";
   constexpr std::string_view runtime_display_state_path =
-    "/run/stationconnect/host/display-state";
+    "/run/plank/host/display-state";
 
   struct account_t {
     uid_t uid {};
@@ -83,7 +83,7 @@ namespace {
 
   struct physical_display_lease_t {
     uid_t uid {};
-    stationconnect::session::display_request_t request;
+    plank::session::display_request_t request;
     std::string session_id;
     physical_snapshot_t snapshot;
     bool active {};
@@ -168,8 +168,8 @@ namespace {
     return fsync(destination_descriptor) == 0;
   }
 
-  stationconnect::session::environment_t add_audio_environment(
-    stationconnect::session::environment_t environment,
+  plank::session::environment_t add_audio_environment(
+    plank::session::environment_t environment,
     const account_t &account
   ) {
     const std::filesystem::path pulse_socket =
@@ -205,8 +205,8 @@ namespace {
 
   [[noreturn]] void launch_child(
     const std::filesystem::path &worker,
-    const stationconnect::session::descriptor_t &session,
-    const stationconnect::session::environment_t &environment,
+    const plank::session::descriptor_t &session,
+    const plank::session::environment_t &environment,
     int control_descriptor,
     int supervisor_descriptor
   ) {
@@ -220,7 +220,7 @@ namespace {
       std::_Exit(126);
     }
     if (geteuid() != 0 || getegid() != 0) {
-      std::cerr << "StationConnect machine worker lost root identity\n";
+      std::cerr << "PLANK machine worker lost root identity\n";
       std::_Exit(126);
     }
     if (!restrict_worker_capabilities()) {
@@ -251,26 +251,26 @@ namespace {
     set_environment_value("PULSE_SERVER", environment.pulse_server);
     set_environment_value("PULSE_COOKIE", environment.pulse_cookie);
     set_environment_value(
-      "STATIONCONNECT_SESSION_CONTROL_FD", std::to_string(control_descriptor)
+      "PLANK_SESSION_CONTROL_FD", std::to_string(control_descriptor)
     );
     if (chdir(machine_home.data()) != 0) {
       std::cerr << "Unable to enter machine worker home directory\n";
       std::_Exit(126);
     }
     execl(worker.c_str(), worker.c_str(), static_cast<char *>(nullptr));
-    std::cerr << "Unable to execute StationConnect worker: " << std::strerror(errno) << '\n';
+    std::cerr << "Unable to execute PLANK worker: " << std::strerror(errno) << '\n';
     std::_Exit(127);
   }
 
   bool send_update(
     worker_t &worker,
-    const stationconnect::session::descriptor_t &session,
-    const stationconnect::session::environment_t &environment
+    const plank::session::descriptor_t &session,
+    const plank::session::environment_t &environment
   ) {
-    const stationconnect::session::update_t update {
+    const plank::session::update_t update {
       worker.generation + 1, session, environment
     };
-    const std::string message = stationconnect::session::session_update_message(update);
+    const std::string message = plank::session::session_update_message(update);
     if (message.empty()) {
       return false;
     }
@@ -301,8 +301,8 @@ namespace {
 
   worker_t launch_worker(
     const std::filesystem::path &worker,
-    const stationconnect::session::descriptor_t &session,
-    const stationconnect::session::environment_t &environment
+    const plank::session::descriptor_t &session,
+    const plank::session::environment_t &environment
   ) {
     int control_sockets[2] {-1, -1};
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, control_sockets) != 0) {
@@ -476,7 +476,7 @@ namespace {
     const std::vector<std::string> &arguments,
     std::chrono::seconds timeout,
     const account_t &account,
-    const stationconnect::session::environment_t &environment
+    const plank::session::environment_t &environment
   ) {
     if (!program.is_absolute() || access(program.c_str(), X_OK) != 0 ||
         account.uid == 0 || account.name.empty()) return false;
@@ -511,7 +511,7 @@ namespace {
     const std::vector<std::string> &arguments,
     std::chrono::seconds timeout,
     const account_t &account,
-    const stationconnect::session::environment_t &environment
+    const plank::session::environment_t &environment
   ) {
     if (!program.is_absolute() || access(program.c_str(), X_OK) != 0 ||
         account.uid == 0 || account.name.empty()) return std::nullopt;
@@ -650,7 +650,7 @@ namespace {
 
   std::optional<physical_snapshot_t> capture_physical_snapshot(
     const account_t &account,
-    const stationconnect::session::environment_t &environment
+    const plank::session::environment_t &environment
   ) {
     const auto response = run_bounded_user_command_capture(
       nvidia_settings_path, {"--query", "CurrentMetaMode", "--terse"},
@@ -662,7 +662,7 @@ namespace {
   bool assign_metamode(
     std::string_view assignment,
     const account_t &account,
-    const stationconnect::session::environment_t &environment
+    const plank::session::environment_t &environment
   ) {
     return !assignment.empty() && run_bounded_user_command(
       nvidia_settings_path,
@@ -673,7 +673,7 @@ namespace {
 
   std::optional<std::string> temporary_metamode(
     const physical_snapshot_t &snapshot,
-    const stationconnect::session::display_request_t &request
+    const plank::session::display_request_t &request
   ) {
     const std::size_t required_outputs =
       request.layout == "dual-horizontal" ? 2U : 1U;
@@ -682,7 +682,7 @@ namespace {
     std::string assignment;
     int x = 0;
     for (std::size_t index = 0; index < required_outputs; ++index) {
-      const auto requested = stationconnect::topology::virtual_mode_size(modes[index]);
+      const auto requested = plank::topology::virtual_mode_size(modes[index]);
       const auto &physical = snapshot.outputs[index];
       if (requested.width <= 0 || requested.height <= 0) return std::nullopt;
       if (!assignment.empty()) assignment += ", ";
@@ -710,10 +710,10 @@ namespace {
   }
 
   bool write_runtime_display_state(
-    const stationconnect::session::runtime_display_state_t &state
+    const plank::session::runtime_display_state_t &state
   ) {
     const std::string contents =
-      stationconnect::session::runtime_display_state_message(state);
+      plank::session::runtime_display_state_message(state);
     if (contents.empty()) return false;
     const std::string temporary = std::string {runtime_display_state_path} +
       ".tmp." + std::to_string(getpid());
@@ -742,26 +742,26 @@ namespace {
 
   void clear_runtime_display_state() {
     if (unlink(runtime_display_state_path.data()) != 0 && errno != ENOENT) {
-      std::cerr << "Unable to remove the StationConnect runtime display state: "
+      std::cerr << "Unable to remove the PLANK runtime display state: "
                 << std::strerror(errno) << '\n';
     }
   }
 
   bool apply_physical_lease(
     physical_display_lease_t &lease,
-    const stationconnect::session::descriptor_t &session,
-    const stationconnect::session::environment_t &environment
+    const plank::session::descriptor_t &session,
+    const plank::session::environment_t &environment
   ) {
     const auto account = account_for_uid(session.uid);
     if (!account) return false;
     const auto snapshot = capture_physical_snapshot(*account, environment);
     if (!snapshot) {
-      std::cerr << "Unable to capture the physical NVIDIA MetaMode before the StationConnect session\n";
+      std::cerr << "Unable to capture the physical NVIDIA MetaMode before the PLANK session\n";
       return false;
     }
     const auto temporary = temporary_metamode(*snapshot, lease.request);
     if (!temporary || !assign_metamode(*temporary, *account, environment)) {
-      std::cerr << "Unable to apply the temporary StationConnect physical-display layout\n";
+      std::cerr << "Unable to apply the temporary PLANK physical-display layout\n";
       return false;
     }
     if (!write_runtime_display_state({
@@ -769,7 +769,7 @@ namespace {
           lease.uid
         })) {
       assign_metamode(snapshot->assignment, *account, environment);
-      std::cerr << "Unable to publish the temporary StationConnect display state; restored the physical layout\n";
+      std::cerr << "Unable to publish the temporary PLANK display state; restored the physical layout\n";
       return false;
     }
     lease.session_id = session.id;
@@ -779,8 +779,8 @@ namespace {
 
   bool restore_physical_lease(
     const physical_display_lease_t &lease,
-    const stationconnect::session::descriptor_t &session,
-    const stationconnect::session::environment_t &environment
+    const plank::session::descriptor_t &session,
+    const plank::session::environment_t &environment
   ) {
     const auto account = account_for_uid(session.uid);
     if (!account) return false;
@@ -793,7 +793,7 @@ namespace {
     const bool recovered = !fallback.empty() &&
       assign_metamode(fallback, *account, environment);
     clear_runtime_display_state();
-    std::cerr << "ERROR: Exact StationConnect physical-display restoration failed; "
+    std::cerr << "ERROR: Exact PLANK physical-display restoration failed; "
               << (recovered ? "enabled one safe native physical output" :
                               "safe physical-output recovery also failed")
               << '\n';
@@ -801,13 +801,13 @@ namespace {
   }
 
   bool apply_live_display_transition(
-    const stationconnect::session::display_request_t &request,
-    const stationconnect::session::descriptor_t &session,
-    const stationconnect::session::environment_t &environment
+    const plank::session::display_request_t &request,
+    const plank::session::descriptor_t &session,
+    const plank::session::environment_t &environment
   ) {
     const auto account = account_for_uid(session.uid);
-    const auto first = stationconnect::topology::virtual_mode_size(request.mode_1);
-    const auto second = stationconnect::topology::virtual_mode_size(request.mode_2);
+    const auto first = plank::topology::virtual_mode_size(request.mode_1);
+    const auto second = plank::topology::virtual_mode_size(request.mode_2);
     if (!account || first.width <= 0 || first.height <= 0 ||
         (request.layout == "dual-horizontal" &&
          (second.width <= 0 || second.height <= 0))) {
@@ -857,13 +857,13 @@ namespace {
       std::istreambuf_iterator<char> {input}, std::istreambuf_iterator<char> {}
     );
     if (contents.size() > maximum_overlay_size) return std::nullopt;
-    return stationconnect::session::secondary_output_visible_from_overlay(contents);
+    return plank::session::secondary_output_visible_from_overlay(contents);
   }
 
   bool set_secondary_desktop_visibility(
     bool visible,
-    const stationconnect::session::descriptor_t &session,
-    const stationconnect::session::environment_t &environment
+    const plank::session::descriptor_t &session,
+    const plank::session::environment_t &environment
   ) {
     const auto account = account_for_uid(session.uid);
     if (!account) return false;
@@ -877,12 +877,12 @@ namespace {
     );
   }
 
-  bool apply_display_transition(const stationconnect::session::display_request_t &request) {
+  bool apply_display_transition(const plank::session::display_request_t &request) {
     const bool stopped = run_bounded_command(
       systemctl_path, {"stop", "display-manager.service"}, std::chrono::seconds {30}
     );
     if (!stopped) {
-      std::cerr << "Unable to stop the display manager for StationConnect topology transition\n";
+      std::cerr << "Unable to stop the display manager for PLANK topology transition\n";
       return false;
     }
 
@@ -901,10 +901,10 @@ namespace {
       systemctl_path, {"start", "display-manager.service"}, std::chrono::seconds {30}
     );
     if (!prepared) {
-      std::cerr << "StationConnect display preparation failed; restored the prior GDM topology\n";
+      std::cerr << "PLANK display preparation failed; restored the prior GDM topology\n";
     }
     if (!started) {
-      std::cerr << "Unable to restart the display manager after StationConnect topology transition\n";
+      std::cerr << "Unable to restart the display manager after PLANK topology transition\n";
     }
     return prepared && started;
   }
@@ -926,11 +926,11 @@ int main(int argc, char **argv) {
     }
   }
   if (geteuid() != 0) {
-    std::cerr << "stationconnect-host-supervisor must run as root\n";
+    std::cerr << "plank-host-supervisor must run as root\n";
     return 3;
   }
   if (!worker_path.is_absolute() || access(worker_path.c_str(), X_OK) != 0) {
-    std::cerr << "StationConnect worker is unavailable: " << worker_path << '\n';
+    std::cerr << "PLANK worker is unavailable: " << worker_path << '\n';
     return 4;
   }
   sigset_t signal_mask;
@@ -955,19 +955,19 @@ int main(int argc, char **argv) {
   };
 
   worker_t worker;
-  std::optional<stationconnect::session::display_request_t> pending_display_request;
+  std::optional<plank::session::display_request_t> pending_display_request;
   std::optional<physical_display_lease_t> physical_display_lease;
   const auto startup_layout =
-    stationconnect::session::configured_startup_layout(stationconnect_config_path);
+    plank::session::configured_startup_layout(plank_config_path);
   const bool physical_startup =
-    startup_layout == stationconnect::session::startup_layout_t::physical;
+    startup_layout == plank::session::startup_layout_t::physical;
   const bool virtual_startup =
-    startup_layout == stationconnect::session::startup_layout_t::virtual_display;
-  if (startup_layout == stationconnect::session::startup_layout_t::invalid) {
-    std::cerr << "StationConnect startup display policy is invalid; display transitions are disabled\n";
+    startup_layout == plank::session::startup_layout_t::virtual_display;
+  if (startup_layout == plank::session::startup_layout_t::invalid) {
+    std::cerr << "PLANK startup display policy is invalid; display transitions are disabled\n";
   }
   bool recover_stale_runtime_state = physical_startup &&
-    stationconnect::session::read_runtime_display_state(
+    plank::session::read_runtime_display_state(
       runtime_display_state_path
     ).has_value();
   std::optional<bool> desired_secondary_visibility =
@@ -981,26 +981,26 @@ int main(int argc, char **argv) {
   while (!stopping) {
     if (physical_display_lease && !physical_display_lease->active &&
         std::chrono::steady_clock::now() >= physical_display_lease->deadline) {
-      const auto selected = stationconnect::session::active_seat0_graphical_session();
+      const auto selected = plank::session::active_seat0_graphical_session();
       const auto environment = selected &&
         selected->id == physical_display_lease->session_id ?
-          stationconnect::session::discover_environment(*selected) : std::nullopt;
+          plank::session::discover_environment(*selected) : std::nullopt;
       if (selected && environment) {
         restore_physical_lease(*physical_display_lease, *selected, *environment);
       } else {
         clear_runtime_display_state();
-        std::cerr << "Temporary StationConnect display lease expired after its X server disappeared\n";
+        std::cerr << "Temporary PLANK display lease expired after its X server disappeared\n";
       }
       physical_display_lease.reset();
     }
 
     if (pending_display_request &&
         std::chrono::steady_clock::now() >= display_request_deadline) {
-      const auto selected = stationconnect::session::active_seat0_graphical_session();
+      const auto selected = plank::session::active_seat0_graphical_session();
       if (!selected || selected->id != worker.session_id) {
-        std::cerr << "Refusing StationConnect display transition because the graphical session changed\n";
+        std::cerr << "Refusing PLANK display transition because the graphical session changed\n";
       } else if (physical_startup) {
-        const auto environment = stationconnect::session::discover_environment(*selected);
+        const auto environment = plank::session::discover_environment(*selected);
         physical_display_lease_t lease {
           pending_display_request->account_uid, *pending_display_request, {}, {}, false,
           std::chrono::steady_clock::now() + std::chrono::seconds {45}
@@ -1012,14 +1012,14 @@ int main(int argc, char **argv) {
           std::cerr << "Refusing to replace a temporary display lease owned by another account\n";
         } else if (apply_physical_lease(lease, *selected, *environment)) {
           physical_display_lease = std::move(lease);
-          std::clog << "Temporary StationConnect physical-display lease acquired for UID "
+          std::clog << "Temporary PLANK physical-display lease acquired for UID "
                     << physical_display_lease->uid << '\n';
         }
       } else if (!virtual_startup) {
         std::cerr << "Refusing a display transition because display.startup_layout is invalid\n";
       } else if (selected->session_class == "greeter") {
         const auto request = std::move(*pending_display_request);
-        std::clog << "Applying StationConnect display transition: "
+        std::clog << "Applying PLANK display transition: "
                   << request.layout << ' ' << request.mode_1;
         if (!request.mode_2.empty()) std::clog << ' ' << request.mode_2;
         std::clog << '\n';
@@ -1028,11 +1028,11 @@ int main(int argc, char **argv) {
           desired_secondary_visibility = request.layout == "dual-horizontal";
           visibility_session_id.clear();
           initial_secondary_visibility = false;
-          std::clog << "StationConnect display transition completed\n";
+          std::clog << "PLANK display transition completed\n";
         }
       } else if (selected->session_class == "user" &&
                  selected->uid == pending_display_request->account_uid) {
-        const auto environment = stationconnect::session::discover_environment(*selected);
+        const auto environment = plank::session::discover_environment(*selected);
         if (!environment) {
           std::cerr << "Unable to discover the active user's X11 environment for a live display transition\n";
         } else if (apply_live_display_transition(
@@ -1042,14 +1042,14 @@ int main(int argc, char **argv) {
             pending_display_request->layout == "dual-horizontal";
           visibility_session_id = selected->id;
           initial_secondary_visibility = false;
-          std::clog << "StationConnect live display transition completed for UID "
+          std::clog << "PLANK live display transition completed for UID "
                     << selected->uid << '\n';
         } else {
-          std::cerr << "StationConnect live display transition failed for UID "
+          std::cerr << "PLANK live display transition failed for UID "
                     << selected->uid << '\n';
         }
       } else {
-        std::cerr << "Refusing StationConnect display transition for a user other than the active desktop owner\n";
+        std::cerr << "Refusing PLANK display transition for a user other than the active desktop owner\n";
       }
       pending_display_request.reset();
       display_request_deadline = std::chrono::steady_clock::time_point::max();
@@ -1057,12 +1057,12 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    const auto selected = stationconnect::session::active_seat0_graphical_session();
+    const auto selected = plank::session::active_seat0_graphical_session();
     if (!selected) {
       pending_session.clear();
     } else if ((worker.pid <= 0 || worker.session_id != selected->id) &&
                std::chrono::steady_clock::now() >= next_launch) {
-      const auto environment = stationconnect::session::discover_environment(*selected);
+      const auto environment = plank::session::discover_environment(*selected);
       const auto account = account_for_uid(selected->uid);
       if (!environment || !account || account->home.empty()) {
         if (pending_session != selected->id) {
@@ -1071,7 +1071,7 @@ int main(int argc, char **argv) {
           pending_session = selected->id;
         }
       } else {
-        const auto confirmed = stationconnect::session::active_seat0_graphical_session();
+        const auto confirmed = plank::session::active_seat0_graphical_session();
         if (!confirmed || confirmed->id != selected->id || confirmed->uid != selected->uid) {
           continue;
         }
@@ -1079,7 +1079,7 @@ int main(int argc, char **argv) {
           const auto previous_session = worker.session_id;
           std::clog << "Graphical session changed from " << previous_session
                     << " to " << selected->id
-                    << "; restarting the StationConnect media worker for fresh X11/NvFBC state\n";
+                    << "; restarting the PLANK media worker for fresh X11/NvFBC state\n";
           stop_worker(worker);
         }
 
@@ -1088,9 +1088,9 @@ int main(int argc, char **argv) {
           const auto fallback = stale_snapshot ?
             safe_physical_metamode(*stale_snapshot) : std::string {};
           if (!fallback.empty() && assign_metamode(fallback, *account, *environment)) {
-            std::cerr << "Recovered a stale temporary StationConnect layout with one safe native physical output\n";
+            std::cerr << "Recovered a stale temporary PLANK layout with one safe native physical output\n";
           } else {
-            std::cerr << "ERROR: Unable to recover the stale temporary StationConnect physical layout\n";
+            std::cerr << "ERROR: Unable to recover the stale temporary PLANK physical layout\n";
           }
           clear_runtime_display_state();
           recover_stale_runtime_state = false;
@@ -1107,7 +1107,7 @@ int main(int argc, char **argv) {
               physical_display_lease.reset();
               std::cerr << "Unable to carry the temporary display lease from GDM into the authenticated desktop\n";
             } else {
-              std::clog << "Carried the temporary StationConnect display lease into user session "
+              std::clog << "Carried the temporary PLANK display lease into user session "
                         << selected->id << '\n';
             }
           } else {
@@ -1131,11 +1131,11 @@ int main(int argc, char **argv) {
           } else if (!set_secondary_desktop_visibility(
                        *desired_secondary_visibility, *selected, *environment
                      )) {
-            std::cerr << "Unable to apply StationConnect secondary-monitor visibility\n";
+            std::cerr << "Unable to apply PLANK secondary-monitor visibility\n";
             next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {2};
             continue;
           } else {
-            std::clog << "StationConnect secondary virtual monitor is "
+            std::clog << "PLANK secondary virtual monitor is "
                       << (*desired_secondary_visibility ? "available" : "hidden")
                       << " to the desktop\n";
             visibility_session_id = selected->id;
@@ -1147,10 +1147,10 @@ int main(int argc, char **argv) {
           if (launched.pid > 0) {
             worker = std::move(launched);
             pending_session.clear();
-            std::clog << "Attached persistent StationConnect machine worker to session "
+            std::clog << "Attached persistent PLANK machine worker to session "
                       << selected->id << ", UID " << selected->uid << '\n';
           } else {
-            std::cerr << "Unable to fork StationConnect worker: " << std::strerror(errno) << '\n';
+            std::cerr << "Unable to fork PLANK worker: " << std::strerror(errno) << '\n';
           }
         }
         if (worker.pid > 0) {
@@ -1176,33 +1176,33 @@ int main(int argc, char **argv) {
     if ((descriptors[2].revents & POLLIN) != 0 && worker.pid > 0) {
       std::array<char, 8193> message {};
       const ssize_t size = recv(worker.control_descriptor, message.data(), message.size(), 0);
-      const auto request = size > 0 ? stationconnect::session::parse_display_request(
+      const auto request = size > 0 ? plank::session::parse_display_request(
         std::string_view {message.data(), static_cast<std::size_t>(size)}
       ) : std::nullopt;
-      const auto active = stationconnect::session::active_seat0_graphical_session();
+      const auto active = plank::session::active_seat0_graphical_session();
       if (!request) {
-        std::cerr << "Rejected malformed StationConnect display transition request\n";
+        std::cerr << "Rejected malformed PLANK display transition request\n";
       } else if (!active || active->id != worker.session_id ||
                  (active->session_class == "user" &&
                   active->uid != request->account_uid) ||
                  (active->session_class != "greeter" &&
                   active->session_class != "user")) {
-        std::cerr << "Refused StationConnect display transition outside an authorized graphical session\n";
+        std::cerr << "Refused PLANK display transition outside an authorized graphical session\n";
       } else if (request->action ==
-                   stationconnect::session::display_request_t::action_t::activate) {
+                   plank::session::display_request_t::action_t::activate) {
         if (physical_display_lease &&
             physical_display_lease->uid == request->account_uid) {
           physical_display_lease->active = true;
           physical_display_lease->deadline =
             std::chrono::steady_clock::time_point::max();
-          std::clog << "Temporary StationConnect display lease is active\n";
+          std::clog << "Temporary PLANK display lease is active\n";
         }
       } else if (request->action ==
-                   stationconnect::session::display_request_t::action_t::release) {
+                   plank::session::display_request_t::action_t::release) {
         if (physical_display_lease &&
             physical_display_lease->uid == request->account_uid) {
           const auto environment = active->id == physical_display_lease->session_id ?
-            stationconnect::session::discover_environment(*active) : std::nullopt;
+            plank::session::discover_environment(*active) : std::nullopt;
           if (environment) {
             restore_physical_lease(*physical_display_lease, *active, *environment);
           } else {
@@ -1217,7 +1217,7 @@ int main(int argc, char **argv) {
         // is stopped and GDM is restarted.
         display_request_deadline =
           std::chrono::steady_clock::now() + std::chrono::milliseconds {750};
-        std::clog << "Scheduled StationConnect display transition from "
+        std::clog << "Scheduled PLANK display transition from "
                   << (active->session_class == "greeter" ? "GDM" : "the active user desktop")
                   << '\n';
       }
@@ -1230,13 +1230,13 @@ int main(int argc, char **argv) {
         } else if (information.ssi_signo == SIGCHLD && worker.pid > 0) {
           const pid_t result = waitpid(worker.pid, nullptr, WNOHANG);
           if (result == worker.pid) {
-            std::clog << "StationConnect worker exited; scheduling restart\n";
+            std::clog << "PLANK worker exited; scheduling restart\n";
             if (physical_display_lease && physical_display_lease->active &&
                 physical_display_lease->session_id == worker.session_id) {
               physical_display_lease->active = false;
               physical_display_lease->deadline =
                 std::chrono::steady_clock::now() + std::chrono::seconds {30};
-              std::cerr << "StationConnect worker exited with an active display lease; allowing 30 seconds for recovery\n";
+              std::cerr << "PLANK worker exited with an active display lease; allowing 30 seconds for recovery\n";
             }
             close(worker.control_descriptor);
             worker = {};
@@ -1248,10 +1248,10 @@ int main(int argc, char **argv) {
   }
 
   if (physical_display_lease) {
-    const auto selected = stationconnect::session::active_seat0_graphical_session();
+    const auto selected = plank::session::active_seat0_graphical_session();
     const auto environment = selected &&
       selected->id == physical_display_lease->session_id ?
-        stationconnect::session::discover_environment(*selected) : std::nullopt;
+        plank::session::discover_environment(*selected) : std::nullopt;
     if (selected && environment) {
       restore_physical_lease(*physical_display_lease, *selected, *environment);
     } else {

@@ -1,6 +1,6 @@
 /**
  * @file tests/integration/test_config_consistency.cpp
- * @brief StationConnect configuration parser and documentation consistency tests.
+ * @brief PLANK configuration parser and documentation consistency tests.
  */
 
 #include "../tests_common.h"
@@ -64,9 +64,9 @@ namespace {
 
 TEST(ConfigParserTest, AcceptsIniSectionsAndGlobalKeys) {
   const auto values = config::parse_config(R"(
-# StationConnect host profile
+# PLANK host profile
 [network]
-stationconnect_mdns_discovery = false
+mdns_discovery = false
 
 [x264-encoder]
 sw_vbv_maxrate_percentage = 150
@@ -74,7 +74,7 @@ sw_vbv_buffer_frames = 4
 )");
 
   ASSERT_EQ(values.size(), 3);
-  EXPECT_EQ(values.at("stationconnect_mdns_discovery"), "false");
+  EXPECT_EQ(values.at("mdns_discovery"), "false");
   EXPECT_EQ(values.at("sw_vbv_maxrate_percentage"), "150");
   EXPECT_EQ(values.at("sw_vbv_buffer_frames"), "4");
   EXPECT_FALSE(values.contains("network"));
@@ -87,11 +87,11 @@ TEST(ConfigParserTest, IgnoresCommentsAndEmptySections) {
 [security] # comment
 []
 [ ]
-cert = /etc/stationconnect/tls/cert.pem
+cert = /etc/plank/tls/cert.pem
 )");
 
   ASSERT_EQ(values.size(), 1);
-  EXPECT_EQ(values.at("cert"), "/etc/stationconnect/tls/cert.pem");
+  EXPECT_EQ(values.at("cert"), "/etc/plank/tls/cert.pem");
 }
 
 TEST(ConfigConsistencyTest, RuntimeAndDocumentedOptionsMatch) {
@@ -111,7 +111,7 @@ TEST(ConfigConsistencyTest, RuntimeAndDocumentedOptionsMatch) {
   EXPECT_TRUE(obsolete.empty()) << "Documented but unsupported options: " << join(obsolete);
 }
 
-TEST(ConfigConsistencyTest, RuntimeOptionsMatchStationConnectProductPolicy) {
+TEST(ConfigConsistencyTest, RuntimeOptionsMatchPlankProductPolicy) {
   const std::set<std::string, std::less<>> expected {
     "adapter_name",
     "allow_root_login",
@@ -135,8 +135,8 @@ TEST(ConfigConsistencyTest, RuntimeOptionsMatchStationConnectProductPolicy) {
     "pkey",
     "port",
     "startup_layout",
-    "stationconnect_mdns_discovery",
-    "sunshine_name",
+    "mdns_discovery",
+    "host_name",
     "sw_preset",
     "sw_scenecut",
     "sw_tune",
@@ -146,7 +146,7 @@ TEST(ConfigConsistencyTest, RuntimeOptionsMatchStationConnectProductPolicy) {
 
   const auto runtime = extract_runtime_options();
   EXPECT_EQ(runtime, expected)
-    << "StationConnect runtime configuration drifted. Actual: " << join(runtime);
+    << "PLANK runtime configuration drifted. Actual: " << join(runtime);
 }
 
 TEST(ConfigConsistencyTest, OmitsGlobalVideoBackendSelectors) {

@@ -1,15 +1,15 @@
 /**
- * @file tests/unit/test_stationconnect_topology.cpp
- * @brief Tests for exact StationConnect host-layout binding.
+ * @file tests/unit/test_plank_topology.cpp
+ * @brief Tests for exact PLANK host-layout binding.
  */
-#include "src/stationconnect_topology.h"
+#include "src/plank_topology.h"
 
 #include <gtest/gtest.h>
 
-namespace topology = stationconnect::topology;
+namespace topology = plank::topology;
 
-TEST(StationConnectTopology, PublishesVersionElevenFeatureContract) {
-  EXPECT_EQ(topology::protocol_version, 11U);
+TEST(PlankTopology, PublishesVersionElevenFeatureContract) {
+  EXPECT_EQ(topology::protocol_version, 12U);
   EXPECT_EQ(topology::feature_flags, 0x7FFFU);
   EXPECT_NE(topology::feature_flags & topology::feature_nvfbc_hevc10_nvenc, 0U);
   EXPECT_NE(topology::feature_flags & topology::feature_fixed_transport_mtu, 0U);
@@ -30,7 +30,7 @@ TEST(StationConnectTopology, PublishesVersionElevenFeatureContract) {
   ));
 }
 
-TEST(StationConnectTopology, AcceptsOnlyValidFixedQuicPayloadCeilings) {
+TEST(PlankTopology, AcceptsOnlyValidFixedQuicPayloadCeilings) {
   EXPECT_TRUE(topology::valid_quic_udp_payload_mtu(1200));
   EXPECT_TRUE(topology::valid_quic_udp_payload_mtu(1344));
   EXPECT_TRUE(topology::valid_quic_udp_payload_mtu(1452));
@@ -40,7 +40,7 @@ TEST(StationConnectTopology, AcceptsOnlyValidFixedQuicPayloadCeilings) {
   EXPECT_FALSE(topology::valid_quic_udp_payload_mtu(65528));
 }
 
-TEST(StationConnectTopology, AcceptsOnlyExactEncodingTuples) {
+TEST(PlankTopology, AcceptsOnlyExactEncodingTuples) {
   EXPECT_TRUE(topology::valid_encoding_tuple(
     "nvfbc", "software-cuda", "h264-10-444-software"
   ));
@@ -74,7 +74,7 @@ TEST(StationConnectTopology, AcceptsOnlyExactEncodingTuples) {
   ));
 }
 
-TEST(StationConnectTopology, AcceptsExactQualifiedLayouts) {
+TEST(PlankTopology, AcceptsExactQualifiedLayouts) {
   EXPECT_EQ(topology::validate_layout_binding(
               "physical", "", "", "physical", "", "", 1),
             topology::layout_error::none);
@@ -87,7 +87,7 @@ TEST(StationConnectTopology, AcceptsExactQualifiedLayouts) {
             topology::layout_error::none);
 }
 
-TEST(StationConnectTopology, EnforcesAdministratorDisplayPolicy) {
+TEST(PlankTopology, EnforcesAdministratorDisplayPolicy) {
   EXPECT_TRUE(topology::layout_allowed_by_startup_layout("physical", "physical"));
   EXPECT_TRUE(topology::layout_allowed_by_startup_layout("single", "physical"));
   EXPECT_TRUE(topology::layout_allowed_by_startup_layout("dual-horizontal", "physical"));
@@ -97,7 +97,7 @@ TEST(StationConnectTopology, EnforcesAdministratorDisplayPolicy) {
   EXPECT_FALSE(topology::layout_allowed_by_startup_layout("dual-vertical", "physical"));
 }
 
-TEST(StationConnectTopology, RejectsMismatchBeforeLaunchState) {
+TEST(PlankTopology, RejectsMismatchBeforeLaunchState) {
   EXPECT_EQ(topology::validate_layout_binding(
               "single", "1920x1080", "",
               "dual-horizontal", "1920x1080", "1024x2160", 2),
@@ -108,7 +108,7 @@ TEST(StationConnectTopology, RejectsMismatchBeforeLaunchState) {
             topology::layout_error::mismatch);
 }
 
-TEST(StationConnectTopology, RejectsInvalidAndUnhealthyLayouts) {
+TEST(PlankTopology, RejectsInvalidAndUnhealthyLayouts) {
   EXPECT_EQ(topology::validate_layout_binding(
               "dual-vertical", "1920x1080", "",
               "dual-horizontal", "1920x1080", "1280x2160", 2),
