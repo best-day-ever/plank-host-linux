@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <cstdint>
 #include <utility>
 
 // lib includes
@@ -71,6 +72,16 @@ namespace stream {
      * @param session Active streaming or pairing session for the request.
      */
     void stop(session_t &session);
+    /**
+     * @brief Stop a session after notifying its client of the Host reason.
+     *
+     * Input processing is stopped before the reason is queued so a displaced
+     * client cannot deliver another input event during session handoff.
+     *
+     * @param session Active streaming session.
+     * @param termination_reason PLANK Host termination reason.
+     */
+    void stop(session_t &session, std::uint32_t termination_reason);
     /**
      * @brief Wait for worker threads owned by the session to exit.
      *

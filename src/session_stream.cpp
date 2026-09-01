@@ -41,23 +41,35 @@ namespace session_stream {
   class session_server_t {
   public:
     void session_raise(std::shared_ptr<launch_session_t> launch_session) {
-      if (launch_event.view(0s)) {
-        return;
+      {
+        auto lock = launch_owner_.lock();
+        if (*launch_owner_) {
+          BOOST_LOG(error) << "Attempted to queue a second PLANK launch owner"sv;
+          return;
+        }
+        *launch_owner_ = launch_session;
       }
       launch_event.raise(std::move(launch_session));
     }
 
-    void session_clear(const std::uint32_t launch_session_id) {
-      auto launch_session = launch_event.view(0s);
-      if (!launch_session) {
-        return;
+    void session_complete(const std::uint32_t launch_session_id) {
+      auto lock = launch_owner_.lock();
+      if (*launch_owner_ && (*launch_owner_)->id == launch_session_id) {
+        launch_owner_->reset();
       }
-      if (launch_session->id != launch_session_id) {
-        BOOST_LOG(error) << "Attempted to clear unexpected session: "sv
-                         << launch_session_id << " vs "sv << launch_session->id;
-        return;
-      }
+    }
+
+    bool launch_owned() {
+      auto lock = launch_owner_.lock();
+      return *launch_owner_ != nullptr;
+    }
+
+    std::shared_ptr<launch_session_t> revoke_launch() {
+      auto lock = launch_owner_.lock();
+      auto launch_session = std::move(*launch_owner_);
+      launch_owner_->reset();
       launch_event.pop(0s);
+      return launch_session;
     }
 
     int session_count() {
@@ -65,13 +77,18 @@ namespace session_stream {
       return static_cast<int>(session_slots_->size());
     }
 
-    void clear(const bool all = true) {
+    void clear(const bool all = true, const std::uint32_t termination_reason = 0) {
       auto lock = session_slots_.lock();
       for (auto iterator = session_slots_->begin();
            iterator != session_slots_->end();) {
         auto &slot = *(*iterator);
         if (all || stream::session::state(slot) == stream::session::state_e::STOPPING) {
-          stream::session::stop(slot);
+          if (termination_reason != 0 &&
+              stream::session::state(slot) != stream::session::state_e::STOPPING) {
+            stream::session::stop(slot, termination_reason);
+          } else {
+            stream::session::stop(slot);
+          }
           stream::session::join(slot);
           iterator = session_slots_->erase(iterator);
         } else {
@@ -96,6 +113,10 @@ namespace session_stream {
 
   private:
     sync_util::sync_t<std::set<std::shared_ptr<stream::session_t>>> session_slots_;
+    // Retain ownership from HTTP acceptance through native setup. The setup
+    // worker removes the request from launch_event while it waits for QUIC,
+    // so the queue alone cannot represent an active session claim.
+    sync_util::sync_t<std::shared_ptr<launch_session_t>> launch_owner_;
   };
 
   session_server_t server {};
@@ -104,21 +125,27 @@ namespace session_stream {
     server.session_raise(std::move(launch_session));
   }
 
-  void launch_session_clear(const std::uint32_t launch_session_id) {
-    server.session_clear(launch_session_id);
-  }
-
   int session_count() {
     server.clear(false);
     return server.session_count();
   }
 
   bool launch_session_pending() {
-    return server.launch_event.view(0s) != nullptr;
+    return server.launch_owned();
   }
 
-  void terminate_sessions() {
-    server.clear(true);
+  void terminate_sessions(const std::uint32_t termination_reason) {
+    // Revoke an accepted launch that has not yet created its media session.
+    // Releasing its one-use endpoint prevents the displaced peer from racing
+    // the replacement launch after the Desktop reservation changes owner.
+    auto launch_session = server.revoke_launch();
+    if (launch_session && launch_session->plank_transport_endpoint) {
+      auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(
+        launch_session->plank_transport_endpoint.get()
+      );
+      plank_transport_native_endpoint_stop(endpoint);
+    }
+    server.clear(true, termination_reason);
     input::terminate_retained_input();
   }
 
@@ -393,6 +420,11 @@ namespace session_stream {
   }
 
   void process_native_launch(const std::shared_ptr<launch_session_t> &launch_session) {
+    auto complete_launch = util::fail_guard([&]() {
+      if (launch_session) {
+        server.session_complete(launch_session->id);
+      }
+    });
     auto *endpoint = launch_session && launch_session->plank_transport_endpoint ?
       static_cast<PlankTransportNativeEndpoint *>(launch_session->plank_transport_endpoint.get()) :
       nullptr;
@@ -477,7 +509,7 @@ namespace session_stream {
         server.clear(false);
       }
     }
-    server.clear();
+    terminate_sessions();
   }
 
 }  // namespace session_stream

@@ -187,6 +187,27 @@ namespace stream {
       endpoint, packet.data(), packet_size
     ) == PLANK_TRANSPORT_OK ? 0 : -1;
   }
+
+  int send_host_termination(session_t *session, const std::uint32_t reason) {
+    if (!session || !session->plank_transport_endpoint) {
+      return -1;
+    }
+    const std::uint32_t values[] {reason};
+    std::array<std::uint8_t, PLANK_TRANSPORT_CONTROL_MAX_PACKET_SIZE> packet {};
+    std::size_t packet_size = 0;
+    if (plank_transport_control_encode(
+          PLANK_TRANSPORT_CONTROL_HOST_TERMINATE, values, std::size(values),
+          packet.data(), packet.size(), &packet_size
+        ) != 0) {
+      return -1;
+    }
+    auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(
+      session->plank_transport_endpoint.get()
+    );
+    return plank_transport_native_data_send(
+      endpoint, packet.data(), packet_size
+    ) == PLANK_TRANSPORT_OK ? 0 : -1;
+  }
 #endif
 
   int send_hdr_mode(session_t *session, video::hdr_info_t hdr_info) {
@@ -687,20 +708,9 @@ namespace stream {
     auto sessions = ctx->sessions.lock();
     for (auto *session : *ctx->sessions) {
 #ifdef PLANK_TRANSPORT
-      constexpr std::uint32_t reason = 0x80030023;
-      const std::uint32_t values[] {reason};
-      std::array<std::uint8_t, PLANK_TRANSPORT_CONTROL_MAX_PACKET_SIZE> packet {};
-      std::size_t packet_size = 0;
-      const auto encode_result = plank_transport_control_encode(
-        PLANK_TRANSPORT_CONTROL_HOST_TERMINATE, values, std::size(values),
-        packet.data(), packet.size(), &packet_size
-      );
-      auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(
-        session->plank_transport_endpoint.get()
-      );
-      if (encode_result != 0 || !endpoint ||
-          plank_transport_native_data_send(endpoint, packet.data(), packet_size) !=
-            PLANK_TRANSPORT_OK) {
+      if (send_host_termination(
+            session, PLANK_TRANSPORT_TERMINATION_GRACEFUL
+          ) != 0) {
         BOOST_LOG(warning) << "Couldn't send PlankTransport termination code"sv;
       }
 #endif
@@ -1026,6 +1036,17 @@ namespace stream {
       session.shutdown_event->raise(true);
       session.cursorThread.request_stop();
       session.inputThread.request_stop();
+    }
+
+    void stop(session_t &session, const std::uint32_t termination_reason) {
+      stop(session);
+#ifdef PLANK_TRANSPORT
+      if (send_host_termination(&session, termination_reason) != 0) {
+        BOOST_LOG(warning) << "Couldn't send PlankTransport termination code"sv;
+      }
+#else
+      (void) termination_reason;
+#endif
     }
 
     /**

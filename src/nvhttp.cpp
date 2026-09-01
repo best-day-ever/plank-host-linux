@@ -37,6 +37,7 @@
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include "plank_transport.h"
+#include "plank_transport_control.h"
 #endif
 
 // local includes
@@ -96,6 +97,8 @@ namespace nvhttp {
     plank::topology::feature_nvfbc_hevc10_nvenc;
   constexpr auto plank_feature_fixed_transport_mtu =
     plank::topology::feature_fixed_transport_mtu;
+  constexpr auto plank_feature_session_takeover =
+    plank::topology::feature_session_takeover;
   constexpr auto plank_topology_features = plank::topology::feature_flags;
 
 #ifdef PLANK_TRANSPORT
@@ -665,6 +668,7 @@ namespace nvhttp {
         (session.plank_feature_flags & plank_feature_independent_virtual_modes) == 0 ||
         (session.plank_feature_flags & plank_feature_dynamic_host_layout) == 0 ||
         (session.plank_feature_flags & plank_feature_temporary_physical_layout) == 0 ||
+        (session.plank_feature_flags & plank_feature_session_takeover) == 0 ||
         session.host_layout.empty()) {
       tree.put("root.<xmlattr>.status_code", 400);
       tree.put("root.<xmlattr>.status_message", "Missing PLANK host-layout binding");
@@ -962,6 +966,31 @@ namespace nvhttp {
       throw std::out_of_range(name);
     }
     return it->second;
+  }
+
+  /**
+   * @brief Parse an explicitly negotiated active-session takeover request.
+   * @return False when omitted, true when requested, or no value when malformed.
+   */
+  std::optional<bool> session_takeover_requested(const args_t &args) {
+    const auto takeover = args.find("plankTakeover"s);
+    if (takeover == std::end(args)) {
+      return false;
+    }
+    if (takeover->second != "1"sv) {
+      return std::nullopt;
+    }
+    const auto protocol_version = static_cast<std::uint32_t>(util::from_view(
+      get_arg(args, "plankProtocolVersion", "0")
+    ));
+    const auto feature_flags = static_cast<std::uint32_t>(util::from_view(
+      get_arg(args, "plankFeatureFlags", "0")
+    ));
+    if (protocol_version != plank_topology_version ||
+        (feature_flags & plank_feature_session_takeover) == 0) {
+      return std::nullopt;
+    }
+    return true;
   }
 
   /**
@@ -1362,10 +1391,48 @@ namespace nvhttp {
       return;
     }
 
+    const auto takeover_requested = session_takeover_requested(args);
+    if (!takeover_requested) {
+      tree.put("root.gamesession", 0);
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Invalid PLANK session takeover request");
+      return;
+    }
+    const bool active_session = session_stream::session_count() > 0 ||
+                                session_stream::launch_session_pending();
+    if (active_session && !*takeover_requested) {
+      tree.put("root.gamesession", 0);
+      tree.put("root.<xmlattr>.status_code", 409);
+      tree.put("root.<xmlattr>.status_message", "PLANK workstation session is active");
+      return;
+    }
+
+    host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
+    auto launch_session = make_launch_session(host_audio, args);
+    if (!validate_capture_source(*launch_session, tree)) {
+      tree.put("root.gamesession", 0);
+      return;
+    }
+    if (!validate_encoder_backend(*launch_session, tree)) {
+      tree.put("root.gamesession", 0);
+      return;
+    }
+    if (!validate_transport_mtu(*launch_session, tree)) {
+      tree.put("root.gamesession", 0);
+      return;
+    }
+
     auto current_appid = proc::proc.running();
+    if (active_session) {
+      BOOST_LOG(info) << "Authenticated PLANK session takeover requested"sv;
+      session_stream::terminate_sessions(
+        PLANK_TRANSPORT_TERMINATION_SESSION_TAKEN_OVER
+      );
+      proc::proc.terminate();
+      current_appid = 0;
+    }
     if (current_appid > 0 &&
-        session_stream::session_count() == 0 &&
-        !session_stream::launch_session_pending()) {
+        !active_session) {
       // The Desktop application is a process-less reservation. A normal
       // disconnect stops and joins the media session, but the reservation can
       // outlive it and make a rapid reconnect look like a competing launch.
@@ -1384,20 +1451,6 @@ namespace nvhttp {
       return;
     }
 
-    host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
-    auto launch_session = make_launch_session(host_audio, args);
-    if (!validate_capture_source(*launch_session, tree)) {
-      tree.put("root.gamesession", 0);
-      return;
-    }
-    if (!validate_encoder_backend(*launch_session, tree)) {
-      tree.put("root.gamesession", 0);
-      return;
-    }
-    if (!validate_transport_mtu(*launch_session, tree)) {
-      tree.put("root.gamesession", 0);
-      return;
-    }
     if (!resolve_selected_output(*launch_session, *authenticated_uid, tree)) {
       tree.put("root.gamesession", 0);
       return;
@@ -1512,10 +1565,26 @@ namespace nvhttp {
     }
 
     auto args = request->parse_query_string();
+    const auto takeover_requested = session_takeover_requested(args);
+    if (!takeover_requested) {
+      tree.put("root.resume", 0);
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Invalid PLANK session takeover request");
+      return;
+    }
+    const bool active_session = session_stream::session_count() > 0 ||
+                                session_stream::launch_session_pending();
+    if (active_session && !*takeover_requested) {
+      tree.put("root.resume", 0);
+      tree.put("root.<xmlattr>.status_code", 409);
+      tree.put("root.<xmlattr>.status_message", "PLANK workstation session is active");
+      return;
+    }
+
     // Newer Moonlight clients send localAudioPlayMode on /resume too,
     // so we should use it if it's present in the args and there are
     // no active sessions we could be interfering with.
-    const bool no_active_sessions {session_stream::session_count() == 0};
+    bool no_active_sessions {!active_session};
     if (no_active_sessions && args.find("localAudioPlayMode"s) != std::end(args)) {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
@@ -1531,6 +1600,17 @@ namespace nvhttp {
     if (!validate_transport_mtu(*launch_session, tree)) {
       tree.put("root.resume", 0);
       return;
+    }
+    if (active_session) {
+      BOOST_LOG(info) << "Authenticated PLANK session takeover requested"sv;
+      session_stream::terminate_sessions(
+        PLANK_TRANSPORT_TERMINATION_SESSION_TAKEN_OVER
+      );
+      no_active_sessions = true;
+      if (args.find("localAudioPlayMode"s) != std::end(args)) {
+        host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
+        launch_session->host_audio = host_audio;
+      }
     }
     if (!resolve_selected_output(*launch_session, *authenticated_uid, tree)) {
       tree.put("root.resume", 0);
