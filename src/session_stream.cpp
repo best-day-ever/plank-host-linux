@@ -42,32 +42,32 @@ namespace session_stream {
   public:
     void session_raise(std::shared_ptr<launch_session_t> launch_session) {
       {
-        auto owner = launch_owner_.lock();
-        if (*owner) {
+        auto lock = launch_owner_.lock();
+        if (*launch_owner_) {
           BOOST_LOG(error) << "Attempted to queue a second PLANK launch owner"sv;
           return;
         }
-        *owner = launch_session;
+        *launch_owner_ = launch_session;
       }
       launch_event.raise(std::move(launch_session));
     }
 
     void session_complete(const std::uint32_t launch_session_id) {
-      auto owner = launch_owner_.lock();
-      if (*owner && (*owner)->id == launch_session_id) {
-        owner->reset();
+      auto lock = launch_owner_.lock();
+      if (*launch_owner_ && (*launch_owner_)->id == launch_session_id) {
+        launch_owner_->reset();
       }
     }
 
     bool launch_owned() {
-      auto owner = launch_owner_.lock();
-      return *owner != nullptr;
+      auto lock = launch_owner_.lock();
+      return *launch_owner_ != nullptr;
     }
 
     std::shared_ptr<launch_session_t> revoke_launch() {
-      auto owner = launch_owner_.lock();
-      auto launch_session = std::move(*owner);
-      owner->reset();
+      auto lock = launch_owner_.lock();
+      auto launch_session = std::move(*launch_owner_);
+      launch_owner_->reset();
       launch_event.pop(0s);
       return launch_session;
     }
