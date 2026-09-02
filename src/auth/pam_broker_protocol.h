@@ -208,7 +208,9 @@ namespace plank::auth {
     };
     std::vector<std::uint8_t> frame(sizeof(header) + message.payload.size());
     std::memcpy(frame.data(), &header, sizeof(header));
-    std::copy(message.payload.begin(), message.payload.end(), frame.begin() + sizeof(header));
+    if (!message.payload.empty()) {
+      std::memcpy(frame.data() + sizeof(header), message.payload.data(), message.payload.size());
+    }
     return frame;
   }
 
