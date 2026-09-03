@@ -266,7 +266,10 @@ namespace logging {
 
     sink = boost::make_shared<text_sink>();
 
-#ifndef SUNSHINE_TESTS
+#if !defined(SUNSHINE_TESTS) && !defined(__linux__)
+    // Linux package services keep detailed runtime output in the private
+    // product log. Their stdout is reserved for early startup failures and
+    // supervisor diagnostics, so routine records do not flood journald.
     boost::shared_ptr<std::ostream> stream {&std::cout, boost::null_deleter()};
     sink->locked_backend()->add_stream(stream);
 #endif
