@@ -1049,6 +1049,20 @@ namespace stream {
 #endif
     }
 
+    void notify_desktop_handoff(session_t &session) {
+#ifdef PLANK_TRANSPORT
+      if (state(session) != state_e::RUNNING || !session.plank_transport_endpoint) return;
+      std::array<std::uint8_t, PLANK_TRANSPORT_CONTROL_HEADER_SIZE> packet {};
+      std::size_t size = 0;
+      if (plank_transport_control_encode(PLANK_TRANSPORT_CONTROL_HOST_DESKTOP_HANDOFF,
+            nullptr, 0, packet.data(), packet.size(), &size) != 0) return;
+      auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(session.plank_transport_endpoint.get());
+      if (plank_transport_native_data_send(endpoint, packet.data(), size) != PLANK_TRANSPORT_OK) {
+        BOOST_LOG(warning) << "Couldn't announce desktop handoff; client will use ordinary reconnect status"sv;
+      }
+#endif
+    }
+
     /**
      * @brief Wait for worker threads owned by the session to exit.
      */

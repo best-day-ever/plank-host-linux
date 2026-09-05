@@ -73,6 +73,8 @@ namespace session_stream {
    * @param termination_reason Optional Host reason sent before each session stops.
    */
   void terminate_sessions(std::uint32_t termination_reason = 0);
+  /** Announce a supervisor-confirmed GDM-to-desktop transition; grants no access. */
+  void notify_desktop_handoff();
   /**
    * @brief Runs the native QUIC session-setup worker.
    */

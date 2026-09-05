@@ -214,6 +214,11 @@ int main(int argc, char *argv[]) {
     [](std::uint64_t generation) {
       BOOST_LOG(info) << "Desktop attachment changed to generation "sv << generation;
       mail::man->event<std::uint64_t>(mail::desktop_reattach)->raise(generation);
+    },
+    [] {
+      BOOST_LOG(info) << "Opening authenticated desktop; notifying the connected client"sv;
+      session_stream::notify_desktop_handoff();
+      std::raise(SIGTERM);
     }
   );
   if (getenv("PLANK_SESSION_CONTROL_FD") != nullptr && !supervisor_control) {

@@ -97,6 +97,13 @@ namespace session_stream {
       }
     }
 
+    void notify_desktop_handoff() {
+      auto lock = session_slots_.lock();
+      for (auto iterator = session_slots_->begin(); iterator != session_slots_->end(); ++iterator) {
+        stream::session::notify_desktop_handoff(*(*iterator));
+      }
+    }
+
     void remove(const std::shared_ptr<stream::session_t> &session) {
       auto lock = session_slots_.lock();
       session_slots_->erase(session);
@@ -147,6 +154,10 @@ namespace session_stream {
     }
     server.clear(true, termination_reason);
     input::terminate_retained_input();
+  }
+
+  void notify_desktop_handoff() {
+    server.notify_desktop_handoff();
   }
 
   struct native_start_result_t {

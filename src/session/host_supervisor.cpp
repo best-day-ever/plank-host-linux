@@ -69,6 +69,7 @@ namespace {
     std::string session_id;
     std::uint64_t generation {};
     int pam_descriptor {-1};  ///< Private descriptor-only broker delegation endpoint.
+    bool greeter {false};
   };
 
   struct physical_output_t {
@@ -307,6 +308,7 @@ namespace {
     }
     worker.session_id = session.id;
     worker.generation = update.generation;
+    worker.greeter = session.session_class == "greeter";
     return true;
   }
 
@@ -339,7 +341,7 @@ namespace {
       close(pam_sockets[0]);
       return {};
     }
-    worker_t result {child, control_sockets[0], {}, 0, pam_sockets[0]};
+    worker_t result {child, control_sockets[0], {}, 0, pam_sockets[0], false};
     if (!send_update(result, session, environment)) {
       kill(child, SIGKILL);
       waitpid(child, nullptr, 0);
@@ -350,11 +352,17 @@ namespace {
     return result;
   }
 
-  void stop_worker(worker_t &worker) {
+  void stop_worker(worker_t &worker, bool opening_desktop = false) {
     if (worker.pid <= 0) {
       return;
     }
-    kill(worker.pid, SIGTERM);
+    const auto command = plank::session::desktop_handoff_command;
+    const bool notified = opening_desktop && worker.greeter &&
+      send(worker.control_descriptor, command.data(), command.size(),
+           MSG_NOSIGNAL | MSG_DONTWAIT) == static_cast<ssize_t>(command.size());
+    // The private command lets the worker notify the client before issuing its
+    // own normal SIGTERM. Failure retains ordinary shutdown and reconnect UI.
+    if (!notified) kill(worker.pid, SIGTERM);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds {10};
     while (std::chrono::steady_clock::now() < deadline) {
       const pid_t result = waitpid(worker.pid, nullptr, WNOHANG);
@@ -1103,7 +1111,7 @@ int main(int argc, char **argv) {
           std::clog << "Graphical session changed from " << previous_session
                     << " to " << selected->id
                     << "; restarting the PLANK media worker for fresh X11/NvFBC state\n";
-          stop_worker(worker);
+          stop_worker(worker, selected->session_class == "user");
         }
 
         if (recover_stale_runtime_state) {

@@ -14,6 +14,9 @@
 #include <sys/types.h>
 
 namespace plank::session {
+  // Private supervisor command: announce a confirmed greeter-to-user handoff,
+  // then use the worker's normal shutdown path. Never a request from a client.
+  inline constexpr std::string_view desktop_handoff_command = "PLANK-DESKTOP-HANDOFF-1";
   struct descriptor_t {
     std::string id;
     uid_t uid {};
@@ -129,7 +132,8 @@ namespace plank::session {
 
   /** Begin monitoring the inherited, root-authenticated supervisor channel. */
   std::unique_ptr<supervisor_control_t> start_supervisor_control(
-    std::function<void(std::uint64_t)> on_reattach
+    std::function<void(std::uint64_t)> on_reattach,
+    std::function<void()> on_desktop_handoff = {}
   );
 
   /** Return the most recently accepted desktop attachment generation. */
