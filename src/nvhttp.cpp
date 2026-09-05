@@ -360,6 +360,9 @@ namespace nvhttp {
       body["state"] = "authenticated";
       body["session_token"] = step.session_token;
       body["expires_in"] = 300;
+      // Advisory UI state, published only after PAM succeeds. Stream launch
+      // still independently enforces active-desktop ownership and generation.
+      body["desktop_stage"] = plank::session::confirmed_desktop_stage();
     } else {
       body["state"] = "denied";
       body["phase"] = static_cast<std::uint16_t>(step.phase);

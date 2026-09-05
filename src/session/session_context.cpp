@@ -273,6 +273,21 @@ namespace plank::session {
            (session.session_class == "user" || session.session_class == "greeter");
   }
 
+  std::string_view desktop_stage(const descriptor_t &attached, const descriptor_t &active) {
+    if (!eligible_graphical_session(active) || attached.id != active.id ||
+        attached.uid != active.uid || attached.session_class != active.session_class) {
+      return "unknown";
+    }
+    return active.session_class == "greeter" ? "greeter" : "user";
+  }
+
+  std::string confirmed_desktop_stage() {
+    const auto active = active_seat0_graphical_session();
+    std::lock_guard lock {current_update_mutex};
+    return active && current_update ?
+      std::string {desktop_stage(current_update->session, *active)} : "unknown";
+  }
+
   std::optional<descriptor_t> describe(std::string_view session_id) {
     if (session_id.empty() || session_id.find('\0') != std::string_view::npos) return std::nullopt;
     const std::string id {session_id};

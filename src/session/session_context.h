@@ -83,6 +83,12 @@ namespace plank::session {
   /** Return true only for a supported, local active seat0 session. */
   bool eligible_graphical_session(const descriptor_t &session);
 
+  /** Return a UI-only stage when the active session matches the worker attachment. */
+  std::string_view desktop_stage(const descriptor_t &attached, const descriptor_t &active);
+
+  /** Query the confirmed worker stage; never grants desktop or authentication access. */
+  std::string confirmed_desktop_stage();
+
   /** Query one logind session. */
   std::optional<descriptor_t> describe(std::string_view session_id);
 
