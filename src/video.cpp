@@ -3803,6 +3803,15 @@ namespace video {
     // Test HDR and YUV444 support
     {
       auto test_yuv444 = [&](auto &flag_map, auto video_format) {
+        // Reject ineligible probes before opening another capture context.
+        // Supported profiles still require their real test encode below.
+        if (!flag_map[encoder_t::PASSED]) {
+          return;
+        }
+        if (!(encoder.flags & YUV444_SUPPORT)) {
+          flag_map[encoder_t::YUV444] = false;
+          return;
+        }
         config_t config = {"", 1920, 1080, 60, 6000, 1000, 1, 0, 1, video_format, 0, 1};
         if (video_format == 0) {
           config.encoderCscMode = (COLORSPACE_IDENTITY_GBR << 1) | 1;
@@ -3812,13 +3821,10 @@ namespace video {
         if (!disp) {
           return;
         }
-        if (!flag_map[encoder_t::PASSED]) {
-          return;
-        }
 
         auto encoder_codec_name = encoder.codec_from_config(config).name;
 
-        if ((encoder.flags & YUV444_SUPPORT) && disp->is_codec_supported(encoder_codec_name, config) && validate_config(disp, encoder, config) >= 0) {
+        if (disp->is_codec_supported(encoder_codec_name, config) && validate_config(disp, encoder, config) >= 0) {
           flag_map[encoder_t::YUV444] = true;
         } else {
           flag_map[encoder_t::YUV444] = false;
@@ -3826,13 +3832,13 @@ namespace video {
       };
 
       auto test_yuv420_hdr = [&](auto &flag_map, auto video_format) {
+        if (!flag_map[encoder_t::PASSED]) {
+          return;
+        }
         const config_t config = {"", 1920, 1080, 60, 6000, 1000, 1, 0, 3, video_format, 1, 0};
 
         reset_display(disp, encoder.platform_formats->dev_type, output_name, config);
         if (!disp) {
-          return;
-        }
-        if (!flag_map[encoder_t::PASSED]) {
           return;
         }
 
@@ -3846,6 +3852,13 @@ namespace video {
       };
 
       auto test_yuv444_hdr = [&](auto &flag_map, auto video_format) {
+        if (!flag_map[encoder_t::PASSED]) {
+          return;
+        }
+        if (!(encoder.flags & YUV444_SUPPORT)) {
+          flag_map[encoder_t::DYNAMIC_RANGE_YUV444] = false;
+          return;
+        }
         config_t config = {"", 1920, 1080, 60, 6000, 1000, 1, 0, 3, video_format, 1, 1};
         if (video_format == 0) {
           config.encoderCscMode = (COLORSPACE_IDENTITY_GBR << 1) | 1;
@@ -3855,13 +3868,10 @@ namespace video {
         if (!disp) {
           return;
         }
-        if (!flag_map[encoder_t::PASSED]) {
-          return;
-        }
 
         auto encoder_codec_name = encoder.codec_from_config(config).name;
 
-        if ((encoder.flags & YUV444_SUPPORT) && disp->is_codec_supported(encoder_codec_name, config) && validate_config(disp, encoder, config) >= 0) {
+        if (disp->is_codec_supported(encoder_codec_name, config) && validate_config(disp, encoder, config) >= 0) {
           flag_map[encoder_t::DYNAMIC_RANGE_YUV444] = true;
         } else {
           flag_map[encoder_t::DYNAMIC_RANGE_YUV444] = false;
@@ -3869,15 +3879,17 @@ namespace video {
       };
 
       auto test_h264_yuv422 = [&](bool ten_bit) {
+        if (!encoder.h264[encoder_t::PASSED] || !(encoder.flags & YUV422_SUPPORT)) {
+          return false;
+        }
         config_t config = {"", 1920, 1080, 60, 6000, 1000, 1, 0, 3, 0, ten_bit ? 1 : 0, 2};
         reset_display(disp, encoder.platform_formats->dev_type, output_name, config);
-        if (!disp || !encoder.h264[encoder_t::PASSED]) {
+        if (!disp) {
           return false;
         }
 
         const auto encoder_codec_name = encoder.codec_from_config(config).name;
-        return (encoder.flags & YUV422_SUPPORT) &&
-               disp->is_codec_supported(encoder_codec_name, config) &&
+        return disp->is_codec_supported(encoder_codec_name, config) &&
                validate_config(disp, encoder, config) >= 0;
       };
 
