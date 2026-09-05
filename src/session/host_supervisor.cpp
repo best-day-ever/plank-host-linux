@@ -3,6 +3,7 @@
  * @brief Boot-time PLANK graphical-session worker supervisor.
  */
 #include "session_context.h"
+#include "worker_control.h"
 #include "../plank_topology.h"
 #include "../auth/pam_broker_channel.h"
 
@@ -1212,53 +1213,56 @@ int main(int argc, char **argv) {
         std::cerr << "PLANK private PAM delegation channel closed\n";
       }
     }
-    if ((descriptors[2].revents & POLLIN) != 0 && worker.pid > 0) {
+    if ((descriptors[2].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) != 0 && worker.pid > 0) {
       std::array<char, 8193> message {};
-      const ssize_t size = recv(worker.control_descriptor, message.data(), message.size(), 0);
-      const auto request = size > 0 ? plank::session::parse_display_request(
-        std::string_view {message.data(), static_cast<std::size_t>(size)}
-      ) : std::nullopt;
-      const auto active = plank::session::active_seat0_graphical_session();
-      if (!request) {
-        std::cerr << "Rejected malformed PLANK display transition request\n";
-      } else if (!active || active->id != worker.session_id ||
-                 (active->session_class == "user" &&
-                  active->uid != request->account_uid) ||
-                 (active->session_class != "greeter" &&
-                  active->session_class != "user")) {
-        std::cerr << "Refused PLANK display transition outside an authorized graphical session\n";
-      } else if (request->action ==
-                   plank::session::display_request_t::action_t::activate) {
-        if (physical_display_lease &&
-            physical_display_lease->uid == request->account_uid) {
-          physical_display_lease->active = true;
-          physical_display_lease->deadline =
-            std::chrono::steady_clock::time_point::max();
-          std::clog << "Temporary PLANK display lease is active\n";
-        }
-      } else if (request->action ==
-                   plank::session::display_request_t::action_t::release) {
-        if (physical_display_lease &&
-            physical_display_lease->uid == request->account_uid) {
-          const auto environment = active->id == physical_display_lease->session_id ?
-            plank::session::discover_environment(*active) : std::nullopt;
-          if (environment) {
-            restore_physical_lease(*physical_display_lease, *active, *environment);
-          } else {
-            clear_runtime_display_state();
-            std::cerr << "Released a temporary display lease after its X server disappeared\n";
+      const ssize_t size = plank::session::receive_worker_control(
+        worker.control_descriptor, message.data(), message.size());
+      if (size > 0) {
+        const auto request = static_cast<std::size_t>(size) <= message.size() ? plank::session::parse_display_request(
+          std::string_view {message.data(), static_cast<std::size_t>(size)}
+        ) : std::nullopt;
+        const auto active = plank::session::active_seat0_graphical_session();
+        if (!request) {
+          std::cerr << "Rejected malformed PLANK display transition request\n";
+        } else if (!active || active->id != worker.session_id ||
+                   (active->session_class == "user" &&
+                    active->uid != request->account_uid) ||
+                   (active->session_class != "greeter" &&
+                    active->session_class != "user")) {
+          std::cerr << "Refused PLANK display transition outside an authorized graphical session\n";
+        } else if (request->action ==
+                     plank::session::display_request_t::action_t::activate) {
+          if (physical_display_lease &&
+              physical_display_lease->uid == request->account_uid) {
+            physical_display_lease->active = true;
+            physical_display_lease->deadline =
+              std::chrono::steady_clock::time_point::max();
+            std::clog << "Temporary PLANK display lease is active\n";
           }
-          physical_display_lease.reset();
+        } else if (request->action ==
+                     plank::session::display_request_t::action_t::release) {
+          if (physical_display_lease &&
+              physical_display_lease->uid == request->account_uid) {
+            const auto environment = active->id == physical_display_lease->session_id ?
+              plank::session::discover_environment(*active) : std::nullopt;
+            if (environment) {
+              restore_physical_lease(*physical_display_lease, *active, *environment);
+            } else {
+              clear_runtime_display_state();
+              std::cerr << "Released a temporary display lease after its X server disappeared\n";
+            }
+            physical_display_lease.reset();
+          }
+        } else if (!pending_display_request) {
+          pending_display_request = *request;
+          // Allow the HTTPS worker to return its transition response before it
+          // is stopped and GDM is restarted.
+          display_request_deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds {750};
+          std::clog << "Scheduled PLANK display transition from "
+                    << (active->session_class == "greeter" ? "GDM" : "the active user desktop")
+                    << '\n';
         }
-      } else if (!pending_display_request) {
-        pending_display_request = *request;
-        // Allow the HTTPS worker to return its transition response before it
-        // is stopped and GDM is restarted.
-        display_request_deadline =
-          std::chrono::steady_clock::now() + std::chrono::milliseconds {750};
-        std::clog << "Scheduled PLANK display transition from "
-                  << (active->session_class == "greeter" ? "GDM" : "the active user desktop")
-                  << '\n';
       }
     }
     if ((descriptors[0].revents & POLLIN) != 0) {
