@@ -63,6 +63,15 @@ using namespace std::literals;
 
 namespace nvhttp {
 
+  /**
+   * @brief Identify this media-worker lifetime without exposing account or desktop state.
+   * @return Process-local opaque UUID, shared by discovery and successful launches.
+   */
+  const std::string &worker_instance_id() {
+    static const auto id = uuid_util::uuid_t::generate().string();
+    return id;
+  }
+
   static constexpr std::string_view EMPTY_PROPERTY_TREE_ERROR_MSG = "Property tree is empty. Probably, control flow got interrupted by an unexpected C++ exception. This is a bug in PLANK Host. PLANK Client will report Malformed XML (missing root element)."sv;
 
   namespace fs = std::filesystem;
@@ -1264,6 +1273,7 @@ namespace nvhttp {
     tree.put("root.PlankAuth", 1);
     tree.put("root.PlankHostMetadataVersion", plank_host_metadata_version);
     tree.put("root.PlankHostVersion", PROJECT_VERSION);
+    tree.put("root.PlankWorkerInstance", worker_instance_id());
     tree.put("root.PlankTopologyVersion", plank_topology_version);
     tree.put("root.PlankFeatureFlags", plank_topology_features);
     tree.put("root.PlankCaptureSources", "nvfbc,x11-native10");
@@ -1508,6 +1518,7 @@ namespace nvhttp {
 
     tree.put("root.<xmlattr>.status_code", 200);
     tree.put("root.gamesession", 1);
+    tree.put("root.PlankWorkerInstance", worker_instance_id());
     tree.put("root.PlankCaptureSource", launch_session->capture_source);
     tree.put("root.PlankEncoderBackend", launch_session->encoder_backend);
     tree.put("root.PlankEncodingMode", launch_session->encoding_mode);
@@ -1655,6 +1666,7 @@ namespace nvhttp {
 
     tree.put("root.<xmlattr>.status_code", 200);
     tree.put("root.resume", 1);
+    tree.put("root.PlankWorkerInstance", worker_instance_id());
     tree.put("root.PlankCaptureSource", launch_session->capture_source);
     tree.put("root.PlankEncoderBackend", launch_session->encoder_backend);
     tree.put("root.PlankEncodingMode", launch_session->encoding_mode);

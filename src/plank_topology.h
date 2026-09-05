@@ -29,6 +29,7 @@ namespace plank::topology {
   constexpr std::uint32_t feature_session_takeover = 0x8000;
   constexpr std::uint32_t feature_desktop_handoff_notice = 0x10000;
   constexpr std::uint32_t feature_authenticated_desktop_stage = 0x20000;
+  constexpr std::uint32_t feature_worker_instance = 0x40000;
   constexpr std::uint32_t feature_flags =
     feature_output_topology |
     feature_selected_output |
@@ -47,7 +48,8 @@ namespace plank::topology {
     feature_fixed_transport_mtu |
     feature_session_takeover |
     feature_desktop_handoff_notice |
-    feature_authenticated_desktop_stage;
+    feature_authenticated_desktop_stage |
+    feature_worker_instance;
 
   constexpr bool valid_quic_udp_payload_mtu(std::uint32_t mtu) {
     return mtu >= 1200 && mtu <= 65527;
