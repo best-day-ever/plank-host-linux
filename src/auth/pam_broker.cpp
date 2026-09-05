@@ -586,7 +586,8 @@ int main(int argc, char **argv) {
     ucred credentials {};
     socklen_t credentials_length = sizeof(credentials);
     if (getsockopt(client, SOL_SOCKET, SO_PEERCRED, &credentials,
-                   &credentials_length) < 0) {
+                   &credentials_length) < 0 ||
+        credentials_length != sizeof(credentials) || credentials.uid != 0) {
       close(client);
       continue;
     }

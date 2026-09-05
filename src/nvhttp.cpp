@@ -4,6 +4,7 @@
  */
 // macros
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
+#include "auth/pam_broker_channel.h"
 
 // standard includes
 #include <algorithm>
@@ -67,7 +68,6 @@ namespace nvhttp {
   namespace fs = std::filesystem;
   namespace pt = boost::property_tree;
 
-  constexpr std::string_view pam_broker_socket = "/run/plank/pam/auth.sock"sv;  ///< Privileged broker activation path.
   constexpr std::string_view runtime_display_state =
     "/run/plank/host/display-state"sv;
   std::unique_ptr<plank::auth::web_auth_manager_t> web_auth;  ///< PAM conversations and ephemeral tokens.
@@ -1670,13 +1670,15 @@ namespace nvhttp {
     // launch will store it in host_audio
     bool host_audio {};
 
-    if (access(pam_broker_socket.data(), R_OK | W_OK) != 0) {
+    const int broker_probe = plank::auth::broker_channel::request_connection();
+    if (broker_probe < 0) {
       BOOST_LOG(fatal) << "PLANK PAM broker is unavailable; refusing to start session negotiation"sv;
       shutdown_event->raise(true);
       return;
     }
+    close(broker_probe);
     web_auth = std::make_unique<plank::auth::web_auth_manager_t>(
-      plank::auth::pam_conversation_factory(std::filesystem::path {pam_broker_socket}),
+      plank::auth::pam_conversation_factory(),
       plank::auth::secure_random_hex
     );
     BOOST_LOG(info) << "PLANK PAM authentication active"sv;

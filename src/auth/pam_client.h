@@ -5,7 +5,6 @@
 #pragma once
 
 #include <cstdint>
-#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -52,16 +51,15 @@ namespace plank::auth {
     pam_client_t &operator=(pam_client_t &&other) noexcept;
 
     /**
-     * @brief Connect to the root-owned broker and start authentication.
+     * @brief Obtain a supervisor-delegated broker connection and start authentication.
      *
-     * @param socket_path Broker Unix socket path.
      * @param transaction_id Nonzero transaction identifier.
      * @param username Operating-system account name.
      * @param remote_host Auditable source host label.
      * @param tty Logical remote service terminal.
      * @return First PAM challenge or a terminal result.
      */
-    step_t begin(const std::filesystem::path &socket_path, std::uint64_t transaction_id,
+    step_t begin(std::uint64_t transaction_id,
                  std::string_view username, std::string_view remote_host,
                  std::string_view tty);
 

@@ -4,6 +4,7 @@
  */
 #include "session_context.h"
 #include "../plank_topology.h"
+#include "../auth/pam_broker_channel.h"
 
 #include <algorithm>
 #include <array>
@@ -66,6 +67,7 @@ namespace {
     int control_descriptor {-1};
     std::string session_id;
     std::uint64_t generation {};
+    int pam_descriptor {-1};  ///< Private descriptor-only broker delegation endpoint.
   };
 
   struct physical_output_t {
@@ -208,9 +210,12 @@ namespace {
     const plank::session::descriptor_t &session,
     const plank::session::environment_t &environment,
     int control_descriptor,
-    int supervisor_descriptor
+    int supervisor_descriptor,
+    int pam_descriptor,
+    int supervisor_pam_descriptor
   ) {
     close(supervisor_descriptor);
+    close(supervisor_pam_descriptor);
     if (prctl(PR_SET_PDEATHSIG, SIGTERM) != 0 || getppid() == 1) {
       std::_Exit(126);
     }
@@ -229,10 +234,12 @@ namespace {
       std::_Exit(126);
     }
 
-    const int descriptor_flags = fcntl(control_descriptor, F_GETFD);
-    if (descriptor_flags < 0 ||
-        fcntl(control_descriptor, F_SETFD, descriptor_flags & ~FD_CLOEXEC) != 0) {
-      std::_Exit(126);
+    for (const int descriptor : {control_descriptor, pam_descriptor}) {
+      const int descriptor_flags = fcntl(descriptor, F_GETFD);
+      if (descriptor_flags < 0 ||
+          fcntl(descriptor, F_SETFD, descriptor_flags & ~FD_CLOEXEC) != 0) {
+        std::_Exit(126);
+      }
     }
     clearenv();
     set_environment_value("HOME", std::string {machine_home});
@@ -252,6 +259,9 @@ namespace {
     set_environment_value("PULSE_COOKIE", environment.pulse_cookie);
     set_environment_value(
       "PLANK_SESSION_CONTROL_FD", std::to_string(control_descriptor)
+    );
+    set_environment_value(
+      plank::auth::broker_channel::environment_name, std::to_string(pam_descriptor)
     );
     if (chdir(machine_home.data()) != 0) {
       std::cerr << "Unable to enter machine worker home directory\n";
@@ -308,22 +318,32 @@ namespace {
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, control_sockets) != 0) {
       return {};
     }
+    int pam_sockets[2] {-1, -1};
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, pam_sockets) != 0) {
+      close(control_sockets[0]);
+      close(control_sockets[1]);
+      return {};
+    }
     const pid_t child = fork();
     if (child == 0) {
       launch_child(
-        worker, session, environment, control_sockets[1], control_sockets[0]
+        worker, session, environment, control_sockets[1], control_sockets[0],
+        pam_sockets[1], pam_sockets[0]
       );
     }
     close(control_sockets[1]);
+    close(pam_sockets[1]);
     if (child <= 0) {
       close(control_sockets[0]);
+      close(pam_sockets[0]);
       return {};
     }
-    worker_t result {child, control_sockets[0], {}, 0};
+    worker_t result {child, control_sockets[0], {}, 0, pam_sockets[0]};
     if (!send_update(result, session, environment)) {
       kill(child, SIGKILL);
       waitpid(child, nullptr, 0);
       close(control_sockets[0]);
+      close(pam_sockets[0]);
       return {};
     }
     return result;
@@ -339,6 +359,7 @@ namespace {
       const pid_t result = waitpid(worker.pid, nullptr, WNOHANG);
       if (result == worker.pid || (result < 0 && errno == ECHILD)) {
         close(worker.control_descriptor);
+        close(worker.pam_descriptor);
         worker = {};
         return;
       }
@@ -347,6 +368,7 @@ namespace {
     kill(worker.pid, SIGKILL);
     waitpid(worker.pid, nullptr, 0);
     close(worker.control_descriptor);
+    close(worker.pam_descriptor);
     worker = {};
   }
 
@@ -1160,10 +1182,11 @@ int main(int argc, char **argv) {
       }
     }
 
-    std::array<pollfd, 3> descriptors {{
+    std::array<pollfd, 4> descriptors {{
       {signal_fd, POLLIN, 0},
       {sd_login_monitor_get_fd(monitor.get()), POLLIN, 0},
       {worker.control_descriptor, POLLIN, 0},
+      {worker.pam_descriptor, POLLIN, 0},
     }};
     const int status = poll(descriptors.data(), descriptors.size(), 1000);
     if (status < 0 && errno != EINTR) {
@@ -1172,6 +1195,22 @@ int main(int argc, char **argv) {
     }
     if ((descriptors[1].revents & POLLIN) != 0) {
       sd_login_monitor_flush(monitor.get());
+    }
+    if ((descriptors[3].revents & (POLLIN | POLLHUP | POLLERR)) != 0 && worker.pid > 0) {
+      namespace delegation = plank::auth::broker_channel;
+      int unexpected_descriptor = -1;
+      const bool valid = delegation::receive_record(
+        worker.pam_descriptor, delegation::request_byte, false, unexpected_descriptor);
+      const auto active = plank::session::active_seat0_graphical_session();
+      const int broker = valid && active && active->id == worker.session_id ?
+        delegation::connect_broker() : -1;
+      const bool sent = valid && delegation::send_connection(worker.pam_descriptor, broker);
+      if (broker >= 0) close(broker);
+      if (!sent) {
+        close(worker.pam_descriptor);
+        worker.pam_descriptor = -1;
+        std::cerr << "PLANK private PAM delegation channel closed\n";
+      }
     }
     if ((descriptors[2].revents & POLLIN) != 0 && worker.pid > 0) {
       std::array<char, 8193> message {};
@@ -1239,6 +1278,7 @@ int main(int argc, char **argv) {
               std::cerr << "PLANK worker exited with an active display lease; allowing 30 seconds for recovery\n";
             }
             close(worker.control_descriptor);
+            close(worker.pam_descriptor);
             worker = {};
             next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {2};
           }

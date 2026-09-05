@@ -24,18 +24,9 @@ namespace plank::auth {
      */
     class pam_conversation_t: public conversation_i {
     public:
-      /**
-       * @brief Bind the adapter to one broker socket.
-       *
-       * @param socket_path Root broker Unix socket.
-       */
-      explicit pam_conversation_t(std::filesystem::path socket_path):
-          socket_path_ {std::move(socket_path)} {
-      }
-
       step_t begin(std::uint64_t transaction_id, std::string_view username,
                    std::string_view remote_host) override {
-        return client_.begin(socket_path_, transaction_id, username, remote_host,
+        return client_.begin(transaction_id, username, remote_host,
                              "plank");
       }
 
@@ -44,7 +35,6 @@ namespace plank::auth {
       }
 
     private:
-      std::filesystem::path socket_path_;  ///< Broker socket path.
       pam_client_t client_;  ///< Local broker connection.
     };
 
@@ -211,11 +201,9 @@ namespace plank::auth {
     });
   }
 
-  web_auth_manager_t::conversation_factory_t pam_conversation_factory(
-    std::filesystem::path broker_socket
-  ) {
-    return [socket_path = std::move(broker_socket)]() {
-      return std::make_unique<pam_conversation_t>(socket_path);
+  web_auth_manager_t::conversation_factory_t pam_conversation_factory() {
+    return []() {
+      return std::make_unique<pam_conversation_t>();
     };
   }
 

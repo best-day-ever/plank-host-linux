@@ -6,7 +6,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -189,12 +188,9 @@ namespace plank::auth {
   /**
    * @brief Create the production PAM conversation factory.
    *
-   * @param broker_socket Root broker Unix socket.
    * @return Factory suitable for @ref web_auth_manager_t.
    */
-  web_auth_manager_t::conversation_factory_t pam_conversation_factory(
-    std::filesystem::path broker_socket
-  );
+  web_auth_manager_t::conversation_factory_t pam_conversation_factory();
 
   /**
    * @brief Generate a cryptographically random hexadecimal identifier.

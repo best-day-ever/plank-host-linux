@@ -4,6 +4,7 @@
  */
 
 #include "pam_client.h"
+#include "pam_broker_channel.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -12,8 +13,6 @@
 #include <utility>
 
 #include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/un.h>
 #include <unistd.h>
 
 namespace plank::auth {
@@ -40,39 +39,6 @@ namespace plank::auth {
       }
     }
 
-    /**
-     * @brief Connect only to a root-owned, non-public Unix socket and verify its peer.
-     *
-     * @param path Broker socket path.
-     * @return Connected descriptor, or `-1`.
-     */
-    int connect_broker(const std::filesystem::path &path) {
-      struct stat metadata {};
-      if (lstat(path.c_str(), &metadata) < 0 || !S_ISSOCK(metadata.st_mode) ||
-          metadata.st_uid != 0 || (metadata.st_mode & (S_IWOTH | S_IROTH)) != 0 ||
-          path.string().size() >= sizeof(sockaddr_un::sun_path)) {
-        return -1;
-      }
-      const int descriptor = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-      if (descriptor < 0) {
-        return -1;
-      }
-      sockaddr_un address {};
-      address.sun_family = AF_UNIX;
-      std::memcpy(address.sun_path, path.c_str(), path.string().size() + 1);
-      if (connect(descriptor, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) < 0) {
-        ::close(descriptor);
-        return -1;
-      }
-      ucred credentials {};
-      socklen_t length = sizeof(credentials);
-      if (getsockopt(descriptor, SOL_SOCKET, SO_PEERCRED, &credentials, &length) < 0 ||
-          credentials.uid != 0) {
-        ::close(descriptor);
-        return -1;
-      }
-      return descriptor;
-    }
   }  // namespace
 
   pam_client_t::~pam_client_t() {
@@ -97,15 +63,14 @@ namespace plank::auth {
     return *this;
   }
 
-  step_t pam_client_t::begin(const std::filesystem::path &socket_path,
-                             std::uint64_t transaction_id, std::string_view username,
+  step_t pam_client_t::begin(std::uint64_t transaction_id, std::string_view username,
                              std::string_view remote_host, std::string_view tty) {
     close();
     if (transaction_id == 0 || username.empty() || username.size() > 256 ||
         remote_host.size() > 256 || tty.size() > 128) {
       return protocol_error();
     }
-    descriptor_ = connect_broker(socket_path);
+    descriptor_ = broker_channel::request_connection();
     if (descriptor_ < 0) {
       return protocol_error();
     }
