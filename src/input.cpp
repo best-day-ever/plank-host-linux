@@ -265,14 +265,14 @@ namespace input {
     std::string,
     std::shared_ptr<input_t>,
     transparent_string_hash_t,
-    std::equal_to<>>;  ///< Retained inputs keyed by paired-client identity.
+    std::equal_to<>>;  ///< Retained inputs keyed by the internal desktop identity.
 
   /**
    * @brief Synchronized storage for retained input sessions.
    */
   struct retained_input_state_t {
     std::mutex mutex;  ///< Synchronizes retained session access across transport threads.
-    retained_input_map_t inputs;  ///< Paused input sessions keyed by paired-client identity.
+    retained_input_map_t inputs;  ///< Paused input sessions keyed by the internal desktop identity.
   };
 
   /**

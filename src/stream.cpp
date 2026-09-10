@@ -103,7 +103,7 @@ namespace stream {
       safe::mail_raw_t::event_t<PLANK_CURSOR_POSITION_WIRE_MESSAGE> cursor_position_event;
     } control;  ///< Native Host-to-Client event queues.
 
-    std::string input_session_id;  ///< Stable client identity used to retain input devices across resume.
+    std::string input_session_id;  ///< Internal desktop key retaining input devices across resume.
     bool plank_display_lease {};  ///< Whether this stream owns the temporary physical-display layout.
     uid_t plank_display_lease_uid {};  ///< PAM account that owns the display lease.
     std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained until this stream is destroyed.
@@ -1205,7 +1205,9 @@ namespace stream {
       auto mail = std::make_shared<safe::mail_raw_t>();
 
       session->shutdown_event = mail->event<bool>(mail::shutdown);
-      session->input_session_id = launch_session.unique_id;
+      // One controlling stream per graphical worker. Retain its input devices
+      // across reconnect/takeover without a caller-controlled client identifier.
+      session->input_session_id = "plank-desktop";
       session->plank_display_lease = launch_session.plank_display_lease;
       session->plank_display_lease_uid =
         launch_session.plank_display_lease_uid;

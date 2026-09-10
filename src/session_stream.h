@@ -19,7 +19,6 @@ namespace session_stream {
     uint32_t id;  ///< Launch-session identifier assigned before stream startup.
 
     bool host_audio;  ///< Whether host audio should be played locally.
-    std::string unique_id;  ///< Moonlight client unique identifier for this launch request.
     int width;  ///< Frame or display width in pixels.
     int height;  ///< Frame or display height in pixels.
     int fps;  ///< Requested video frame rate.
