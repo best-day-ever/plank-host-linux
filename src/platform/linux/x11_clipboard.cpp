@@ -10,8 +10,6 @@
 #include <X11/Xlib.h>
 #include <X11/extensions/Xfixes.h>
 
-#include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstring>
 #include <thread>
@@ -21,9 +19,6 @@
 
 namespace platf::x11 {
   namespace {
-    constexpr auto property_name = "PLANK_CLIPBOARD";
-    constexpr auto poll_period = std::chrono::milliseconds(250);
-
     Atom clipboard_atom(Display *display) {
       return XInternAtom(display, "CLIPBOARD", False);
     }
@@ -37,11 +32,19 @@ namespace platf::x11 {
     }
 
     Atom property_atom(Display *display) {
-      return XInternAtom(display, property_name, False);
+      return XInternAtom(display, "PLANK_CLIPBOARD", False);
     }
 
     Atom targets_atom(Display *display) {
       return XInternAtom(display, "TARGETS", False);
+    }
+
+    Atom text_plain_atom(Display *display) {
+      return XInternAtom(display, "text/plain", False);
+    }
+
+    Atom text_plain_utf8_atom(Display *display) {
+      return XInternAtom(display, "text/plain;charset=utf-8", False);
     }
   }  // namespace
 
@@ -79,6 +82,87 @@ namespace platf::x11 {
     return clipboard;
   }
 
+  void clipboard_t::handle_selection_request(const XEvent &event) {
+    const auto &req = event.xselectionrequest;
+    auto *display = static_cast<Display *>(display_);
+    Atom property = req.property;
+    const Atom selection = req.selection;
+    const Atom target = req.target;
+    const Atom clipboard = clipboard_atom(display);
+    const Atom primary = primary_atom(display);
+    const Atom utf8 = utf8_atom(display);
+    const Atom targets = targets_atom(display);
+    const Atom text_plain = text_plain_atom(display);
+    const Atom text_plain_utf8 = text_plain_utf8_atom(display);
+
+    if (selection != clipboard && selection != primary) {
+      property = None;
+    } else if (target == targets) {
+      if (property != None) {
+        const Atom supported[] = {
+          targets,
+          utf8,
+          text_plain,
+          text_plain_utf8,
+          XA_STRING,
+        };
+        XChangeProperty(
+          display,
+          req.requestor,
+          property,
+          XA_ATOM,
+          32,
+          PropModeReplace,
+          reinterpret_cast<unsigned char *>(const_cast<Atom *>(supported)),
+          static_cast<int>(sizeof(supported) / sizeof(supported[0]))
+        );
+      }
+    } else if (target == utf8 ||
+               target == text_plain ||
+               target == text_plain_utf8 ||
+               target == XA_STRING ||
+               target == XA_TEXT) {
+      if (owned_text_.empty() || property == None) {
+        property = None;
+      } else {
+        const Atom response_type = target == XA_STRING ? XA_STRING : utf8;
+        XChangeProperty(
+          display,
+          req.requestor,
+          property,
+          response_type,
+          8,
+          PropModeReplace,
+          reinterpret_cast<const unsigned char *>(owned_text_.data()),
+          static_cast<int>(owned_text_.size())
+        );
+      }
+    } else {
+      property = None;
+    }
+
+    XEvent notify {};
+    notify.xselection.type = SelectionNotify;
+    notify.xselection.display = display;
+    notify.xselection.requestor = req.requestor;
+    notify.xselection.selection = selection;
+    notify.xselection.target = target;
+    notify.xselection.property = property;
+    notify.xselection.time = req.time;
+    XSendEvent(display, req.requestor, False, 0, &notify);
+    XFlush(display);
+  }
+
+  void clipboard_t::dispatch_event(const XEvent &event) {
+    if (event.type == SelectionRequest) {
+      handle_selection_request(event);
+      return;
+    }
+    if (event.type == SelectionClear && event.xselectionclear.window == window_) {
+      owned_text_.clear();
+    }
+  }
+
   bool clipboard_t::read_selection(std::string &text) {
     auto *display = static_cast<Display *>(display_);
     const Atom clipboard = clipboard_atom(display);
@@ -101,6 +185,14 @@ namespace platf::x11 {
       while (XPending(display) > 0) {
         XEvent event {};
         XNextEvent(display, &event);
+        if (event.type == SelectionRequest) {
+          handle_selection_request(event);
+          continue;
+        }
+        if (event.type == SelectionClear && event.xselectionclear.window == window_) {
+          owned_text_.clear();
+          continue;
+        }
         if (event.type == SelectionNotify &&
             event.xselection.requestor == window_ &&
             event.xselection.property != None) {
@@ -144,10 +236,7 @@ namespace platf::x11 {
     while (XPending(display) > 0) {
       XEvent event {};
       XNextEvent(display, &event);
-      if (xfixes_event_base_ >= 0 &&
-          event.type == xfixes_event_base_ + XFixesSelectionNotify) {
-        // Selection owner changed; fall through to read below.
-      }
+      dispatch_event(event);
     }
 
     std::string candidate;
