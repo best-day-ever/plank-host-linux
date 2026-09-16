@@ -9,9 +9,6 @@
 #include <string>
 #include <vector>
 
-struct _XEvent;
-typedef struct _XEvent XEvent;
-
 namespace platf::x11 {
   /**
    * @brief Session-scoped X11 CLIPBOARD/PRIMARY bridge.
@@ -31,8 +28,6 @@ namespace platf::x11 {
   private:
     clipboard_t() = default;
     bool read_selection(std::string &text);
-    void dispatch_event(const XEvent &event);
-    void handle_selection_request(const XEvent &event);
 
     void *display_ {nullptr};
     unsigned long window_ {0};
