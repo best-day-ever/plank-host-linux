@@ -239,9 +239,17 @@ if(X11_FOUND)
     add_compile_definitions(SUNSHINE_BUILD_X11)
     include_directories(SYSTEM ${X11_INCLUDE_DIR})
     list(APPEND PLATFORM_LIBRARIES ${X11_LIBRARIES})
+    find_library(PLANK_XFIXES_LIBRARY NAMES Xfixes)
+    if(PLANK_XFIXES_LIBRARY)
+        list(APPEND PLATFORM_LIBRARIES ${PLANK_XFIXES_LIBRARY})
+    else()
+        message(FATAL_ERROR "Xfixes is required for PLANK X11 clipboard sync")
+    endif()
     list(APPEND PLATFORM_TARGET_FILES
             "${CMAKE_SOURCE_DIR}/src/platform/linux/x11grab.h"
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/x11grab.cpp")
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/x11grab.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/x11_clipboard.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/x11_clipboard.cpp")
 endif()
 
 # GIO
