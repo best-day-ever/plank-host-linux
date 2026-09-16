@@ -19,14 +19,16 @@ namespace platf::x11 {
 
     clipboard_t(const clipboard_t &) = delete;
     clipboard_t &operator=(const clipboard_t &) = delete;
-    clipboard_t(clipboard_t &&) = default;
-    clipboard_t &operator=(clipboard_t &&) = default;
+    clipboard_t(clipboard_t &&other) noexcept;
+    clipboard_t &operator=(clipboard_t &&other) noexcept;
+    ~clipboard_t();
 
     bool poll_change(std::string &text);
     bool set_text(const std::vector<std::uint8_t> &text);
 
   private:
     clipboard_t() = default;
+    void reset() noexcept;
     bool read_selection(std::string &text);
 
     void *display_ {nullptr};
