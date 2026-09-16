@@ -18,6 +18,7 @@ extern "C" {
 
 // local includes
 #include "config.h"
+#include "clipboard_protocol.h"
 #include "display_device.h"
 #include "globals.h"
 #include "input.h"
@@ -95,6 +96,7 @@ namespace stream {
       std::uint32_t next_offset = 0;
       std::vector<std::uint8_t> bytes;
     } client_clipboard_assembly;
+    std::uint64_t last_client_clipboard_generation = 0;
     std::uint64_t outbound_clipboard_generation = 0;
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
     std::shared_ptr<platf::x11::clipboard_t> clipboard;  ///< Shared X11 clipboard bridge for this session.
@@ -328,39 +330,6 @@ namespace stream {
       (session->plank_feature_flags & plank::topology::feature_clipboard_sync) != 0;
   }
 
-  bool valid_clipboard_utf8(const std::uint8_t *data, std::size_t size) {
-    if (data == nullptr) {
-      return false;
-    }
-    for (std::size_t index = 0; index < size;) {
-      const auto byte = data[index];
-      if (byte <= 0x7F) {
-        ++index;
-        continue;
-      }
-      std::size_t continuation = 0;
-      if ((byte & 0xE0) == 0xC0) {
-        continuation = 1;
-      } else if ((byte & 0xF0) == 0xE0) {
-        continuation = 2;
-      } else if ((byte & 0xF8) == 0xF0) {
-        continuation = 3;
-      } else {
-        return false;
-      }
-      if (index + continuation >= size) {
-        return false;
-      }
-      for (std::size_t offset = 1; offset <= continuation; ++offset) {
-        if ((data[index + offset] & 0xC0) != 0x80) {
-          return false;
-        }
-      }
-      index += continuation + 1;
-    }
-    return true;
-  }
-
   template<typename T>
   T read_clipboard_little(const std::uint8_t *data) {
     T value {};
@@ -393,7 +362,9 @@ namespace stream {
   }
 
   bool queue_clipboard_offer(session_t *session, const std::string &text) {
-    if (text.empty() || text.size() > PLANK_CLIPBOARD_MAX_TEXT_SIZE) {
+    if (text.empty() || text.size() > PLANK_CLIPBOARD_MAX_TEXT_SIZE ||
+        !clipboard::valid_utf8(
+          reinterpret_cast<const std::uint8_t *>(text.data()), text.size())) {
       return false;
     }
     const auto total_size = static_cast<std::uint32_t>(text.size());
@@ -434,7 +405,7 @@ namespace stream {
   bool apply_client_clipboard_offer(session_t *session,
                                     platf::x11::clipboard_t &clipboard,
                                     const std::vector<std::uint8_t> &text) {
-    if (!valid_clipboard_utf8(text.data(), text.size())) {
+    if (!clipboard::valid_utf8(text.data(), text.size())) {
       return false;
     }
     if (!clipboard.set_text(text)) {
@@ -458,11 +429,19 @@ namespace stream {
 
     PLANK_CLIPBOARD_WIRE_HEADER wire {};
     std::memcpy(&wire, payload, sizeof(wire));
+    if (!clipboard::payload_size_matches(
+          wire, payload_size, PLANK_CLIPBOARD_MAX_INPUT_CHUNK_SIZE)) {
+      session->client_clipboard_assembly = {};
+      return false;
+    }
     const auto magic = read_clipboard_little<std::uint32_t>(
       reinterpret_cast<const std::uint8_t *>(&wire.magic)
     );
     const auto version = read_clipboard_little<std::uint16_t>(
       reinterpret_cast<const std::uint8_t *>(&wire.version)
+    );
+    const auto reserved = read_clipboard_little<std::uint16_t>(
+      reinterpret_cast<const std::uint8_t *>(&wire.reserved)
     );
     const auto flags = read_clipboard_little<std::uint32_t>(
       reinterpret_cast<const std::uint8_t *>(&wire.flags)
@@ -484,15 +463,21 @@ namespace stream {
 
     if (magic != PLANK_CLIPBOARD_WIRE_MAGIC ||
         version != PLANK_CLIPBOARD_WIRE_VERSION ||
+        reserved != 0 ||
+        generation == 0 ||
         (flags & ~known_flags) != 0 ||
         total_size == 0 ||
         total_size > PLANK_CLIPBOARD_MAX_TEXT_SIZE ||
+        chunk_size == 0 ||
         chunk_size > PLANK_CLIPBOARD_MAX_INPUT_CHUNK_SIZE ||
         chunk_offset > total_size ||
-        chunk_size > total_size - chunk_offset ||
-        sizeof(wire) + chunk_size != payload_size) {
+        chunk_size > total_size - chunk_offset) {
       session->client_clipboard_assembly = {};
       return false;
+    }
+
+    if (generation <= session->last_client_clipboard_generation) {
+      return true;
     }
 
     auto &assembly = session->client_clipboard_assembly;
@@ -519,17 +504,25 @@ namespace stream {
     std::memcpy(assembly.bytes.data() + chunk_offset, payload + sizeof(wire), chunk_size);
     assembly.next_offset += chunk_size;
     if ((flags & PLANK_CLIPBOARD_FLAG_LAST_CHUNK) == 0) {
+      if (assembly.next_offset == total_size) {
+        assembly = {};
+        return false;
+      }
       return true;
     }
     if (assembly.next_offset != total_size ||
-        !valid_clipboard_utf8(assembly.bytes.data(), assembly.bytes.size())) {
+        !clipboard::valid_utf8(assembly.bytes.data(), assembly.bytes.size())) {
       assembly = {};
       return false;
     }
 
     const auto completed = std::move(assembly.bytes);
     assembly = {};
-    return apply_client_clipboard_offer(session, *clipboard, completed);
+    if (!apply_client_clipboard_offer(session, *clipboard, completed)) {
+      return false;
+    }
+    session->last_client_clipboard_generation = generation;
+    return true;
   }
 
   bool queue_cursor_shape(session_t *session, egl::cursor_t &image,

@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstring>
 #include <thread>
+#include <utility>
 
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -136,6 +137,58 @@ namespace platf::x11 {
     }
   }  // namespace
 
+  clipboard_t::clipboard_t(clipboard_t &&other) noexcept :
+      display_(std::exchange(other.display_, nullptr)),
+      window_(std::exchange(other.window_, 0)),
+      xfixes_event_base_(std::exchange(other.xfixes_event_base_, -1)),
+      generation_(std::exchange(other.generation_, 0)),
+      owned_text_(std::move(other.owned_text_)),
+      last_sent_text_(std::move(other.last_sent_text_)) {
+  }
+
+  clipboard_t &clipboard_t::operator=(clipboard_t &&other) noexcept {
+    if (this != &other) {
+      reset();
+      display_ = std::exchange(other.display_, nullptr);
+      window_ = std::exchange(other.window_, 0);
+      xfixes_event_base_ = std::exchange(other.xfixes_event_base_, -1);
+      generation_ = std::exchange(other.generation_, 0);
+      owned_text_ = std::move(other.owned_text_);
+      last_sent_text_ = std::move(other.last_sent_text_);
+    }
+    return *this;
+  }
+
+  clipboard_t::~clipboard_t() {
+    reset();
+  }
+
+  void clipboard_t::reset() noexcept {
+    auto *display = static_cast<Display *>(display_);
+    if (display == nullptr) {
+      return;
+    }
+    if (window_ != 0) {
+      const Atom clipboard = clipboard_atom(display);
+      const Atom primary = primary_atom(display);
+      if (XGetSelectionOwner(display, clipboard) == window_) {
+        XSetSelectionOwner(display, clipboard, None, CurrentTime);
+      }
+      if (XGetSelectionOwner(display, primary) == window_) {
+        XSetSelectionOwner(display, primary, None, CurrentTime);
+      }
+      XDestroyWindow(display, window_);
+      XFlush(display);
+    }
+    XCloseDisplay(display);
+    display_ = nullptr;
+    window_ = 0;
+    xfixes_event_base_ = -1;
+    generation_ = 0;
+    owned_text_.clear();
+    last_sent_text_.clear();
+  }
+
   std::optional<clipboard_t> clipboard_t::make() {
     clipboard_t clipboard;
     clipboard.display_ = XOpenDisplay(nullptr);
@@ -208,12 +261,15 @@ namespace platf::x11 {
           unsigned long item_count = 0;
           unsigned long bytes_after = 0;
           unsigned char *data = nullptr;
+          constexpr unsigned long max_clipboard_size = 1024UL * 1024UL;
+          constexpr long max_property_units =
+            static_cast<long>((max_clipboard_size + 3) / 4);
           if (XGetWindowProperty(
                 display,
                 window_,
                 property,
                 0,
-                1024 * 1024,
+                max_property_units,
                 True,
                 AnyPropertyType,
                 &actual_type,
@@ -222,7 +278,10 @@ namespace platf::x11 {
                 &bytes_after,
                 &data
               ) == Success &&
-              data != nullptr) {
+              data != nullptr &&
+              actual_format == 8 &&
+              bytes_after == 0 &&
+              item_count <= max_clipboard_size) {
             text.assign(reinterpret_cast<char *>(data), item_count);
             XFree(data);
             return !text.empty();
@@ -250,6 +309,7 @@ namespace platf::x11 {
     if (!read_selection(candidate) || candidate == last_sent_text_) {
       return false;
     }
+    last_sent_text_ = candidate;
     text = std::move(candidate);
     return true;
   }
