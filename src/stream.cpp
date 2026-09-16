@@ -89,15 +89,9 @@ namespace stream {
     std::jthread clipboardThread;  ///< X11 CLIPBOARD monitor for clipboard-sync clients.
     std::jthread inputThread;  ///< Native KyProto input receiver for PLANK sessions.
     std::uint32_t plank_feature_flags {};  ///< Client-supported PLANK feature bits for this session.
-    struct {
-      bool active = false;
-      std::uint64_t generation = 0;
-      std::uint32_t total_size = 0;
-      std::uint32_t next_offset = 0;
-      std::vector<std::uint8_t> bytes;
-    } client_clipboard_assembly;
-    std::uint64_t last_client_clipboard_generation = 0;
+    clipboard::receiver_t client_clipboard_receiver;
     std::uint64_t outbound_clipboard_generation = 0;
+    clipboard::inbox_t client_clipboard_inbox;
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
     std::shared_ptr<platf::x11::clipboard_t> clipboard;  ///< Shared X11 clipboard bridge for this session.
 #endif
@@ -330,11 +324,13 @@ namespace stream {
       (session->plank_feature_flags & plank::topology::feature_clipboard_sync) != 0;
   }
 
-  template<typename T>
-  T read_clipboard_little(const std::uint8_t *data) {
-    T value {};
-    std::memcpy(&value, data, sizeof(value));
-    return util::endian::little(value);
+  bool clipboard_backend_available(const session_t *session) {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
+    return session != nullptr && session->clipboard != nullptr;
+#else
+    (void) session;
+    return false;
+#endif
   }
 
   template<typename T>
@@ -402,127 +398,41 @@ namespace stream {
     return true;
   }
 
-  bool apply_client_clipboard_offer(session_t *session,
-                                    platf::x11::clipboard_t &clipboard,
-                                    const std::vector<std::uint8_t> &text) {
+  bool queue_client_clipboard_offer(session_t *session,
+                                    std::vector<std::uint8_t> text) {
     if (!clipboard::valid_utf8(text.data(), text.size())) {
       return false;
     }
-    if (!clipboard.set_text(text)) {
-      return false;
-    }
-    BOOST_LOG(info) << "Applied PLANK clipboard offer from client ("sv
-                    << text.size() << " bytes)"sv;
+    const auto text_size = text.size();
+    session->client_clipboard_inbox.store(std::move(text));
+    BOOST_LOG(info) << "Queued PLANK clipboard offer from client ("sv
+                    << text_size << " bytes)"sv;
     return true;
   }
 
   bool handle_client_clipboard_offer(session_t *session,
-                                     platf::x11::clipboard_t *clipboard,
                                      const std::uint8_t *payload,
                                      std::size_t payload_size) {
-    if (!clipboard_sync_enabled(session) || clipboard == nullptr ||
+    if (!clipboard_sync_enabled(session) || !clipboard_backend_available(session) ||
         payload == nullptr ||
         payload_size < sizeof(PLANK_CLIPBOARD_WIRE_HEADER) ||
         payload_size > sizeof(PLANK_CLIPBOARD_WIRE_HEADER) + PLANK_CLIPBOARD_MAX_INPUT_CHUNK_SIZE) {
       return false;
     }
 
-    PLANK_CLIPBOARD_WIRE_HEADER wire {};
-    std::memcpy(&wire, payload, sizeof(wire));
-    if (!clipboard::payload_size_matches(
-          wire, payload_size, PLANK_CLIPBOARD_MAX_INPUT_CHUNK_SIZE)) {
-      session->client_clipboard_assembly = {};
-      return false;
-    }
-    const auto magic = read_clipboard_little<std::uint32_t>(
-      reinterpret_cast<const std::uint8_t *>(&wire.magic)
+    auto result = session->client_clipboard_receiver.append(
+      payload, payload_size, PLANK_CLIPBOARD_MAX_INPUT_CHUNK_SIZE
     );
-    const auto version = read_clipboard_little<std::uint16_t>(
-      reinterpret_cast<const std::uint8_t *>(&wire.version)
-    );
-    const auto reserved = read_clipboard_little<std::uint16_t>(
-      reinterpret_cast<const std::uint8_t *>(&wire.reserved)
-    );
-    const auto flags = read_clipboard_little<std::uint32_t>(
-      reinterpret_cast<const std::uint8_t *>(&wire.flags)
-    );
-    const auto generation = read_clipboard_little<std::uint64_t>(
-      reinterpret_cast<const std::uint8_t *>(&wire.generation)
-    );
-    const auto total_size = read_clipboard_little<std::uint32_t>(
-      reinterpret_cast<const std::uint8_t *>(&wire.totalSize)
-    );
-    const auto chunk_offset = read_clipboard_little<std::uint32_t>(
-      reinterpret_cast<const std::uint8_t *>(&wire.chunkOffset)
-    );
-    const auto chunk_size = read_clipboard_little<std::uint32_t>(
-      reinterpret_cast<const std::uint8_t *>(&wire.chunkSize)
-    );
-    constexpr std::uint32_t known_flags =
-      PLANK_CLIPBOARD_FLAG_FIRST_CHUNK | PLANK_CLIPBOARD_FLAG_LAST_CHUNK;
-
-    if (magic != PLANK_CLIPBOARD_WIRE_MAGIC ||
-        version != PLANK_CLIPBOARD_WIRE_VERSION ||
-        reserved != 0 ||
-        generation == 0 ||
-        (flags & ~known_flags) != 0 ||
-        total_size == 0 ||
-        total_size > PLANK_CLIPBOARD_MAX_TEXT_SIZE ||
-        chunk_size == 0 ||
-        chunk_size > PLANK_CLIPBOARD_MAX_INPUT_CHUNK_SIZE ||
-        chunk_offset > total_size ||
-        chunk_size > total_size - chunk_offset) {
-      session->client_clipboard_assembly = {};
-      return false;
-    }
-
-    if (generation <= session->last_client_clipboard_generation) {
-      return true;
-    }
-
-    auto &assembly = session->client_clipboard_assembly;
-    if ((flags & PLANK_CLIPBOARD_FLAG_FIRST_CHUNK) != 0) {
-      if (chunk_offset != 0) {
-        assembly = {};
+    switch (result.status) {
+      case clipboard::receive_status_e::ignored:
+      case clipboard::receive_status_e::incomplete:
+        return true;
+      case clipboard::receive_status_e::complete:
+        return queue_client_clipboard_offer(session, std::move(result.text));
+      case clipboard::receive_status_e::rejected:
         return false;
-      }
-      assembly.active = true;
-      assembly.generation = generation;
-      assembly.total_size = total_size;
-      assembly.next_offset = 0;
-      assembly.bytes.assign(total_size, 0);
     }
-
-    if (!assembly.active ||
-        assembly.generation != generation ||
-        assembly.total_size != total_size ||
-        assembly.next_offset != chunk_offset) {
-      assembly = {};
-      return false;
-    }
-
-    std::memcpy(assembly.bytes.data() + chunk_offset, payload + sizeof(wire), chunk_size);
-    assembly.next_offset += chunk_size;
-    if ((flags & PLANK_CLIPBOARD_FLAG_LAST_CHUNK) == 0) {
-      if (assembly.next_offset == total_size) {
-        assembly = {};
-        return false;
-      }
-      return true;
-    }
-    if (assembly.next_offset != total_size ||
-        !clipboard::valid_utf8(assembly.bytes.data(), assembly.bytes.size())) {
-      assembly = {};
-      return false;
-    }
-
-    const auto completed = std::move(assembly.bytes);
-    assembly = {};
-    if (!apply_client_clipboard_offer(session, *clipboard, completed)) {
-      return false;
-    }
-    session->last_client_clipboard_generation = generation;
-    return true;
+    return false;
   }
 
   bool queue_cursor_shape(session_t *session, egl::cursor_t &image,
@@ -708,6 +618,15 @@ namespace stream {
 
     BOOST_LOG(info) << "PLANK clipboard sync watching X11 CLIPBOARD"sv;
     while (!stop_token.stop_requested()) {
+      if (auto pending = session->client_clipboard_inbox.take()) {
+        if (!session->clipboard->set_text(*pending)) {
+          BOOST_LOG(error) << "Unable to apply a PLANK clipboard offer to X11"sv;
+          session::stop(*session);
+          return;
+        }
+        BOOST_LOG(info) << "Applied PLANK clipboard offer from client ("sv
+                        << pending->size() << " bytes)"sv;
+      }
       std::string text;
       if (session->clipboard->poll_change(text)) {
         if (!queue_clipboard_offer(session, text)) {
@@ -1260,7 +1179,7 @@ namespace stream {
       }
       if (type == PLANK_TRANSPORT_INPUT_CLIPBOARD_OFFER) {
         if (!handle_client_clipboard_offer(
-              session, session->clipboard.get(), payload.data(), payload_size)) {
+              session, payload.data(), payload_size)) {
           BOOST_LOG(error) << "Rejected malformed PLANK clipboard offer from client"sv;
           session::stop(*session);
           return;

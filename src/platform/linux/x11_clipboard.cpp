@@ -143,7 +143,7 @@ namespace platf::x11 {
       xfixes_event_base_(std::exchange(other.xfixes_event_base_, -1)),
       generation_(std::exchange(other.generation_, 0)),
       owned_text_(std::move(other.owned_text_)),
-      last_sent_text_(std::move(other.last_sent_text_)) {
+      last_forwarded_text_(std::move(other.last_forwarded_text_)) {
   }
 
   clipboard_t &clipboard_t::operator=(clipboard_t &&other) noexcept {
@@ -154,7 +154,7 @@ namespace platf::x11 {
       xfixes_event_base_ = std::exchange(other.xfixes_event_base_, -1);
       generation_ = std::exchange(other.generation_, 0);
       owned_text_ = std::move(other.owned_text_);
-      last_sent_text_ = std::move(other.last_sent_text_);
+      last_forwarded_text_ = std::move(other.last_forwarded_text_);
     }
     return *this;
   }
@@ -186,7 +186,7 @@ namespace platf::x11 {
     xfixes_event_base_ = -1;
     generation_ = 0;
     owned_text_.clear();
-    last_sent_text_.clear();
+    last_forwarded_text_.reset();
   }
 
   std::optional<clipboard_t> clipboard_t::make() {
@@ -201,7 +201,6 @@ namespace platf::x11 {
     const auto root = DefaultRootWindow(display);
     clipboard.window_ = XCreateSimpleWindow(display, root, 0, 0, 1, 1, 0, 0, 0);
     if (clipboard.window_ == 0) {
-      XCloseDisplay(display);
       return std::nullopt;
     }
 
@@ -306,10 +305,9 @@ namespace platf::x11 {
     }
 
     std::string candidate;
-    if (!read_selection(candidate) || candidate == last_sent_text_) {
+    if (!read_selection(candidate) || !last_forwarded_text_.accept(candidate)) {
       return false;
     }
-    last_sent_text_ = candidate;
     text = std::move(candidate);
     return true;
   }
@@ -324,7 +322,7 @@ namespace platf::x11 {
     const Atom utf8 = utf8_atom(display);
 
     owned_text_.assign(reinterpret_cast<const char *>(text.data()), text.size());
-    last_sent_text_ = owned_text_;
+    last_forwarded_text_.mark(owned_text_);
     ++generation_;
 
     XSetSelectionOwner(display, clipboard, window_, CurrentTime);

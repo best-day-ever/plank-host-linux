@@ -10,6 +10,28 @@
 #include <vector>
 
 namespace platf::x11 {
+  class text_change_tracker_t {
+  public:
+    bool accept(const std::string &text) {
+      if (text == last_text_) {
+        return false;
+      }
+      last_text_ = text;
+      return true;
+    }
+
+    void mark(const std::string &text) {
+      last_text_ = text;
+    }
+
+    void reset() {
+      last_text_.clear();
+    }
+
+  private:
+    std::string last_text_;
+  };
+
   /**
    * @brief Session-scoped X11 CLIPBOARD/PRIMARY bridge.
    */
@@ -36,6 +58,6 @@ namespace platf::x11 {
     int xfixes_event_base_ {-1};
     std::uint64_t generation_ {0};
     std::string owned_text_;
-    std::string last_sent_text_;
+    text_change_tracker_t last_forwarded_text_;
   };
 }  // namespace platf::x11
