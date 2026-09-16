@@ -437,7 +437,12 @@ namespace stream {
     if (!valid_clipboard_utf8(text.data(), text.size())) {
       return false;
     }
-    return clipboard.set_text(text);
+    if (!clipboard.set_text(text)) {
+      return false;
+    }
+    BOOST_LOG(info) << "Applied PLANK clipboard offer from client ("sv
+                    << text.size() << " bytes)"sv;
+    return true;
   }
 
   bool handle_client_clipboard_offer(session_t *session,
