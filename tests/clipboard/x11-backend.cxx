@@ -221,7 +221,7 @@ void unrelated_xlib_handler() {
   }
   REQUIRE(XSetErrorHandler(previous) == sentinel);
 }
-int main() {
+int main(int argc, char **argv) {
   struct test_t { const char *name; void (*run)(); } tests[] = {
     {"destroyed requestor", destroyed_requestor},
     {"independent selections", independent_selections},
@@ -234,6 +234,7 @@ int main() {
     {"unrelated Xlib handler", unrelated_xlib_handler},
   };
   for (const auto &test : tests) {
+    if (argc > 1 && std::string(argv[1]) != test.name) continue;
     try { test.run(); std::cout << "PASS " << test.name << std::endl; }
     catch (const std::exception &error) { std::cerr << "FAIL " << error.what() << std::endl; return 1; }
   }
