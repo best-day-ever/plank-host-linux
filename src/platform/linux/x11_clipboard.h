@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -49,15 +50,8 @@ namespace platf::x11 {
     bool set_text(const std::vector<std::uint8_t> &text);
 
   private:
-    clipboard_t() = default;
-    void reset() noexcept;
-    bool read_selection(std::string &text);
-
-    void *display_ {nullptr};
-    unsigned long window_ {0};
-    int xfixes_event_base_ {-1};
-    std::uint64_t generation_ {0};
-    std::string owned_text_;
-    text_change_tracker_t last_forwarded_text_;
+    struct state_t;
+    explicit clipboard_t(std::unique_ptr<state_t> state);
+    std::unique_ptr<state_t> state_;
   };
 }  // namespace platf::x11
