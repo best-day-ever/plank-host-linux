@@ -30,6 +30,16 @@ struct fixture_t {
   }
   void publish(std::string text = "remote text") {
     REQUIRE(backend.set_text(std::vector<std::uint8_t>(text.begin(), text.end())));
+    // set_text flushes PRIMARY asynchronously. Observe its completed claim
+    // before another connection steals it; otherwise the server may process
+    // the steal first and the reviewed bug's negative control can pass by race.
+    const auto clipboard_owner = XGetSelectionOwner(display, clipboard);
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (XGetSelectionOwner(display, XA_PRIMARY) != clipboard_owner &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(2ms);
+    }
+    REQUIRE(XGetSelectionOwner(display, XA_PRIMARY) == clipboard_owner);
   }
   void own() {
     XSetSelectionOwner(display, clipboard, window, CurrentTime);
