@@ -1,350 +1,305 @@
 /**
  * @file src/platform/linux/x11_clipboard.cpp
- * @brief X11 UTF-8 clipboard watch and publish helpers for PLANK sessions.
+ * @brief Session-scoped X11 clipboard bridge with bounded asynchronous reads.
  */
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
 
 #include "x11_clipboard.h"
 
-#include <X11/Xatom.h>
-#include <X11/Xlib.h>
-#include <X11/extensions/Xfixes.h>
+#include <xcb/xcb.h>
 
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
-#include <thread>
 #include <utility>
 
 #include "src/logging.h"
-#include "src/platform/common.h"
 
 namespace platf::x11 {
   namespace {
-    Atom clipboard_atom(Display *display) {
-      return XInternAtom(display, "CLIPBOARD", False);
+    constexpr std::size_t max_text_size = 1024 * 1024;
+    constexpr auto conversion_timeout = std::chrono::seconds(5);
+
+    template<class T>
+    using reply_ptr = std::unique_ptr<T, decltype(&std::free)>;
+
+    template<class T>
+    reply_ptr<T> reply(T *value) {
+      return reply_ptr<T>(value, &std::free);
     }
+  }
 
-    Atom primary_atom(Display *display) {
-      return XInternAtom(display, "PRIMARY", False);
-    }
+  // This connection is used only by the serialized clipboard worker. In
+  // particular, a disappearing requestor produces an XCB error, never an Xlib
+  // default-handler exit or a temporary process-wide error-handler change.
+  struct clipboard_t::state_t {
+    xcb_connection_t *connection = nullptr;
+    xcb_window_t root = XCB_NONE;
+    xcb_window_t window = XCB_NONE;
+    xcb_atom_t clipboard = XCB_NONE, utf8 = XCB_NONE, property = XCB_NONE;
+    xcb_atom_t targets = XCB_NONE, plain = XCB_NONE, plain_utf8 = XCB_NONE, incr = XCB_NONE;
+    std::string owned_text;
+    text_change_tracker_t last_forwarded;
 
-    Atom utf8_atom(Display *display) {
-      return XInternAtom(display, "UTF8_STRING", False);
-    }
+    struct conversion_t {
+      xcb_window_t window = XCB_NONE;
+      xcb_window_t owner = XCB_NONE;
+      bool incremental = false;
+      std::string text;
+      std::chrono::steady_clock::time_point deadline;
+    } pending;
 
-    Atom property_atom(Display *display) {
-      return XInternAtom(display, "PLANK_CLIPBOARD", False);
-    }
-
-    Atom targets_atom(Display *display) {
-      return XInternAtom(display, "TARGETS", False);
-    }
-
-    Atom text_plain_atom(Display *display) {
-      return XInternAtom(display, "text/plain", False);
-    }
-
-    Atom text_plain_utf8_atom(Display *display) {
-      return XInternAtom(display, "text/plain;charset=utf-8", False);
-    }
-
-    void handle_selection_request(
-      Display *display,
-      std::string &owned_text,
-      const XEvent &event
-    ) {
-      const auto &req = event.xselectionrequest;
-      Atom property = req.property;
-      const Atom selection = req.selection;
-      const Atom target = req.target;
-      const Atom clipboard = clipboard_atom(display);
-      const Atom primary = primary_atom(display);
-      const Atom utf8 = utf8_atom(display);
-      const Atom targets = targets_atom(display);
-      const Atom text_plain = text_plain_atom(display);
-      const Atom text_plain_utf8 = text_plain_utf8_atom(display);
-
-      if (selection != clipboard && selection != primary) {
-        property = None;
-      } else if (target == targets) {
-        if (property != None) {
-          const Atom supported[] = {
-            targets,
-            utf8,
-            text_plain,
-            text_plain_utf8,
-            XA_STRING,
-          };
-          XChangeProperty(
-            display,
-            req.requestor,
-            property,
-            XA_ATOM,
-            32,
-            PropModeReplace,
-            reinterpret_cast<unsigned char *>(const_cast<Atom *>(supported)),
-            static_cast<int>(sizeof(supported) / sizeof(supported[0]))
-          );
-        }
-      } else if (target == utf8 ||
-                 target == text_plain ||
-                 target == text_plain_utf8 ||
-                 target == XA_STRING) {
-        if (owned_text.empty() || property == None) {
-          property = None;
-        } else {
-          const Atom response_type = target == XA_STRING ? XA_STRING : utf8;
-          XChangeProperty(
-            display,
-            req.requestor,
-            property,
-            response_type,
-            8,
-            PropModeReplace,
-            reinterpret_cast<const unsigned char *>(owned_text.data()),
-            static_cast<int>(owned_text.size())
-          );
-        }
-      } else {
-        property = None;
+    ~state_t() {
+      if (connection != nullptr) {
+        // Disconnect destroys our windows and releases only selections still
+        // owned by them. It cannot clear a newer owner's selection.
+        xcb_disconnect(connection);
       }
-
-      XEvent notify {};
-      notify.xselection.type = SelectionNotify;
-      notify.xselection.display = display;
-      notify.xselection.requestor = req.requestor;
-      notify.xselection.selection = selection;
-      notify.xselection.target = target;
-      notify.xselection.property = property;
-      notify.xselection.time = req.time;
-      XSendEvent(display, req.requestor, False, 0, &notify);
-      XFlush(display);
     }
 
-    void dispatch_event(
-      Display *display,
-      Window window,
-      std::string &owned_text,
-      const XEvent &event
-    ) {
-      if (event.type == SelectionRequest) {
-        handle_selection_request(display, owned_text, event);
+    bool checked(xcb_void_cookie_t cookie) {
+      return !reply(xcb_request_check(connection, cookie));
+    }
+
+    xcb_atom_t atom(const char *name) {
+      auto result = reply(xcb_intern_atom_reply(connection,
+        xcb_intern_atom(connection, false, std::strlen(name), name), nullptr));
+      return result ? result->atom : static_cast<xcb_atom_t>(XCB_NONE);
+    }
+
+    xcb_window_t owner(xcb_atom_t selection) {
+      auto result = reply(xcb_get_selection_owner_reply(connection,
+        xcb_get_selection_owner(connection, selection), nullptr));
+      return result ? result->owner : static_cast<xcb_window_t>(XCB_NONE);
+    }
+
+    xcb_window_t make_window() {
+      auto id = xcb_generate_id(connection);
+      const std::uint32_t events = XCB_EVENT_MASK_PROPERTY_CHANGE;
+      if (!checked(xcb_create_window_checked(connection, XCB_COPY_FROM_PARENT,
+            id, root, 0, 0, 1, 1, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+            XCB_COPY_FROM_PARENT, XCB_CW_EVENT_MASK, &events))) {
+        return XCB_NONE;
+      }
+      return id;
+    }
+
+    void cancel_conversion() {
+      if (pending.window != XCB_NONE) {
+        xcb_destroy_window(connection, pending.window);
+      }
+      pending = {};
+    }
+
+    void start_conversion(xcb_window_t current_owner) {
+      pending.window = make_window();
+      if (pending.window == XCB_NONE) {
         return;
       }
-      if (event.type == SelectionClear && event.xselectionclear.window == window) {
-        owned_text.clear();
+      pending.owner = current_owner;
+      pending.deadline = std::chrono::steady_clock::now() + conversion_timeout;
+      // A distinct requestor window correlates late replies without allocating
+      // a permanent server atom for every clipboard poll.
+      xcb_convert_selection(connection, pending.window, clipboard, utf8,
+        property, XCB_CURRENT_TIME);
+    }
+
+    void serve(const xcb_selection_request_event_t &request) {
+      auto destination = request.property != XCB_NONE ? request.property : request.target;
+      bool supported = request.owner == window &&
+        (request.selection == clipboard || request.selection == XCB_ATOM_PRIMARY) &&
+        owner(request.selection) == window;
+      if (supported && request.target == targets) {
+        const xcb_atom_t types[] = {targets, utf8, plain, plain_utf8, XCB_ATOM_STRING};
+        supported = checked(xcb_change_property_checked(connection, XCB_PROP_MODE_REPLACE,
+          request.requestor, destination, XCB_ATOM_ATOM, 32, 5, types));
+      } else if (supported && (request.target == utf8 || request.target == plain ||
+                                request.target == plain_utf8 || request.target == XCB_ATOM_STRING)) {
+        supported = checked(xcb_change_property_checked(connection, XCB_PROP_MODE_REPLACE,
+          request.requestor, destination,
+          request.target == XCB_ATOM_STRING ? static_cast<xcb_atom_t>(XCB_ATOM_STRING) : utf8,
+          8, owned_text.size(), owned_text.data()));
+      } else {
+        supported = false;
       }
+      xcb_selection_notify_event_t notify {};
+      notify.response_type = XCB_SELECTION_NOTIFY;
+      notify.requestor = request.requestor;
+      notify.selection = request.selection;
+      notify.target = request.target;
+      notify.property = supported ? destination : static_cast<xcb_atom_t>(XCB_NONE);
+      notify.time = request.time;
+      // Both property and notification requests may race window destruction.
+      // Checked errors are consumed on this connection only.
+      checked(xcb_send_event_checked(connection, false, request.requestor, 0,
+        reinterpret_cast<const char *>(&notify)));
     }
-  }  // namespace
 
-  clipboard_t::clipboard_t(clipboard_t &&other) noexcept :
-      display_(std::exchange(other.display_, nullptr)),
-      window_(std::exchange(other.window_, 0)),
-      xfixes_event_base_(std::exchange(other.xfixes_event_base_, -1)),
-      generation_(std::exchange(other.generation_, 0)),
-      owned_text_(std::move(other.owned_text_)),
-      last_forwarded_text_(std::move(other.last_forwarded_text_)) {
-  }
-
-  clipboard_t &clipboard_t::operator=(clipboard_t &&other) noexcept {
-    if (this != &other) {
-      reset();
-      display_ = std::exchange(other.display_, nullptr);
-      window_ = std::exchange(other.window_, 0);
-      xfixes_event_base_ = std::exchange(other.xfixes_event_base_, -1);
-      generation_ = std::exchange(other.generation_, 0);
-      owned_text_ = std::move(other.owned_text_);
-      last_forwarded_text_ = std::move(other.last_forwarded_text_);
-    }
-    return *this;
-  }
-
-  clipboard_t::~clipboard_t() {
-    reset();
-  }
-
-  void clipboard_t::reset() noexcept {
-    auto *display = static_cast<Display *>(display_);
-    if (display == nullptr) {
-      return;
-    }
-    if (window_ != 0) {
-      const Atom clipboard = clipboard_atom(display);
-      const Atom primary = primary_atom(display);
-      if (XGetSelectionOwner(display, clipboard) == window_) {
-        XSetSelectionOwner(display, clipboard, None, CurrentTime);
+    std::optional<std::string> read_property(bool initial) {
+      auto value = reply(xcb_get_property_reply(connection,
+        xcb_get_property(connection, true, pending.window, property,
+          XCB_GET_PROPERTY_TYPE_ANY, 0, (max_text_size + 3) / 4), nullptr));
+      if (!value || value->bytes_after != 0) {
+        cancel_conversion();
+        return std::nullopt;
       }
-      if (XGetSelectionOwner(display, primary) == window_) {
-        XSetSelectionOwner(display, primary, None, CurrentTime);
+      const auto size = static_cast<std::size_t>(xcb_get_property_value_length(value.get()));
+      if (initial && value->type == incr) {
+        std::uint32_t advertised = 0;
+        if (value->format == 32 && size == sizeof(advertised)) {
+          std::memcpy(&advertised, xcb_get_property_value(value.get()), sizeof(advertised));
+          if (advertised <= max_text_size) {
+            // get_property(delete=true) acknowledges INCR. The owner sends
+            // each subsequent chunk only after the previous property deletion.
+            pending.incremental = true;
+            return std::nullopt;
+          }
+        }
+        cancel_conversion();
+        return std::nullopt;
       }
-      XDestroyWindow(display, window_);
-      XFlush(display);
+      if (value->type != utf8 || value->format != 8 ||
+          size > max_text_size - pending.text.size()) {
+        cancel_conversion();
+        return std::nullopt;
+      }
+      if (size != 0) {
+        pending.text.append(static_cast<const char *>(xcb_get_property_value(value.get())), size);
+      }
+      if (initial || size == 0) {
+        auto completed = std::move(pending.text);
+        cancel_conversion();
+        return completed;
+      }
+      return std::nullopt;
     }
-    XCloseDisplay(display);
-    display_ = nullptr;
-    window_ = 0;
-    xfixes_event_base_ = -1;
-    generation_ = 0;
-    owned_text_.clear();
-    last_forwarded_text_.reset();
-  }
+
+    std::optional<std::string> dispatch(const xcb_generic_event_t &event) {
+      switch (event.response_type & 0x7f) {
+        case XCB_SELECTION_REQUEST:
+          serve(reinterpret_cast<const xcb_selection_request_event_t &>(event));
+          break;
+        case XCB_SELECTION_CLEAR:
+          // PRIMARY and CLIPBOARD have independent ownership, but identical
+          // text while we own both. Losing just one must not erase the other.
+          if (owner(clipboard) != window && owner(XCB_ATOM_PRIMARY) != window) {
+            owned_text.clear();
+          }
+          break;
+        case XCB_SELECTION_NOTIFY: {
+          const auto &notify = reinterpret_cast<const xcb_selection_notify_event_t &>(event);
+          if (pending.window != XCB_NONE && notify.requestor == pending.window &&
+              notify.selection == clipboard && notify.target == utf8 && !pending.incremental) {
+            if (notify.property == property) {
+              return read_property(true);
+            }
+            if (notify.property == XCB_NONE) {
+              cancel_conversion();
+            }
+          }
+          break;
+        }
+        case XCB_PROPERTY_NOTIFY: {
+          const auto &notify = reinterpret_cast<const xcb_property_notify_event_t &>(event);
+          if (pending.incremental && notify.window == pending.window &&
+              notify.atom == property && notify.state == XCB_PROPERTY_NEW_VALUE) {
+            return read_property(false);
+          }
+          break;
+        }
+        default:
+          // Includes errors from unchecked requests. They never escape into
+          // capture threads or terminate the process.
+          break;
+      }
+      return std::nullopt;
+    }
+  };
+
+  clipboard_t::clipboard_t(std::unique_ptr<state_t> state) : state_(std::move(state)) {}
+  clipboard_t::clipboard_t(clipboard_t &&other) noexcept = default;
+  clipboard_t &clipboard_t::operator=(clipboard_t &&other) noexcept = default;
+  clipboard_t::~clipboard_t() = default;
 
   std::optional<clipboard_t> clipboard_t::make() {
-    clipboard_t clipboard;
-    clipboard.display_ = XOpenDisplay(nullptr);
-    if (clipboard.display_ == nullptr) {
-      BOOST_LOG(error) << "Unable to open X11 display for PLANK clipboard sync"sv;
+    auto state = std::make_unique<state_t>();
+    int screen_number = 0;
+    state->connection = xcb_connect(nullptr, &screen_number);
+    if (xcb_connection_has_error(state->connection)) {
+      BOOST_LOG(error) << "Unable to open X11 display for PLANK clipboard sync";
       return std::nullopt;
     }
-
-    auto *display = static_cast<Display *>(clipboard.display_);
-    const auto root = DefaultRootWindow(display);
-    clipboard.window_ = XCreateSimpleWindow(display, root, 0, 0, 1, 1, 0, 0, 0);
-    if (clipboard.window_ == 0) {
+    auto screens = xcb_setup_roots_iterator(xcb_get_setup(state->connection));
+    for (int index = 0; index < screen_number && screens.rem; ++index) {
+      xcb_screen_next(&screens);
+    }
+    if (!screens.rem) {
       return std::nullopt;
     }
-
-    int event_base = 0;
-    int error_base = 0;
-    if (!XFixesQueryExtension(display, &event_base, &error_base)) {
-      BOOST_LOG(warning) << "XFixes unavailable; PLANK clipboard sync uses polling only"sv;
-    } else {
-      clipboard.xfixes_event_base_ = event_base;
-      XFixesSelectSelectionInput(
-        display,
-        clipboard.window_,
-        clipboard_atom(display),
-        XFixesSetSelectionOwnerNotifyMask
-      );
+    state->root = screens.data->root;
+    state->window = state->make_window();
+    state->clipboard = state->atom("CLIPBOARD");
+    state->utf8 = state->atom("UTF8_STRING");
+    state->property = state->atom("PLANK_CLIPBOARD");
+    state->targets = state->atom("TARGETS");
+    state->plain = state->atom("text/plain");
+    state->plain_utf8 = state->atom("text/plain;charset=utf-8");
+    state->incr = state->atom("INCR");
+    if (!state->window || !state->clipboard || !state->utf8 || !state->property ||
+        !state->targets || !state->plain || !state->plain_utf8 || !state->incr) {
+      return std::nullopt;
     }
-
-    XFlush(display);
-    return clipboard;
-  }
-
-  bool clipboard_t::read_selection(std::string &text) {
-    auto *display = static_cast<Display *>(display_);
-    const Atom clipboard = clipboard_atom(display);
-    const Atom utf8 = utf8_atom(display);
-    const Atom property = property_atom(display);
-    const Window owner = XGetSelectionOwner(display, clipboard);
-    if (owner == None) {
-      return false;
-    }
-    if (owner == window_) {
-      text = owned_text_;
-      return !text.empty();
-    }
-
-    XConvertSelection(display, clipboard, utf8, property, window_, CurrentTime);
-    XFlush(display);
-
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
-    while (std::chrono::steady_clock::now() < deadline) {
-      while (XPending(display) > 0) {
-        XEvent event {};
-        XNextEvent(display, &event);
-        if (event.type == SelectionRequest) {
-          handle_selection_request(display, owned_text_, event);
-          continue;
-        }
-        if (event.type == SelectionClear && event.xselectionclear.window == window_) {
-          owned_text_.clear();
-          continue;
-        }
-        if (event.type == SelectionNotify &&
-            event.xselection.requestor == window_ &&
-            event.xselection.property != None) {
-          Atom actual_type = None;
-          int actual_format = 0;
-          unsigned long item_count = 0;
-          unsigned long bytes_after = 0;
-          unsigned char *data = nullptr;
-          constexpr unsigned long max_clipboard_size = 1024UL * 1024UL;
-          constexpr long max_property_units =
-            static_cast<long>((max_clipboard_size + 3) / 4);
-          if (XGetWindowProperty(
-                display,
-                window_,
-                property,
-                0,
-                max_property_units,
-                True,
-                AnyPropertyType,
-                &actual_type,
-                &actual_format,
-                &item_count,
-                &bytes_after,
-                &data
-              ) == Success &&
-              data != nullptr &&
-              actual_format == 8 &&
-              bytes_after == 0 &&
-              item_count <= max_clipboard_size) {
-            text.assign(reinterpret_cast<char *>(data), item_count);
-            XFree(data);
-            return !text.empty();
-          }
-          if (data != nullptr) {
-            XFree(data);
-          }
-          return false;
-        }
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    return false;
+    return clipboard_t(std::move(state));
   }
 
   bool clipboard_t::poll_change(std::string &text) {
-    auto *display = static_cast<Display *>(display_);
-    while (XPending(display) > 0) {
-      XEvent event {};
-      XNextEvent(display, &event);
-      dispatch_event(display, window_, owned_text_, event);
+    auto &state = *state_;
+    auto current_owner = state.owner(state.clipboard);
+    if (state.pending.window != XCB_NONE &&
+        (state.pending.owner != current_owner ||
+         std::chrono::steady_clock::now() >= state.pending.deadline)) {
+      state.cancel_conversion();
     }
-
-    std::string candidate;
-    if (!read_selection(candidate) || !last_forwarded_text_.accept(candidate)) {
+    std::optional<std::string> completed;
+    // Bound work per poll even when another X11 client floods our event queue.
+    for (int count = 0; count < 256; ++count) {
+      auto event = reply(xcb_poll_for_event(state.connection));
+      if (!event) {
+        break;
+      }
+      auto result = state.dispatch(*event);
+      if (result) {
+        completed = std::move(result);
+      }
+    }
+    current_owner = state.owner(state.clipboard);
+    if (state.pending.window == XCB_NONE && current_owner != XCB_NONE && current_owner != state.window) {
+      state.start_conversion(current_owner);
+    }
+    xcb_flush(state.connection);
+    if (!completed || completed->empty() || !state.last_forwarded.accept(*completed)) {
       return false;
     }
-    text = std::move(candidate);
+    text = std::move(*completed);
     return true;
   }
 
   bool clipboard_t::set_text(const std::vector<std::uint8_t> &text) {
-    if (text.empty()) {
+    if (text.empty() || text.size() > max_text_size) {
       return false;
     }
-    auto *display = static_cast<Display *>(display_);
-    const Atom clipboard = clipboard_atom(display);
-    const Atom primary = primary_atom(display);
-    const Atom utf8 = utf8_atom(display);
-
-    owned_text_.assign(reinterpret_cast<const char *>(text.data()), text.size());
-    last_forwarded_text_.mark(owned_text_);
-    ++generation_;
-
-    XSetSelectionOwner(display, clipboard, window_, CurrentTime);
-    if (XGetSelectionOwner(display, clipboard) != window_) {
-      BOOST_LOG(warning) << "Unable to become X11 CLIPBOARD owner for PLANK sync"sv;
+    auto &state = *state_;
+    state.cancel_conversion();
+    xcb_set_selection_owner(state.connection, state.window, state.clipboard, XCB_CURRENT_TIME);
+    if (state.owner(state.clipboard) != state.window) {
+      BOOST_LOG(warning) << "Unable to become X11 CLIPBOARD owner for PLANK sync";
       return false;
     }
-
-    XChangeProperty(
-      display,
-      window_,
-      utf8,
-      utf8,
-      8,
-      PropModeReplace,
-      text.data(),
-      static_cast<int>(text.size())
-    );
-    XSetSelectionOwner(display, primary, window_, CurrentTime);
-    XFlush(display);
+    state.owned_text.assign(reinterpret_cast<const char *>(text.data()), text.size());
+    state.last_forwarded.mark(state.owned_text);
+    xcb_set_selection_owner(state.connection, state.window, XCB_ATOM_PRIMARY, XCB_CURRENT_TIME);
+    xcb_flush(state.connection);
     return true;
   }
 }  // namespace platf::x11
-
 #endif
