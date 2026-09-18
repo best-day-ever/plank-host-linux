@@ -125,7 +125,7 @@ TEST_F(InputRetainedSessionTest, DisconnectReleasesLeftButtonWithDeferredRelease
   input::reset(session, connection_id);
   const auto before_press = mouse->submit_count();
 
-  constexpr std::uint16_t left_button = 1;
+  constexpr std::uint8_t left_button = 1;
   input::testing::handle_mouse_button(session, left_button, false);
   ASSERT_EQ(mouse->submit_count(), before_press + 1);
   EXPECT_EQ(mouse->last_submitted_event().kind, lvh::MouseEventKind::button);

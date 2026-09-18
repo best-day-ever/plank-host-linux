@@ -119,7 +119,7 @@ namespace input {
      * @param button Moonlight button identifier.
      * @param release True for button release, false for button press.
      */
-    void handle_mouse_button(const std::shared_ptr<input_t> &input, std::uint16_t button, bool release);
+    void handle_mouse_button(const std::shared_ptr<input_t> &input, std::uint8_t button, bool release);
 
     /**
      * @brief Return the last key submitted to the fake platform keyboard.

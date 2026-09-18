@@ -1739,7 +1739,7 @@ namespace input {
       passthrough(mutable_input, &packet);
     }
 
-    void handle_mouse_button(const std::shared_ptr<input_t> &input, const std::uint16_t button, const bool release) {
+    void handle_mouse_button(const std::shared_ptr<input_t> &input, const std::uint8_t button, const bool release) {
       if (!input) {
         return;
       }
@@ -1747,7 +1747,7 @@ namespace input {
       packet.header.magic = util::endian::little<std::uint32_t>(
         release ? MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5 : MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5
       );
-      packet.button = util::endian::big(button);
+      packet.button = button;
       auto mutable_input = input;
       passthrough(mutable_input, &packet);
     }
