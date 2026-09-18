@@ -123,6 +123,7 @@ TEST_F(InputRetainedSessionTest, DisconnectReleasesLeftButtonWithDeferredRelease
   std::uint64_t connection_id = 0;
   auto session = input::alloc(std::make_shared<safe::mail_raw_t>(), session_id, connection_id);
   input::reset(session, connection_id);
+  input::testing::enable_left_button_delay(session);
   const auto before_press = mouse->submit_count();
 
   constexpr std::uint8_t left_button = 1;

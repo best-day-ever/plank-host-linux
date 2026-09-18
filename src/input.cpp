@@ -1752,6 +1752,12 @@ namespace input {
       passthrough(mutable_input, &packet);
     }
 
+    void enable_left_button_delay(const std::shared_ptr<input_t> &input) {
+      if (input) {
+        input->mouse_left_button_timeout = ENABLE_LEFT_BUTTON_DELAY;
+      }
+    }
+
     std::uint16_t last_keyboard_code() {
       if (!platf_input) {
         return 0;
