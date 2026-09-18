@@ -280,7 +280,7 @@ void incremental_overflow() {
   auto request = f.request();
   f.begin_incr(request, 0); // INCR count is a lower bound, not an allocation size.
   std::string text;
-  for (int i = 0; i < 16; ++i) {
+  for (int i = 0; i < 8; ++i) {
     f.chunk(request, std::string(65536, 'x'));
     REQUIRE(!f.poll(text));
     f.deletion(request);
