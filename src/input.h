@@ -122,12 +122,6 @@ namespace input {
     void handle_mouse_button(const std::shared_ptr<input_t> &input, std::uint8_t button, bool release);
 
     /**
-     * @brief Enable the absolute-input left-release delay in a test session.
-     * @param input Retained test input session.
-     */
-    void enable_left_button_delay(const std::shared_ptr<input_t> &input);
-
-    /**
      * @brief Return the last key submitted to the fake platform keyboard.
      */
     std::uint16_t last_keyboard_code();
