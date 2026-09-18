@@ -1533,11 +1533,17 @@ namespace input {
 #endif
 
   /**
-   * @brief Release every pressed mouse button tracked by Sunshine.
+   * @brief Release pressed mouse buttons, including a deferred left release.
+   *
+   * The logical left-button state is cleared before its delayed platform
+   * release runs. Cancelling that release during disconnect must still send
+   * the platform release even though the logical state is already clear.
+   *
+   * @param pending_left_release Whether a delayed left release was outstanding.
    */
-  void reset_mouse_buttons() {
+  void reset_mouse_buttons(const bool pending_left_release) {
     for (int button = 0; button < mouse_press.size(); ++button) {
-      if (mouse_press[button]) {
+      if (mouse_press[button] || (button == BUTTON_LEFT && pending_left_release)) {
         platf::button_mouse(platf_input, button, true);
         mouse_press[button] = false;
       }
@@ -1568,8 +1574,11 @@ namespace input {
     }
 
     task_pool.cancel(key_press_repeat_id);
+    const bool pending_left_release = input->mouse_left_button_timeout != nullptr &&
+                                      input->mouse_left_button_timeout != DISABLE_LEFT_BUTTON_DELAY;
     task_pool.cancel(input->mouse_left_button_timeout);
-    reset_mouse_buttons();
+    input->mouse_left_button_timeout = DISABLE_LEFT_BUTTON_DELAY;
+    reset_mouse_buttons(pending_left_release);
     reset_keyboard_keys();
     // Keep the host UHID/XInput endpoints stable while this retained session
     // is resumable. The replacement transport must re-present the same USB
@@ -1726,6 +1735,19 @@ namespace input {
       NV_KEYBOARD_PACKET packet {};
       packet.header.magic = util::endian::little<std::uint32_t>(release ? KEY_UP_EVENT_MAGIC : KEY_DOWN_EVENT_MAGIC);
       packet.keyCode = static_cast<short>(key_code);
+      auto mutable_input = input;
+      passthrough(mutable_input, &packet);
+    }
+
+    void handle_mouse_button(const std::shared_ptr<input_t> &input, const std::uint16_t button, const bool release) {
+      if (!input) {
+        return;
+      }
+      NV_MOUSE_BUTTON_PACKET packet {};
+      packet.header.magic = util::endian::little<std::uint32_t>(
+        release ? MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5 : MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5
+      );
+      packet.button = util::endian::big(button);
       auto mutable_input = input;
       passthrough(mutable_input, &packet);
     }

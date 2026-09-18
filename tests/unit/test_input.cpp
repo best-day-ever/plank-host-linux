@@ -72,6 +72,8 @@ namespace {
       auto &context = platf::virtualhid::get_input_context(platform_input);
       context = platf::virtualhid::input_context_t {lvh::BackendKind::fake};
       ASSERT_NE(context.runtime, nullptr);
+      ASSERT_NE(context.mouse, nullptr);
+      mouse = context.mouse.get();
       input::testing::set_platform_input(std::move(platform_input));
     }
 
@@ -82,6 +84,8 @@ namespace {
       input::terminate_retained_input();
       input::testing::set_platform_input({});
     }
+
+    lvh::Mouse *mouse = nullptr;
   };
 }  // namespace
 
@@ -112,6 +116,32 @@ TEST_F(InputRetainedSessionTest, DisconnectSuspendsRatherThanDiscardingResumable
 
   input::reset(resumed, resumed_connection_id);
   EXPECT_EQ(input::testing::raw_hid_generation(resumed), 8);
+}
+
+TEST_F(InputRetainedSessionTest, DisconnectReleasesLeftButtonWithDeferredReleasePending) {
+  const std::string session_id = "deferred-left-button-release";
+  std::uint64_t connection_id = 0;
+  auto session = input::alloc(std::make_shared<safe::mail_raw_t>(), session_id, connection_id);
+  input::reset(session, connection_id);
+  const auto before_press = mouse->submit_count();
+
+  constexpr std::uint16_t left_button = 1;
+  input::testing::handle_mouse_button(session, left_button, false);
+  ASSERT_EQ(mouse->submit_count(), before_press + 1);
+  EXPECT_EQ(mouse->last_submitted_event().kind, lvh::MouseEventKind::button);
+  EXPECT_EQ(mouse->last_submitted_event().button, lvh::MouseButton::left);
+  EXPECT_TRUE(mouse->last_submitted_event().pressed);
+
+  // The test task pool is stopped, so the 10 ms release remains queued while
+  // reset cancels it. The virtual mouse must still receive a button-up event.
+  input::testing::handle_mouse_button(session, left_button, true);
+  ASSERT_EQ(mouse->submit_count(), before_press + 1);
+  input::reset(session, connection_id);
+
+  EXPECT_EQ(mouse->submit_count(), before_press + 2);
+  EXPECT_EQ(mouse->last_submitted_event().kind, lvh::MouseEventKind::button);
+  EXPECT_EQ(mouse->last_submitted_event().button, lvh::MouseButton::left);
+  EXPECT_FALSE(mouse->last_submitted_event().pressed);
 }
 
 TEST_F(InputRetainedSessionTest, ConsumesNumLockWithoutChangingNumericKeypadIdentity) {
