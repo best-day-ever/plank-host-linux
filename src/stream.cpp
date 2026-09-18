@@ -633,7 +633,11 @@ namespace stream {
           BOOST_LOG(warning) << "Unable to queue a PLANK clipboard offer"sv;
         }
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      if (!session->clipboard->wait_for_activity()) {
+        BOOST_LOG(error) << "Lost the X11 clipboard connection"sv;
+        session::stop(*session);
+        return;
+      }
     }
 #else
     (void) session;

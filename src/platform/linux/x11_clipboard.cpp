@@ -7,7 +7,10 @@
 #include "x11_clipboard.h"
 
 #include <xcb/xcb.h>
+#include <poll.h>
 
+#include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +22,7 @@ namespace platf::x11 {
   namespace {
     constexpr std::size_t max_text_size = 1024 * 1024;
     constexpr auto conversion_timeout = std::chrono::seconds(5);
+    constexpr auto selection_poll_interval = std::chrono::milliseconds(250);
 
     template<class T>
     using reply_ptr = std::unique_ptr<T, decltype(&std::free)>;
@@ -40,6 +44,8 @@ namespace platf::x11 {
     xcb_atom_t targets = XCB_NONE, plain = XCB_NONE, plain_utf8 = XCB_NONE, incr = XCB_NONE;
     std::string owned_text;
     text_change_tracker_t last_forwarded;
+    reply_ptr<xcb_generic_event_t> next_event {nullptr, &std::free};
+    std::chrono::steady_clock::time_point next_conversion;
 
     struct conversion_t {
       xcb_window_t window = XCB_NONE;
@@ -92,6 +98,7 @@ namespace platf::x11 {
     }
 
     void start_conversion(xcb_window_t current_owner) {
+      next_conversion = std::chrono::steady_clock::now() + selection_poll_interval;
       pending.window = make_window();
       if (pending.window == XCB_NONE) {
         return;
@@ -263,7 +270,8 @@ namespace platf::x11 {
     std::optional<std::string> completed;
     // Bound work per poll even when another X11 client floods our event queue.
     for (int count = 0; count < 256; ++count) {
-      auto event = reply(xcb_poll_for_event(state.connection));
+      auto event = state.next_event ? std::move(state.next_event) :
+                                     reply(xcb_poll_for_event(state.connection));
       if (!event) {
         break;
       }
@@ -273,7 +281,8 @@ namespace platf::x11 {
       }
     }
     current_owner = state.owner(state.clipboard);
-    if (state.pending.window == XCB_NONE && current_owner != XCB_NONE && current_owner != state.window) {
+    if (state.pending.window == XCB_NONE && current_owner != XCB_NONE && current_owner != state.window &&
+        std::chrono::steady_clock::now() >= state.next_conversion) {
       state.start_conversion(current_owner);
     }
     xcb_flush(state.connection);
@@ -300,6 +309,35 @@ namespace platf::x11 {
     xcb_set_selection_owner(state.connection, state.window, XCB_ATOM_PRIMARY, XCB_CURRENT_TIME);
     xcb_flush(state.connection);
     return true;
+  }
+
+  bool clipboard_t::wait_for_activity() {
+    auto &state = *state_;
+    if (xcb_connection_has_error(state.connection)) {
+      return false;
+    }
+    // Reply reads can already have buffered events inside XCB, leaving the
+    // socket unreadable. Preserve one for poll_change() before sleeping.
+    if (!state.next_event) {
+      state.next_event = reply(xcb_poll_for_event(state.connection));
+    }
+    if (state.next_event) {
+      return true;
+    }
+    // INCR is a deletion-acknowledged exchange. A fixed sleep for every chunk
+    // would spend the five-second transfer deadline on our own polling delay.
+    // New conversions still start at most four times per second, even if a
+    // clipboard owner immediately answers or refuses every request.
+    auto timeout = selection_poll_interval;
+    const auto until_conversion = state.next_conversion - std::chrono::steady_clock::now();
+    if (state.pending.window == XCB_NONE && until_conversion > decltype(until_conversion)::zero()) {
+      timeout = std::min(timeout, std::chrono::ceil<std::chrono::milliseconds>(until_conversion));
+    }
+    pollfd socket {xcb_get_file_descriptor(state.connection), POLLIN, 0};
+    const auto result = ::poll(&socket, 1, static_cast<int>(timeout.count()));
+    return (result >= 0 || errno == EINTR) &&
+           !(socket.revents & (POLLERR | POLLHUP | POLLNVAL)) &&
+           !xcb_connection_has_error(state.connection);
   }
 }  // namespace platf::x11
 #endif
