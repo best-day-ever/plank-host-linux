@@ -48,6 +48,28 @@ struct fixture_t {
   }
   bool poll(std::string &text) { return backend.poll_change(text); }
   void poll() { std::string ignored; backend.poll_change(ignored); }
+  void wait() {
+#ifdef PLANK_CLIPBOARD_SLEEP_POLL
+    // Negative control: the old production loop slept after every poll.
+    std::this_thread::sleep_for(250ms);
+#else
+    REQUIRE(backend.wait_for_activity());
+#endif
+  }
+  XSelectionRequestEvent next_request() {
+    // A new conversion is rate-limited separately from event/INCR servicing.
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < deadline) {
+      while (XPending(display)) {
+        XEvent result {};
+        XNextEvent(display, &result);
+        if (result.type == SelectionRequest) return result.xselectionrequest;
+      }
+      std::this_thread::sleep_for(2ms);
+      poll();
+    }
+    throw std::runtime_error("timed out waiting for the next conversion");
+  }
   XEvent event(int type) {
     auto deadline = std::chrono::steady_clock::now() + 2s;
     while (std::chrono::steady_clock::now() < deadline) {
@@ -163,6 +185,82 @@ void incremental_reply() {
   REQUIRE(f.poll(text));
   REQUIRE(text == expected);
 }
+void incremental_worker_cadence() {
+  fixture_t f;
+  auto request = f.request();
+  constexpr auto limit = 1024 * 1024;
+  f.begin_incr(request, limit);
+  std::string expected, text;
+  const auto start = std::chrono::steady_clock::now();
+  for (int i = 0; i < 64; ++i) {
+    std::string part(16384, 'a' + i % 26);
+    expected += part;
+    f.chunk(request, part);
+    f.wait();
+    REQUIRE(!f.poll(text));
+    // Fail before the conversion is destroyed, to avoid provoking unrelated
+    // Xlib errors in the fake owner when exercising the old polling cadence.
+    REQUIRE(std::chrono::steady_clock::now() - start < 4s);
+    f.deletion(request);
+  }
+  f.chunk(request, "");
+  f.wait();
+  REQUIRE(f.poll(text));
+  REQUIRE(text == expected);
+}
+void idle_wait_is_bounded() {
+  fixture_t f;
+  f.poll();
+  const auto start = std::chrono::steady_clock::now();
+  f.wait();
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  REQUIRE(elapsed >= 200ms);
+  REQUIRE(elapsed < 1s);
+}
+void conversion_rate_is_bounded() {
+  fixture_t f;
+  auto request = f.request();
+  const auto start = std::chrono::steady_clock::now();
+  f.reply(request, "unchanged text");
+  std::string text;
+  REQUIRE(f.poll(text));
+  f.poll();
+  XEvent unexpected {};
+  REQUIRE(!XCheckTypedEvent(f.display, SelectionRequest, &unexpected));
+  request = f.next_request();
+  REQUIRE(std::chrono::steady_clock::now() - start >= 200ms);
+  const auto refused = std::chrono::steady_clock::now();
+  request.property = None;
+  f.notify(request);
+  REQUIRE(!f.poll(text));
+  f.poll();
+  REQUIRE(!XCheckTypedEvent(f.display, SelectionRequest, &unexpected));
+  f.next_request();
+  REQUIRE(std::chrono::steady_clock::now() - refused >= 200ms);
+}
+void wakes_for_reply() {
+  fixture_t f;
+  auto request = f.request();
+  // Only this helper accesses the fake owner's Xlib connection while running.
+  std::thread owner([&] {
+    std::this_thread::sleep_for(60ms);
+    f.reply(request, "wake on reply");
+  });
+  std::string text;
+  bool healthy = true;
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (healthy && text.empty() && std::chrono::steady_clock::now() < deadline) {
+#ifdef PLANK_CLIPBOARD_SLEEP_POLL
+    std::this_thread::sleep_for(250ms);
+#else
+    healthy = f.backend.wait_for_activity();
+#endif
+    f.poll(text);
+  }
+  owner.join();
+  REQUIRE(healthy);
+  REQUIRE(text == "wake on reply");
+}
 void oversized_advertisement() {
   fixture_t f;
   auto request = f.request();
@@ -172,7 +270,7 @@ void oversized_advertisement() {
   f.notify(request);
   std::string text;
   REQUIRE(!f.poll(text));
-  auto next = f.event(SelectionRequest).xselectionrequest;
+  auto next = f.next_request();
   REQUIRE(next.requestor != request.requestor);
   f.reply(next, "recovered");
   REQUIRE(f.poll(text) && text == "recovered");
@@ -189,7 +287,7 @@ void incremental_overflow() {
   }
   f.chunk(request, "overflow");
   REQUIRE(!f.poll(text));
-  auto next = f.event(SelectionRequest).xselectionrequest;
+  auto next = f.next_request();
   REQUIRE(next.requestor != request.requestor);
   f.reply(next, "recovered");
   REQUIRE(f.poll(text) && text == "recovered");
@@ -201,7 +299,7 @@ void conversion_timeout() {
   std::this_thread::sleep_for(5100ms);
   std::string text;
   REQUIRE(!f.poll(text));
-  auto next = f.event(SelectionRequest).xselectionrequest;
+  auto next = f.next_request();
   REQUIRE(next.requestor != request.requestor);
   f.reply(next, "after timeout");
   REQUIRE(f.poll(text) && text == "after timeout");
@@ -237,6 +335,10 @@ int main(int argc, char **argv) {
     {"independent selections", independent_selections},
     {"150ms delayed reply", delayed_reply},
     {"1MiB INCR reply", incremental_reply},
+    {"1MiB INCR worker cadence", incremental_worker_cadence},
+    {"bounded idle wait", idle_wait_is_bounded},
+    {"bounded conversion rate", conversion_rate_is_bounded},
+    {"wake on delayed reply", wakes_for_reply},
     {"oversized INCR advertisement", oversized_advertisement},
     {"cumulative INCR overflow", incremental_overflow},
     {"INCR timeout and recovery", conversion_timeout},

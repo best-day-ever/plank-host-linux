@@ -25,6 +25,13 @@ test -s "$scratch/display"
 export DISPLAY=":$(cat "$scratch/display")"
 "$scratch/clipboard-test"
 
+# Keep the tested wait path wired into the real worker, not only the fixture.
+if ! sed -n '/void localClipboardThread(/,/^  }/p' "$repo/src/stream.cpp" |
+    grep -Fq 'session->clipboard->wait_for_activity()'; then
+  echo 'FAIL clipboard worker does not use the tested X11 wait' >&2
+  exit 1
+fi
+
 if [[ "${1:-}" == --negative-controls ]]; then
   # Compile the exact reviewed implementation with this same real-X11 harness.
   # Diagnostic stubs avoid unrelated product dependencies; X11 calls are real.
@@ -34,7 +41,7 @@ if [[ "${1:-}" == --negative-controls ]]; then
     git -C "$repo" -c safe.directory="$repo" show "$baseline:src/platform/linux/$file" \
       > "$scratch/baseline/src/platform/linux/$file"
   done
-  "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -DSUNSHINE_BUILD_X11 \
+  "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -DSUNSHINE_BUILD_X11 -DPLANK_CLIPBOARD_SLEEP_POLL \
     -I"$scratch/baseline" -I"$repo/tests/clipboard/include" -I"$repo" \
     "$scratch/baseline/src/platform/linux/x11_clipboard.cpp" "$repo/tests/clipboard/x11-backend.cxx" \
     $(pkg-config --cflags --libs x11 xfixes) -o "$scratch/baseline-test"
@@ -45,4 +52,16 @@ if [[ "${1:-}" == --negative-controls ]]; then
     fi
     echo "PASS negative control reproduces: $regression"
   done
+
+  # The asynchronous backend alone is insufficient: the old worker's fixed
+  # 250 ms sleep still times out a legal 1 MiB transfer in 16 KiB chunks.
+  "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -DSUNSHINE_BUILD_X11 -DPLANK_CLIPBOARD_SLEEP_POLL \
+    -I"$repo/tests/clipboard/include" -I"$repo" \
+    "$repo/src/platform/linux/x11_clipboard.cpp" "$repo/tests/clipboard/x11-backend.cxx" \
+    $(pkg-config --cflags --libs xcb x11) -o "$scratch/sleep-poll-test"
+  if "$scratch/sleep-poll-test" '1MiB INCR worker cadence' >"$scratch/negative.log" 2>&1; then
+    echo 'FAIL fixed-sleep negative control unexpectedly passed' >&2
+    exit 1
+  fi
+  echo 'PASS negative control reproduces: INCR worker cadence'
 fi
