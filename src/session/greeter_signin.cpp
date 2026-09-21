@@ -5,6 +5,7 @@
 #include "greeter_signin.h"
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <dlfcn.h>
 #include <optional>
@@ -29,10 +30,19 @@ namespace plank::session {
     constexpr keysym_t keysym_escape = 0xff1b;
     constexpr keysym_t keysym_return = 0xff0d;
     constexpr keysym_t keysym_shift_left = 0xffe1;
+    constexpr keysym_t keysym_control_left = 0xffe3;
+    constexpr keysym_t keysym_backspace = 0xff08;
+    constexpr keysym_t keysym_a = 'a';
     // Let a new stream's input path and the greeter settle before typing.
     constexpr auto settle_delay = std::chrono::milliseconds {1500};
     constexpr auto stream_wait = std::chrono::seconds {15};
     constexpr auto key_gap = std::chrono::milliseconds {12};
+    // A blanked greeter spends its first input on waking up; keys sent during
+    // the fade-in never reach the account entry.
+    constexpr auto wake_delay = std::chrono::milliseconds {1500};
+    // How long GDM gets to start the conversation that claims the pass.
+    constexpr auto claim_wait = std::chrono::seconds {6};
+    constexpr int typing_attempts = 2;
 
     struct xtest_t {
       void *x11 {};
@@ -92,6 +102,18 @@ namespace plank::session {
         return true;
       }
 
+      /** Press a keysym while holding a modifier keysym, e.g. Control+A. */
+      bool chord(keysym_t modifier, keysym_t keysym) {
+        const unsigned char held = x_.keysym_to_keycode(display_, modifier);
+        const auto key = stroke(keysym);
+        if (held == 0 || !key || key->shift) return false;
+        event(held, true);
+        event(key->code, true);
+        event(key->code, false);
+        event(held, false);
+        return true;
+      }
+
     private:
       struct stroke_t {
         unsigned char code;
@@ -146,13 +168,23 @@ namespace plank::session {
           return false;
         }
       }
-      // Escape backs out of a half-finished prompt to the account entry.
+      // Wake a blanked greeter with a key that types nothing, then back out
+      // of a half-finished prompt and clear the account entry.
+      typist.press(keysym_shift_left);
+      std::this_thread::sleep_for(wake_delay);
       typist.press(keysym_escape);
       std::this_thread::sleep_for(std::chrono::milliseconds {400});
+      typist.chord(keysym_control_left, keysym_a);
+      typist.press(keysym_backspace);
       for (const char c : account) {
         typist.press(static_cast<keysym_t>(static_cast<unsigned char>(c)));
       }
       return typist.press(keysym_return);
+    }
+
+    /** True once GDM's PAM conversation has claimed (renamed away) the pass. */
+    bool pass_claimed(uid_t uid) {
+      return access(plank::auth::handoff::pass_path(uid).c_str(), F_OK) != 0 && errno == ENOENT;
     }
   }  // namespace
 
@@ -173,8 +205,19 @@ namespace plank::session {
         std::this_thread::sleep_for(std::chrono::milliseconds {100});
       }
       std::this_thread::sleep_for(settle_delay);
-      if (signin_generation.load() == generation && stream_live()) {
-        if (!type_account(account)) handoff::remove_pass(uid);
+      for (int attempt = 0; attempt < typing_attempts; ++attempt) {
+        if (signin_generation.load() != generation || !stream_live() || pass_claimed(uid)) break;
+        if (!type_account(account)) {
+          handoff::remove_pass(uid);
+          break;
+        }
+        const auto typed = std::chrono::steady_clock::now();
+        while (!pass_claimed(uid) && std::chrono::steady_clock::now() - typed < claim_wait) {
+          std::this_thread::sleep_for(std::chrono::milliseconds {200});
+        }
+        if (!pass_claimed(uid) && attempt + 1 < typing_attempts) {
+          log_line("PLANK greeter sign-in: GDM did not take the account name; retrying\n");
+        }
       }
       std::this_thread::sleep_for(std::chrono::milliseconds {handoff::pass_lifetime_ms});
       // Unclaimed passes never outlive their lifetime, even though the PAM

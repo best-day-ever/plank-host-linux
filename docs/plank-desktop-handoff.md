@@ -22,11 +22,14 @@ moves a stream between clients of the same account.
 
 1. The stream is admitted on the greeter worker. The worker writes a one-shot
    pass `/run/plank/handoff/<uid>` (root, `0600`, directory `0700`) naming the
-   account and a `CLOCK_BOOTTIME` deadline 30 seconds out. The pass holds no
+   account and a `CLOCK_BOOTTIME` deadline 45 seconds out. The pass holds no
    secret.
 2. Once the stream is live, the worker opens the greeter's X display and sends
-   XTest key events: Escape, the account name, Return. Keysyms are resolved
-   against the greeter's keymap, so any layout works. Account names outside
+   XTest key events: Shift (wakes a blanked greeter, which drops keys while it
+   fades in), Escape, Control+A and BackSpace (clear the entry), the account
+   name, Return. Keysyms are resolved against the greeter's keymap, so any
+   layout works. If GDM has not claimed the pass six seconds later, the
+   sequence runs once more. Account names outside
    `[a-z0-9._-]` (at most 64 characters, not starting with `-`) are never typed.
 3. GDM starts a `gdm-password` conversation. `pam_plank_handoff.so`, listed
    first, claims the pass with an atomic rename (single use across GDM's

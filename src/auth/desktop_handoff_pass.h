@@ -31,7 +31,7 @@ namespace plank::auth::handoff {
   /// First line of every pass; a format change needs a new version.
   constexpr std::string_view pass_magic = "PLANK-HANDOFF-1";
   /// How long a pass stays valid after the worker writes it.
-  constexpr std::uint64_t pass_lifetime_ms = 30000;
+  constexpr std::uint64_t pass_lifetime_ms = 45000;
   /// Upper bound for a serialized pass.
   constexpr std::size_t maximum_pass_size = 512;
   /// Longest account name the worker will type into the greeter.
