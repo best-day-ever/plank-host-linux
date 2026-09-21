@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -46,6 +47,25 @@ namespace plank::auth {
      * @return Next challenge or terminal result.
      */
     virtual step_t respond(std::vector<std::string> responses) = 0;
+
+    /**
+     * @brief Request single-round-trip Kerberos GSSAPI admission.
+     *
+     * @param transaction_id Broker transaction identifier.
+     * @param username Operating-system account.
+     * @param remote_host Auditable client address.
+     * @param token Initiator context token bytes.
+     * @return Authenticated or denied; the default implementation denies.
+     */
+    virtual step_t begin_gssapi(std::uint64_t transaction_id, std::string_view username,
+                                std::string_view remote_host,
+                                std::span<const std::uint8_t> token) {
+      (void) transaction_id;
+      (void) username;
+      (void) remote_host;
+      (void) token;
+      return {step_t::state_e::denied, {}, phase_e::protocol, -1};
+    }
   };
 
   /**
@@ -92,6 +112,20 @@ namespace plank::auth {
      * @return Challenge or terminal result.
      */
     web_auth_step_t begin(std::string_view username, std::string_view remote_host);
+
+    /**
+     * @brief Admit one TLS peer with a Kerberos GSSAPI token in one round trip.
+     *
+     * The reply is authenticated (with a session token equivalent to the
+     * password path's) or denied; there is never a challenge.
+     *
+     * @param username Requested account.
+     * @param remote_host Normalized TLS peer address.
+     * @param token Decoded initiator context token.
+     * @return Terminal result.
+     */
+    web_auth_step_t begin_gssapi(std::string_view username, std::string_view remote_host,
+                                 std::span<const std::uint8_t> token);
 
     /**
      * @brief Advance an existing PAM conversation.

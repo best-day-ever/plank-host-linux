@@ -9,9 +9,12 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <charconv>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -22,7 +25,10 @@
 #include <thread>
 #include <vector>
 
+#include <systemd/sd-bus.h>
 #include <systemd/sd-login.h>
+#include <poll.h>
+#include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -682,6 +688,97 @@ namespace plank::session {
     if (!active || active->id != attestation->session.id ||
         active->uid != attestation->session.uid) return false;
     return active->session_class == "greeter" || active->uid == account_uid;
+  }
+
+  namespace {
+    constexpr char loginctl_path[] = "/usr/bin/loginctl";
+    constexpr auto lock_request_timeout = std::chrono::seconds {5};
+
+    bool lock_session_with_logind(const std::string &session_id) {
+      sd_bus *raw_bus = nullptr;
+      if (sd_bus_open_system(&raw_bus) < 0 || raw_bus == nullptr) return false;
+      std::unique_ptr<sd_bus, decltype(&sd_bus_flush_close_unref)> bus {
+        raw_bus, &sd_bus_flush_close_unref
+      };
+      sd_bus_set_method_call_timeout(
+        bus.get(),
+        std::chrono::duration_cast<std::chrono::microseconds>(lock_request_timeout).count()
+      );
+      sd_bus_error error = SD_BUS_ERROR_NULL;
+      sd_bus_message *reply = nullptr;
+      const int result = sd_bus_call_method(
+        bus.get(), "org.freedesktop.login1", "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager", "LockSession", &error, &reply, "s",
+        session_id.c_str()
+      );
+      sd_bus_message_unref(reply);
+      sd_bus_error_free(&error);
+      return result >= 0;
+    }
+
+    bool lock_session_with_loginctl(const std::string &session_id) {
+      if (access(loginctl_path, X_OK) != 0) return false;
+      const pid_t child = fork();
+      if (child == 0) {
+        const char *arguments[] = {loginctl_path, "lock-session", session_id.c_str(), nullptr};
+        execv(loginctl_path, const_cast<char *const *>(arguments));
+        std::_Exit(127);
+      }
+      if (child < 0) return false;
+      const auto deadline = std::chrono::steady_clock::now() + lock_request_timeout;
+      int status {};
+      while (std::chrono::steady_clock::now() < deadline) {
+        const pid_t result = waitpid(child, &status, WNOHANG);
+        if (result == child) return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        if (result < 0 && errno != EINTR) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds {50});
+      }
+      kill(child, SIGKILL);
+      waitpid(child, nullptr, 0);
+      return false;
+    }
+
+    std::atomic_uint64_t scheduled_lock_generation {};
+  }  // namespace
+
+  lock_status lock_attached_user_session() {
+    std::optional<update_t> attestation;
+    {
+      std::lock_guard lock {current_update_mutex};
+      attestation = current_update;
+    }
+    if (!attestation) return lock_status::not_applicable;
+    const auto active = active_seat0_graphical_session();
+    if (!active || active->id != attestation->session.id ||
+        active->uid != attestation->session.uid || active->session_class != "user" ||
+        active->uid == 0) {
+      return lock_status::not_applicable;
+    }
+    if (lock_session_with_logind(active->id) || lock_session_with_loginctl(active->id)) {
+      return lock_status::locked;
+    }
+    return lock_status::failed;
+  }
+
+  void schedule_attached_session_lock(std::chrono::milliseconds delay,
+                                      std::function<bool()> still_idle) {
+    // Detached rather than joined: the caller may hold stream-registry locks
+    // that the deadline check needs, so no path ever waits for this thread.
+    const auto generation = ++scheduled_lock_generation;
+    std::thread {[generation, delay, still_idle = std::move(still_idle)]() {
+      std::this_thread::sleep_for(delay);
+      if (scheduled_lock_generation.load(std::memory_order_acquire) != generation ||
+          (still_idle && !still_idle())) {
+        return;
+      }
+      if (lock_attached_user_session() == lock_status::failed) {
+        // This file is shared with the supervisor, which has no Boost log
+        // sink; stderr reaches the worker log. No account data is written.
+        static constexpr char message[] =
+          "PLANK lock_on_disconnect: logind refused to lock the desktop session\n";
+        [[maybe_unused]] const auto ignored = write(STDERR_FILENO, message, sizeof(message) - 1);
+      }
+    }}.detach();
   }
 
   std::uint64_t desktop_generation() {

@@ -1014,6 +1014,8 @@ namespace stream {
 
   namespace session {
     std::atomic_uint running_sessions;  ///< Running sessions.
+    /// Delay before lock_on_disconnect locks the desktop, absorbing reconnects and takeovers.
+    constexpr std::chrono::milliseconds lock_on_disconnect_grace {5000};
 
     /**
      * @brief Platform handle returned from stream setup.
@@ -1145,6 +1147,14 @@ namespace stream {
         }
 
         platf::streaming_will_stop();
+        if (config::sunshine.lock_on_disconnect && session.authentication_session) {
+          // The final authenticated stream is gone. Lock the captured user
+          // desktop unless its owner reconnects (or takes over) within the
+          // grace period; only the desktop owner can launch a new stream.
+          plank::session::schedule_attached_session_lock(lock_on_disconnect_grace, []() {
+            return running_sessions.load() == 0 && !session_stream::launch_session_pending();
+          });
+        }
         if (session.plank_display_lease) {
           const auto released = plank::session::release_display_lease(
             session.plank_display_lease_uid

@@ -861,6 +861,7 @@ namespace config {
 #endif
     false,  // PLANK mDNS advertisement
     "physical",  // PLANK startup display policy
+    false,  // PLANK lock the captured desktop after the last stream
   };
 
   /**
@@ -1553,6 +1554,15 @@ namespace config {
     // media worker accepts the shared configuration without owning auth policy.
     bool broker_allow_root_login = false;
     bool_f(vars, "allow_root_login", broker_allow_root_login);
+    // Kerberos GSSAPI admission settings are likewise enforced only by the
+    // root broker; consume them so they are not reported as unrecognized.
+    std::string broker_gssapi_keytab;
+    string_f(vars, "gssapi_keytab", broker_gssapi_keytab);
+    std::string broker_gssapi_required_indicator;
+    string_f(vars, "gssapi_required_indicator", broker_gssapi_required_indicator);
+    std::string broker_gssapi_pam_service;
+    string_f(vars, "gssapi_pam_service", broker_gssapi_pam_service);
+    bool_f(vars, "lock_on_disconnect", sunshine.lock_on_disconnect);
 
     string_f(vars, "audio_sink", audio.sink);
 

@@ -43,6 +43,7 @@
 
 // local includes
 #include "config.h"
+#include "auth/gssapi_admission.h"
 #include "auth/web_auth.h"
 #include "display_device.h"
 #include "globals.h"
@@ -407,7 +408,8 @@ namespace nvhttp {
    * @brief Begin a network PAM conversation.
    *
    * @param response HTTPS response.
-   * @param request HTTPS request carrying only a username.
+   * @param request HTTPS request carrying a username and, for brokered
+   * Kerberos admission, an optional base64 `gssapi_token`.
    */
   void auth_start(const resp_https_t &response, const req_https_t &request) {
     if (!web_auth) {
@@ -422,6 +424,24 @@ namespace nvhttp {
       return;
     }
     const auto username = body["username"].get<std::string>();
+    if (body.contains("gssapi_token")) {
+      // Brokered admission: one Kerberos AP-REQ, one round trip, the same
+      // authenticated/denied reply shapes as the password path. Malformed or
+      // oversize tokens are denied without contacting the PAM broker.
+      if (!body["gssapi_token"].is_string()) {
+        write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request,
+                        {{"state", "invalid-request"}});
+        return;
+      }
+      auto token = plank::auth::gssapi::decode_token(body["gssapi_token"].get_ref<const std::string &>());
+      plank::auth::web_auth_step_t step;
+      if (token) {
+        step = web_auth->begin_gssapi(username, authentication_peer(request), *token);
+        explicit_bzero(token->data(), token->size());
+      }
+      write_auth_json(response, SimpleWeb::StatusCode::success_ok, auth_step_json(step));
+      return;
+    }
     const auto step = web_auth->begin(username, authentication_peer(request));
     write_auth_json(response, SimpleWeb::StatusCode::success_ok, auth_step_json(step));
   }

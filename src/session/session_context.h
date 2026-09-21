@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -135,6 +136,36 @@ namespace plank::session {
 
   /** Release a temporary physical-display lease when its final stream ends. */
   display_request_status release_display_lease(uid_t account_uid);
+
+  /** Outcome of a desktop lock request. */
+  enum class lock_status {
+    locked,  ///< logind accepted the lock request.
+    not_applicable,  ///< No attached, active user session (for example the GDM greeter).
+    failed,  ///< logind and the loginctl fallback both failed.
+  };
+
+  /**
+   * Lock the attached graphical user session through logind.
+   *
+   * Only the supervisor-attested session that is still the active seat0
+   * session is locked, and only when its class is `user`. The request uses
+   * org.freedesktop.login1.Manager.LockSession and falls back to
+   * `loginctl lock-session <id>`.
+   */
+  lock_status lock_attached_user_session();
+
+  /**
+   * Lock the attached user session after a grace period unless streaming resumed.
+   *
+   * A later call supersedes any pending request. The lock is skipped when
+   * `still_idle` returns false at the deadline, so a reconnect or takeover by
+   * the desktop owner does not land on a lock screen.
+   *
+   * @param delay Grace period before locking.
+   * @param still_idle Deadline check; true when no stream or launch is active.
+   */
+  void schedule_attached_session_lock(std::chrono::milliseconds delay,
+                                      std::function<bool()> still_idle);
 
   /** Begin monitoring the inherited, root-authenticated supervisor channel. */
   std::unique_ptr<supervisor_control_t> start_supervisor_control(

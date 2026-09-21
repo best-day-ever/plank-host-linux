@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -64,6 +65,24 @@ namespace plank::auth {
                  std::string_view tty);
 
     /**
+     * @brief Obtain a broker connection and request single-round-trip GSSAPI admission.
+     *
+     * The broker accepts the Kerberos initiator token, then runs PAM account,
+     * credential and session phases without prompting. A challenge reply is a
+     * protocol violation and is reported as a denial.
+     *
+     * @param transaction_id Nonzero transaction identifier.
+     * @param username Operating-system account.
+     * @param remote_host Auditable source host label.
+     * @param tty Logical remote service terminal.
+     * @param token Initiator context token bytes.
+     * @return Terminal authenticated or denied result.
+     */
+    step_t begin_gssapi(std::uint64_t transaction_id, std::string_view username,
+                        std::string_view remote_host, std::string_view tty,
+                        std::span<const std::uint8_t> token);
+
+    /**
      * @brief Submit one response per preceding PAM message.
      *
      * @param responses Prompt responses; informational entries must be empty.
@@ -99,6 +118,18 @@ namespace plank::auth {
      * @return Decoded broker step.
      */
     step_t read_step_for_test();
+
+    /**
+     * @brief Send a GSSAPI begin request on an adopted test socket.
+     *
+     * @param username Operating-system account.
+     * @param remote_host Auditable source host label.
+     * @param tty Logical remote service terminal.
+     * @param token Initiator context token bytes.
+     * @return Terminal result, or protocol denial for a challenge.
+     */
+    step_t submit_gssapi_for_test(std::string_view username, std::string_view remote_host,
+                                  std::string_view tty, std::span<const std::uint8_t> token);
 #endif
 
   private:
@@ -108,6 +139,14 @@ namespace plank::auth {
      * @return Decoded step, or protocol denial on malformed input.
      */
     step_t read_step();
+
+    /**
+     * @brief Send an encoded GSSAPI begin payload and read its terminal result.
+     *
+     * @param payload Encoded `begin_gssapi` payload.
+     * @return Terminal result; a challenge is converted to a protocol denial.
+     */
+    step_t submit_gssapi(std::vector<std::uint8_t> payload);
 
     int descriptor_ = -1;  ///< Connected Unix socket.
     std::uint64_t transaction_id_ = 0;  ///< Active transaction identifier.

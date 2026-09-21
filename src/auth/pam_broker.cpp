@@ -3,6 +3,7 @@
  * @brief Privileged PLANK PAM conversation broker.
  */
 
+#include "gssapi_acceptor.h"
 #include "pam_broker_protocol.h"
 #include "pam_broker_policy.h"
 
@@ -94,6 +95,7 @@ namespace {
   struct conversation_t {
     int descriptor;  ///< Connected unprivileged broker client.
     std::uint64_t transaction_id;  ///< Active transaction identifier.
+    bool interactive;  ///< False after GSSAPI admission: no prompt may reach the caller.
   };
 
   /**
@@ -185,6 +187,30 @@ namespace {
       return PAM_CONV_ERR;
     }
     auto &conversation = *static_cast<conversation_t *>(application_data);
+    if (!conversation.interactive) {
+      // A GSSAPI admission is a single round trip. Informational messages are
+      // dropped; any prompt (for example an expired-password change) fails the
+      // PAM phase closed instead of reaching the network caller.
+      if (messages == nullptr || message_count <= 0 ||
+          message_count > static_cast<int>(auth::maximum_fields)) {
+        return PAM_CONV_ERR;
+      }
+      for (int index = 0; index < message_count; ++index) {
+        if (messages[index] == nullptr ||
+            (messages[index]->msg_style != PAM_TEXT_INFO &&
+             messages[index]->msg_style != PAM_ERROR_MSG)) {
+          return PAM_CONV_ERR;
+        }
+      }
+      auto allocated = static_cast<pam_response *>(
+        calloc(static_cast<std::size_t>(message_count), sizeof(pam_response))
+      );
+      if (allocated == nullptr) {
+        return PAM_BUF_ERR;
+      }
+      *responses = allocated;
+      return PAM_SUCCESS;
+    }
     std::vector<std::uint8_t> challenge_payload;
     if (!encode_challenge(messages, message_count, challenge_payload) ||
         !auth::write_message(conversation.descriptor, {
@@ -265,24 +291,6 @@ namespace {
   }
 
   /**
-   * @brief Parse the username, remote host, and logical TTY from a begin request.
-   *
-   * @param payload Begin payload.
-   * @param username Receives the account name.
-   * @param remote_host Receives the source host label.
-   * @param tty Receives the logical service terminal.
-   * @return True when exactly three valid fields were supplied.
-   */
-  bool decode_begin(std::span<const std::uint8_t> payload, std::string &username,
-                    std::string &remote_host, std::string &tty) {
-    std::size_t offset = 0;
-    return auth::read_string(payload, offset, username) && !username.empty() &&
-           username.size() <= 256 && auth::read_string(payload, offset, remote_host) &&
-           remote_host.size() <= 256 && auth::read_string(payload, offset, tty) &&
-           tty.size() <= 128 && offset == payload.size();
-  }
-
-  /**
    * @brief Invoke one PAM operation and send its failure result.
    *
    * @tparam Operation Callable returning a PAM status.
@@ -305,34 +313,68 @@ namespace {
   /**
    * @brief Authenticate one caller and retain its PAM session until disconnect.
    *
+   * A `begin` request runs the full PAM stack of the password service. A
+   * `begin_gssapi` request is first admitted by Kerberos GSSAPI (keytab,
+   * channel bindings, realm, local-name and auth-indicator policy); it then
+   * skips `pam_authenticate()` and runs account, credential and session
+   * phases under the separate GSSAPI PAM service, exactly as sshd does for
+   * GSSAPIAuthentication.
+   *
    * @param descriptor Connected Unix socket.
    * @param peer_uid Authenticated local peer UID.
+   * @param policy Administrator authentication policy.
    */
-  void serve_client(int descriptor, uid_t peer_uid, bool allow_root_login) {
+  void serve_client(int descriptor, uid_t peer_uid, const auth::broker_policy_t &policy) {
     descriptor_t connection {descriptor};
     auth::message_t begin;
     if (!auth::read_message(connection.get(), begin) ||
-        begin.type != auth::message_type_e::begin) {
+        (begin.type != auth::message_type_e::begin &&
+         begin.type != auth::message_type_e::begin_gssapi)) {
       return;
     }
 
-    std::string username;
-    std::string remote_host;
-    std::string tty;
-    if (!decode_begin(begin.payload, username, remote_host, tty)) {
+    const bool gssapi = begin.type == auth::message_type_e::begin_gssapi;
+    auth::begin_request_t request;
+    const bool decoded = auth::decode_begin(begin.payload, gssapi, request);
+    if (!begin.payload.empty()) {
+      explicit_bzero(begin.payload.data(), begin.payload.size());
+    }
+    if (!decoded) {
       send_result(connection.get(), begin.transaction_id, auth::phase_e::protocol, PAM_SYSTEM_ERR);
       return;
     }
+    const std::string &username = request.username;
+    const std::string &remote_host = request.remote_host;
+    const std::string &tty = request.tty;
+    const bool allow_root_login = policy.allow_root_login;
     if (username == "root" && !allow_root_login) {
       send_result(connection.get(), begin.transaction_id, auth::phase_e::account, PAM_PERM_DENIED);
       std::clog << "PLANK PAM denied root request from uid " << peer_uid << '\n';
       return;
     }
 
-    conversation_t state {connection.get(), begin.transaction_id};
+    std::string service_name {pam_service};
+    if (gssapi) {
+      const auto acceptance = auth::gssapi::accept_initiator(policy, request.gssapi_token, username);
+      explicit_bzero(request.gssapi_token.data(), request.gssapi_token.size());
+      if (acceptance.result != auth::gssapi::admission_e::admitted) {
+        send_result(connection.get(), begin.transaction_id, auth::phase_e::authenticate,
+                    PAM_AUTH_ERR);
+        std::clog << "PLANK GSSAPI denied account " << username << " from " << remote_host
+                  << " (initiator " << (acceptance.initiator.empty() ? "-" : acceptance.initiator)
+                  << "): " << auth::gssapi::describe(acceptance.result)
+                  << (acceptance.detail.empty() ? "" : ": ") << acceptance.detail << '\n';
+        return;
+      }
+      std::clog << "PLANK GSSAPI admitted initiator " << acceptance.initiator
+                << " as account " << username << " from " << remote_host << '\n';
+      service_name = policy.gssapi_pam_service;
+    }
+
+    conversation_t state {connection.get(), begin.transaction_id, !gssapi};
     const pam_conv callback {converse, &state};
     pam_handle_t *handle = nullptr;
-    int status = pam_start(pam_service.data(), username.c_str(), &callback, &handle);
+    int status = pam_start(service_name.c_str(), username.c_str(), &callback, &handle);
     if (status != PAM_SUCCESS) {
       send_result(connection.get(), begin.transaction_id, auth::phase_e::start, status);
       return;
@@ -344,6 +386,9 @@ namespace {
         pam_set_item(handle, PAM_TTY, tty.c_str()) != PAM_SUCCESS) {
       status = PAM_SYSTEM_ERR;
       send_result(connection.get(), begin.transaction_id, auth::phase_e::start, status);
+    } else if (gssapi) {
+      // Kerberos already authenticated the initiator; PAM authorizes it.
+      status = PAM_SUCCESS;
     } else {
       status = run_phase(connection.get(), begin.transaction_id, auth::phase_e::authenticate,
                          [&]() { return pam_authenticate(handle, 0); });
@@ -366,7 +411,7 @@ namespace {
     if (status == PAM_SUCCESS) {
       send_result(connection.get(), begin.transaction_id, auth::phase_e::authenticated, PAM_SUCCESS);
       std::clog << "PLANK PAM authenticated account " << username
-                << " for local uid " << peer_uid << '\n';
+                << " for local uid " << peer_uid << " via " << service_name << '\n';
       auth::message_t cancel;
       if (auth::read_message(connection.get(), cancel) &&
           (cancel.type != auth::message_type_e::cancel ||
@@ -375,7 +420,8 @@ namespace {
       }
     } else {
       std::clog << "PLANK PAM denied account " << username
-                << " for local uid " << peer_uid << " with status " << status << '\n';
+                << " for local uid " << peer_uid << " via " << service_name
+                << " with status " << status << '\n';
     }
 
     if (session_open) {
@@ -544,11 +590,27 @@ int main(int argc, char **argv) {
     std::cerr << "Unable to load PAM broker policy: " << policy_error << '\n';
     return 4;
   }
+  std::string gssapi_error;
+  const bool gssapi_ready = policy->gssapi_enabled() &&
+                            auth::gssapi::keytab_is_private(policy->gssapi_keytab, gssapi_error) &&
+                            auth::gssapi::certificate_digest(policy->tls_certificate, gssapi_error);
   if (check_config) {
     std::cout << "allow_root_login="
-              << (policy->allow_root_login ? "true" : "false") << '\n';
-    return 0;
+              << (policy->allow_root_login ? "true" : "false") << '\n'
+              << "gssapi=" << (!policy->gssapi_enabled() ? "disabled" : gssapi_ready ? "enabled" : "misconfigured")
+              << '\n';
+    if (policy->gssapi_enabled()) {
+      std::cout << "gssapi_keytab=" << policy->gssapi_keytab << '\n'
+                << "gssapi_required_indicator=" << policy->gssapi_required_indicator << '\n'
+                << "gssapi_pam_service=" << policy->gssapi_pam_service << '\n'
+                << "channel_binding_certificate=" << policy->tls_certificate << '\n';
+    }
+    if (!gssapi_error.empty()) {
+      std::cout << "gssapi_error=" << gssapi_error << '\n';
+    }
+    return policy->gssapi_enabled() && !gssapi_ready ? 6 : 0;
   }
+  auth::gssapi::configure_replay_cache();
 
   const int listener = create_listener(socket_path);
   if (listener < 0) {
@@ -563,7 +625,12 @@ int main(int argc, char **argv) {
   child_action.sa_flags = 0;
   sigaction(SIGCHLD, &child_action, nullptr);
   std::clog << "PLANK PAM broker listening on " << socket_path
-            << "; root login " << (policy->allow_root_login ? "allowed" : "denied") << '\n';
+            << "; root login " << (policy->allow_root_login ? "allowed" : "denied")
+            << "; GSSAPI admission "
+            << (!policy->gssapi_enabled() ? "disabled" :
+                gssapi_ready                ? "enabled via PAM service " + policy->gssapi_pam_service :
+                                              "misconfigured (" + gssapi_error + "); requests are denied")
+            << '\n';
 
   while (!stopping) {
     if (child_exited) {
@@ -608,7 +675,7 @@ int main(int argc, char **argv) {
       std::signal(SIGTERM, SIG_DFL);
       std::signal(SIGCHLD, SIG_DFL);
       sigprocmask(SIG_SETMASK, &previous_signals, nullptr);
-      serve_client(client, credentials.uid, policy->allow_root_login);
+      serve_client(client, credentials.uid, *policy);
       std::_Exit(0);
     }
 

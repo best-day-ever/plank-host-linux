@@ -112,15 +112,40 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_target_properties(sunshine PROPERTIES OUTPUT_NAME "plank-host")
 
     find_library(PLANK_PAM_LIBRARY NAMES pam REQUIRED)
+    # Kerberos GSSAPI admission (MIT krb5) is linked only into the root broker;
+    # the network-facing media worker never loads Kerberos or keytab code.
+    find_library(PLANK_GSSAPI_LIBRARY NAMES gssapi_krb5 REQUIRED)
+    find_library(PLANK_KRB5_LIBRARY NAMES krb5 REQUIRED)
+    find_path(PLANK_GSSAPI_INCLUDE_DIR NAMES gssapi/gssapi_ext.h REQUIRED)
     add_executable(plank-pam-broker
             "${CMAKE_SOURCE_DIR}/src/auth/pam_broker.cpp"
+            "${CMAKE_SOURCE_DIR}/src/auth/gssapi_acceptor.cpp"
+            "${CMAKE_SOURCE_DIR}/src/auth/gssapi_acceptor.h"
+            "${CMAKE_SOURCE_DIR}/src/auth/gssapi_admission.h"
             "${CMAKE_SOURCE_DIR}/src/auth/pam_broker_protocol.h")
-    target_link_libraries(plank-pam-broker PRIVATE ${PLANK_PAM_LIBRARY})
+    target_include_directories(plank-pam-broker PRIVATE "${PLANK_GSSAPI_INCLUDE_DIR}")
+    target_link_libraries(plank-pam-broker PRIVATE
+            ${PLANK_PAM_LIBRARY}
+            ${PLANK_GSSAPI_LIBRARY}
+            ${PLANK_KRB5_LIBRARY}
+            OpenSSL::Crypto)
     target_compile_options(plank-pam-broker PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
     target_link_options(plank-pam-broker PRIVATE ${SUNSHINE_LINK_OPTIONS})
     install(TARGETS plank-pam-broker
             RUNTIME DESTINATION bin
             COMPONENT sunshine)
+
+    # Operator probe for brokered admission; built, not installed. See
+    # docs/plank-gssapi-admission.md.
+    add_executable(plank-probe-gssapi
+            "${CMAKE_SOURCE_DIR}/tools/plank_probe_gssapi.cpp"
+            "${CMAKE_SOURCE_DIR}/src/auth/gssapi_acceptor.cpp")
+    target_include_directories(plank-probe-gssapi PRIVATE "${CMAKE_SOURCE_DIR}" "${PLANK_GSSAPI_INCLUDE_DIR}")
+    target_link_libraries(plank-probe-gssapi PRIVATE
+            ${PLANK_GSSAPI_LIBRARY}
+            ${PLANK_KRB5_LIBRARY}
+            OpenSSL::Crypto)
+    target_compile_options(plank-probe-gssapi PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
 
     add_executable(plank-host-supervisor
             "${CMAKE_SOURCE_DIR}/src/session/host_supervisor.cpp"

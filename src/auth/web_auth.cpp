@@ -34,6 +34,12 @@ namespace plank::auth {
         return client_.respond(std::move(responses));
       }
 
+      step_t begin_gssapi(std::uint64_t transaction_id, std::string_view username,
+                          std::string_view remote_host,
+                          std::span<const std::uint8_t> token) override {
+        return client_.begin_gssapi(transaction_id, username, remote_host, "plank", token);
+      }
+
     private:
       pam_client_t client_;  ///< Local broker connection.
     };
@@ -92,6 +98,40 @@ namespace plank::auth {
       {},
     };
     return retain(std::move(step), std::move(id), std::move(entry));
+  }
+
+  web_auth_step_t web_auth_manager_t::begin_gssapi(std::string_view username,
+                                                   std::string_view remote_host,
+                                                   std::span<const std::uint8_t> token) {
+    std::lock_guard lock {mutex_};
+    expire_locked();
+    if (username.empty() || username.size() > 256 || remote_host.empty() ||
+        remote_host.size() > 256 || token.empty() || token.size() > maximum_gssapi_token_size ||
+        conversations_.size() + tokens_.size() >= 32) {
+      return {};
+    }
+    std::shared_ptr<conversation_i> conversation = factory_();
+    if (!conversation) {
+      return {};
+    }
+    const auto transaction_id = next_transaction_++;
+    if (next_transaction_ == 0) {
+      next_transaction_ = 1;
+    }
+    auto step = conversation->begin_gssapi(transaction_id, username, remote_host, token);
+    if (step.state != step_t::state_e::authenticated) {
+      // Single round trip: a challenge is never retained for GSSAPI admission.
+      return {step_t::state_e::denied, {}, {}, {}, step.phase,
+              step.state == step_t::state_e::denied ? step.pam_status : -1};
+    }
+    entry_t entry {
+      std::string {remote_host},
+      std::string {username},
+      now_() + conversation_lifetime_,
+      std::move(conversation),
+      {},
+    };
+    return retain(std::move(step), {}, std::move(entry));
   }
 
   web_auth_step_t web_auth_manager_t::respond(std::string_view conversation_id,

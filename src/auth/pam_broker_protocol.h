@@ -8,6 +8,7 @@
 #include <array>
 #include <bit>
 #include <cerrno>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -26,6 +27,10 @@ namespace plank::auth {
   constexpr std::size_t maximum_payload_size = 64U * 1024U;  ///< Per-message allocation limit.
   constexpr std::size_t maximum_field_size = 4096U;  ///< Per-string allocation limit.
   constexpr std::size_t maximum_fields = 64U;  ///< Per-message list-entry limit.
+  constexpr std::size_t maximum_gssapi_token_size = 32U * 1024U;  ///< Kerberos AP-REQ (with PAC) byte limit.
+  constexpr std::size_t maximum_username_size = 256U;  ///< Account-name byte limit in begin requests.
+  constexpr std::size_t maximum_remote_host_size = 256U;  ///< Remote-host label byte limit in begin requests.
+  constexpr std::size_t maximum_tty_size = 128U;  ///< Logical TTY byte limit in begin requests.
 
   /**
    * @brief Messages exchanged between Sunshine and the privileged broker.
@@ -36,6 +41,7 @@ namespace plank::auth {
     response = 3,  ///< Return responses corresponding to one challenge.
     result = 4,  ///< Report authentication success or a PAM error.
     cancel = 5,  ///< Close an authenticated PAM session.
+    begin_gssapi = 6,  ///< Admit a Kerberos GSSAPI initiator, then run account and session phases.
   };
 
   /**
@@ -190,6 +196,110 @@ namespace plank::auth {
   }
 
   /**
+   * @brief Append one length-prefixed opaque byte field to a payload.
+   *
+   * Unlike @ref append_string, the field may contain NUL bytes.
+   *
+   * @param output Destination payload.
+   * @param value Field bytes.
+   * @param maximum_size Field-specific size limit.
+   * @return True when the field was within protocol limits.
+   */
+  inline bool append_bytes(std::vector<std::uint8_t> &output, std::span<const std::uint8_t> value,
+                           std::size_t maximum_size) {
+    if (value.size() > maximum_size ||
+        output.size() > maximum_payload_size - sizeof(std::uint32_t) ||
+        value.size() > maximum_payload_size - sizeof(std::uint32_t) - output.size()) {
+      return false;
+    }
+    append_integer(output, static_cast<std::uint32_t>(value.size()));
+    output.insert(output.end(), value.begin(), value.end());
+    return true;
+  }
+
+  /**
+   * @brief Read one bounded length-prefixed opaque byte field.
+   *
+   * @param input Source payload.
+   * @param offset Updated byte offset.
+   * @param value Receives the field bytes.
+   * @param maximum_size Field-specific size limit.
+   * @return True when the field was complete and within the limit.
+   */
+  inline bool read_bytes(std::span<const std::uint8_t> input, std::size_t &offset,
+                         std::vector<std::uint8_t> &value, std::size_t maximum_size) {
+    std::uint32_t length;
+    if (!read_integer(input, offset, length) || length > maximum_size ||
+        offset > input.size() || input.size() - offset < length) {
+      return false;
+    }
+    value.assign(input.begin() + static_cast<std::ptrdiff_t>(offset),
+                 input.begin() + static_cast<std::ptrdiff_t>(offset + length));
+    offset += length;
+    return true;
+  }
+
+  /**
+   * @brief Fields shared by the password and GSSAPI begin requests.
+   */
+  struct begin_request_t {
+    std::string username;  ///< Requested operating-system account.
+    std::string remote_host;  ///< Auditable source host label.
+    std::string tty;  ///< Logical service terminal.
+    std::vector<std::uint8_t> gssapi_token;  ///< Initiator context token; empty for `begin`.
+  };
+
+  /**
+   * @brief Encode a `begin` (no token) or `begin_gssapi` (token) payload.
+   *
+   * The `begin_gssapi` payload is the `begin` payload followed by one
+   * length-prefixed opaque field holding the initiator's context token.
+   *
+   * @param request Request fields.
+   * @param gssapi Whether to append the GSSAPI token field.
+   * @param payload Receives the payload.
+   * @return True when every field is within protocol limits.
+   */
+  inline bool encode_begin(const begin_request_t &request, bool gssapi,
+                           std::vector<std::uint8_t> &payload) {
+    payload.clear();
+    if (request.username.empty() || request.username.size() > maximum_username_size ||
+        request.remote_host.size() > maximum_remote_host_size ||
+        request.tty.size() > maximum_tty_size ||
+        (gssapi && request.gssapi_token.empty()) ||
+        (!gssapi && !request.gssapi_token.empty())) {
+      return false;
+    }
+    return append_string(payload, request.username) &&
+           append_string(payload, request.remote_host) &&
+           append_string(payload, request.tty) &&
+           (!gssapi || append_bytes(payload, request.gssapi_token, maximum_gssapi_token_size));
+  }
+
+  /**
+   * @brief Decode a `begin` or `begin_gssapi` payload exactly.
+   *
+   * @param payload Encoded payload.
+   * @param gssapi Whether a nonempty token field must follow the strings.
+   * @param request Receives the decoded fields.
+   * @return True when the payload was exact and every field was valid.
+   */
+  inline bool decode_begin(std::span<const std::uint8_t> payload, bool gssapi,
+                           begin_request_t &request) {
+    std::size_t offset = 0;
+    request = {};
+    return read_string(payload, offset, request.username) && !request.username.empty() &&
+           request.username.size() <= maximum_username_size &&
+           read_string(payload, offset, request.remote_host) &&
+           request.remote_host.size() <= maximum_remote_host_size &&
+           read_string(payload, offset, request.tty) && request.tty.size() <= maximum_tty_size &&
+           (!gssapi || (read_bytes(payload, offset, request.gssapi_token,
+                                   maximum_gssapi_token_size) &&
+                        !request.gssapi_token.empty())) &&
+           offset == payload.size();
+  }
+
+  /**
    * @brief Serialize one complete broker message.
    *
    * @param message Decoded message.
@@ -233,7 +343,7 @@ namespace plank::auth {
         from_little(header.transaction_id) == 0 || payload_length > maximum_payload_size ||
         frame.size() != sizeof(header) + payload_length ||
         type < static_cast<std::uint16_t>(message_type_e::begin) ||
-        type > static_cast<std::uint16_t>(message_type_e::cancel)) {
+        type > static_cast<std::uint16_t>(message_type_e::begin_gssapi)) {
       return false;
     }
     message.type = static_cast<message_type_e>(type);

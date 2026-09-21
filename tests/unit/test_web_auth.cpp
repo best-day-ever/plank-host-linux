@@ -1,6 +1,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,6 +21,7 @@ namespace {
     std::string username;
     std::string remote_host;
     std::vector<std::string> responses;
+    std::vector<std::uint8_t> token;
     int destroyed = 0;
   };
 
@@ -58,6 +60,35 @@ namespace {
 
   private:
     std::shared_ptr<fake_state_t> state_;
+  };
+
+  class fake_gssapi_conversation_t: public fake_conversation_t {
+  public:
+    fake_gssapi_conversation_t(std::shared_ptr<fake_state_t> state, auth::step_t::state_e result):
+        fake_conversation_t {state},
+        state_ {std::move(state)},
+        result_ {result} {
+    }
+
+    auth::step_t begin_gssapi(std::uint64_t transaction_id, std::string_view username,
+                              std::string_view remote_host,
+                              std::span<const std::uint8_t> token) override {
+      state_->transaction_id = transaction_id;
+      state_->username = username;
+      state_->remote_host = remote_host;
+      state_->token.assign(token.begin(), token.end());
+      if (result_ == auth::step_t::state_e::authenticated) {
+        return {result_, {}, auth::phase_e::authenticated, 0};
+      }
+      if (result_ == auth::step_t::state_e::challenge) {
+        return {result_, {{1, "Password: "}}, auth::phase_e::authenticate, 0};
+      }
+      return {result_, {}, auth::phase_e::authenticate, 7};
+    }
+
+  private:
+    std::shared_ptr<fake_state_t> state_;
+    auth::step_t::state_e result_;
   };
 }  // namespace
 
@@ -170,4 +201,82 @@ TEST(WebAuthManager, ResolvesOnlyValidOperatingSystemAccounts) {
   embedded_nul.push_back('\0');
   embedded_nul.append("another-account");
   EXPECT_FALSE(auth::account_uid(embedded_nul));
+}
+
+TEST(WebAuthManager, GssapiAdmissionIssuesPeerBoundTokenInOneRoundTrip) {
+  auto state = std::make_shared<fake_state_t>();
+  auth::web_auth_manager_t manager {
+    [state]() {
+      return std::make_unique<fake_gssapi_conversation_t>(state, auth::step_t::state_e::authenticated);
+    },
+    [](std::size_t) { return "token"; },
+  };
+  const std::vector<std::uint8_t> token {0x60, 0x01, 0x00};
+  const auto step = manager.begin_gssapi("test-user", "198.51.100.250", token);
+  ASSERT_EQ(step.state, auth::step_t::state_e::authenticated);
+  EXPECT_EQ(step.session_token, "token");
+  EXPECT_TRUE(step.conversation_id.empty());
+  EXPECT_EQ(state->username, "test-user");
+  EXPECT_EQ(state->token, token);
+  EXPECT_NE(state->transaction_id, 0);
+  EXPECT_EQ(*manager.identity("token", "198.51.100.250"), "test-user");
+  EXPECT_FALSE(manager.authorize("token", "198.51.100.99"));
+  {
+    auto session = manager.claim("token", "198.51.100.250");
+    ASSERT_TRUE(session);
+    EXPECT_EQ(state->destroyed, 0);
+  }
+  EXPECT_EQ(state->destroyed, 1);
+  EXPECT_FALSE(manager.claim("token", "198.51.100.250"));
+}
+
+TEST(WebAuthManager, GssapiDenialAndUnexpectedChallengeRetainNothing) {
+  for (const auto result : {auth::step_t::state_e::denied, auth::step_t::state_e::challenge}) {
+    auto state = std::make_shared<fake_state_t>();
+    auth::web_auth_manager_t manager {
+      [state, result]() { return std::make_unique<fake_gssapi_conversation_t>(state, result); },
+      [](std::size_t) { return "identifier"; },
+    };
+    const std::vector<std::uint8_t> token {1};
+    const auto step = manager.begin_gssapi("test-user", "client", token);
+    EXPECT_EQ(step.state, auth::step_t::state_e::denied);
+    EXPECT_TRUE(step.session_token.empty());
+    EXPECT_TRUE(step.conversation_id.empty());
+    EXPECT_TRUE(step.prompts.empty());
+    EXPECT_EQ(state->destroyed, 1);
+    EXPECT_FALSE(manager.authorize("identifier", "client"));
+    EXPECT_EQ(manager.respond("identifier", "client", {"secret"}).state,
+              auth::step_t::state_e::denied);
+  }
+}
+
+TEST(WebAuthManager, GssapiRejectsInvalidRequestsWithoutContactingBroker) {
+  auto state = std::make_shared<fake_state_t>();
+  int created = 0;
+  auth::web_auth_manager_t manager {
+    [state, &created]() {
+      ++created;
+      return std::make_unique<fake_gssapi_conversation_t>(state, auth::step_t::state_e::authenticated);
+    },
+    [](std::size_t) { return "token"; },
+  };
+  const std::vector<std::uint8_t> token {1};
+  EXPECT_EQ(manager.begin_gssapi("", "client", token).state, auth::step_t::state_e::denied);
+  EXPECT_EQ(manager.begin_gssapi("test-user", "", token).state, auth::step_t::state_e::denied);
+  EXPECT_EQ(manager.begin_gssapi("test-user", "client", {}).state, auth::step_t::state_e::denied);
+  const std::vector<std::uint8_t> oversize(auth::maximum_gssapi_token_size + 1, 0);
+  EXPECT_EQ(manager.begin_gssapi("test-user", "client", oversize).state,
+            auth::step_t::state_e::denied);
+  EXPECT_EQ(created, 0);
+}
+
+TEST(WebAuthManager, DefaultConversationDeniesGssapi) {
+  auto state = std::make_shared<fake_state_t>();
+  auth::web_auth_manager_t manager {
+    [state]() { return std::make_unique<fake_conversation_t>(state); },
+    [](std::size_t) { return "token"; },
+  };
+  const std::vector<std::uint8_t> token {1};
+  EXPECT_EQ(manager.begin_gssapi("test-user", "client", token).state,
+            auth::step_t::state_e::denied);
 }

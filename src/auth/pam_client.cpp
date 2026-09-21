@@ -85,6 +85,43 @@ namespace plank::auth {
     return read_step();
   }
 
+  step_t pam_client_t::begin_gssapi(std::uint64_t transaction_id, std::string_view username,
+                                    std::string_view remote_host, std::string_view tty,
+                                    std::span<const std::uint8_t> token) {
+    close();
+    begin_request_t request {
+      std::string {username},
+      std::string {remote_host},
+      std::string {tty},
+      std::vector<std::uint8_t>(token.begin(), token.end()),
+    };
+    std::vector<std::uint8_t> payload;
+    const bool encoded = transaction_id != 0 && encode_begin(request, true, payload);
+    explicit_bzero(request.gssapi_token.data(), request.gssapi_token.size());
+    if (!encoded) {
+      return protocol_error();
+    }
+    descriptor_ = broker_channel::request_connection();
+    if (descriptor_ < 0) {
+      return protocol_error();
+    }
+    transaction_id_ = transaction_id;
+    return submit_gssapi(std::move(payload));
+  }
+
+  step_t pam_client_t::submit_gssapi(std::vector<std::uint8_t> payload) {
+    if (!write_message(descriptor_, {message_type_e::begin_gssapi, transaction_id_, std::move(payload)})) {
+      close();
+      return protocol_error();
+    }
+    auto step = read_step();
+    if (step.state == step_t::state_e::challenge) {
+      close();
+      return protocol_error();
+    }
+    return step;
+  }
+
   step_t pam_client_t::respond(std::vector<std::string> responses) {
     if (descriptor_ < 0 || expected_responses_ == 0 ||
         responses.size() != expected_responses_) {
@@ -142,6 +179,23 @@ namespace plank::auth {
 
   step_t pam_client_t::read_step_for_test() {
     return read_step();
+  }
+
+  step_t pam_client_t::submit_gssapi_for_test(std::string_view username,
+                                              std::string_view remote_host,
+                                              std::string_view tty,
+                                              std::span<const std::uint8_t> token) {
+    begin_request_t request {
+      std::string {username},
+      std::string {remote_host},
+      std::string {tty},
+      std::vector<std::uint8_t>(token.begin(), token.end()),
+    };
+    std::vector<std::uint8_t> payload;
+    if (!encode_begin(request, true, payload)) {
+      return protocol_error();
+    }
+    return submit_gssapi(std::move(payload));
   }
 #endif
 

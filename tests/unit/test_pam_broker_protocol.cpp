@@ -161,3 +161,155 @@ TEST(PamBrokerClient, AdvancesChallengeAndSuccess) {
   client.close();
   close(sockets[1]);
 }
+
+TEST(PamBrokerProtocol, RoundTripsGssapiBegin) {
+  auth::begin_request_t request {"test-user", "198.51.100.250", "plank", {0x60, 0x00, 0x82, 0x01}};
+  std::vector<std::uint8_t> payload;
+  ASSERT_TRUE(auth::encode_begin(request, true, payload));
+  const auto frame = auth::encode_message({auth::message_type_e::begin_gssapi, 9, payload});
+  ASSERT_FALSE(frame.empty());
+  auth::message_t message;
+  ASSERT_TRUE(auth::decode_message(frame, message));
+  EXPECT_EQ(message.type, auth::message_type_e::begin_gssapi);
+
+  auth::begin_request_t decoded;
+  ASSERT_TRUE(auth::decode_begin(message.payload, true, decoded));
+  EXPECT_EQ(decoded.username, "test-user");
+  EXPECT_EQ(decoded.remote_host, "198.51.100.250");
+  EXPECT_EQ(decoded.tty, "plank");
+  EXPECT_EQ(decoded.gssapi_token, request.gssapi_token);
+
+  // A GSSAPI payload is not a valid password begin payload and vice versa.
+  EXPECT_FALSE(auth::decode_begin(message.payload, false, decoded));
+  std::vector<std::uint8_t> password_payload;
+  ASSERT_TRUE(auth::encode_begin({"test-user", "client", "plank", {}}, false, password_payload));
+  EXPECT_FALSE(auth::decode_begin(password_payload, true, decoded));
+  ASSERT_TRUE(auth::decode_begin(password_payload, false, decoded));
+  EXPECT_TRUE(decoded.gssapi_token.empty());
+}
+
+TEST(PamBrokerProtocol, BoundsGssapiBeginFields) {
+  std::vector<std::uint8_t> payload;
+  EXPECT_FALSE(auth::encode_begin({"test-user", "client", "plank", {}}, true, payload));
+  EXPECT_FALSE(auth::encode_begin({"test-user", "client", "plank", {1}}, false, payload));
+  EXPECT_FALSE(auth::encode_begin({"", "client", "plank", {1}}, true, payload));
+  EXPECT_FALSE(auth::encode_begin({std::string(257, 'u'), "client", "plank", {1}}, true, payload));
+  EXPECT_FALSE(auth::encode_begin({"u", std::string(257, 'h'), "plank", {1}}, true, payload));
+  EXPECT_FALSE(auth::encode_begin({"u", "client", std::string(129, 't'), {1}}, true, payload));
+
+  auth::begin_request_t largest {"u", "client", "plank",
+                                 std::vector<std::uint8_t>(auth::maximum_gssapi_token_size, 0)};
+  ASSERT_TRUE(auth::encode_begin(largest, true, payload));
+  auth::begin_request_t decoded;
+  EXPECT_TRUE(auth::decode_begin(payload, true, decoded));
+  EXPECT_EQ(decoded.gssapi_token.size(), auth::maximum_gssapi_token_size);
+
+  largest.gssapi_token.push_back(0);
+  EXPECT_FALSE(auth::encode_begin(largest, true, payload));
+
+  // Hand-built oversize and truncated token fields are rejected on decode.
+  std::vector<std::uint8_t> forged;
+  ASSERT_TRUE(auth::append_string(forged, "u"));
+  ASSERT_TRUE(auth::append_string(forged, "client"));
+  ASSERT_TRUE(auth::append_string(forged, "plank"));
+  auth::append_integer(forged, static_cast<std::uint32_t>(auth::maximum_gssapi_token_size + 1));
+  forged.resize(forged.size() + auth::maximum_gssapi_token_size + 1);
+  EXPECT_FALSE(auth::decode_begin(forged, true, decoded));
+
+  std::vector<std::uint8_t> truncated;
+  ASSERT_TRUE(auth::append_string(truncated, "u"));
+  ASSERT_TRUE(auth::append_string(truncated, "client"));
+  ASSERT_TRUE(auth::append_string(truncated, "plank"));
+  auth::append_integer(truncated, static_cast<std::uint32_t>(8));
+  truncated.push_back(1);
+  EXPECT_FALSE(auth::decode_begin(truncated, true, decoded));
+
+  // Trailing bytes after the token are rejected.
+  ASSERT_TRUE(auth::encode_begin({"u", "client", "plank", {1, 2}}, true, payload));
+  payload.push_back(0);
+  EXPECT_FALSE(auth::decode_begin(payload, true, decoded));
+}
+
+TEST(PamBrokerProtocol, AllowsNulBytesOnlyInOpaqueFields) {
+  std::vector<std::uint8_t> payload;
+  const std::vector<std::uint8_t> bytes {0, 1, 0, 2};
+  ASSERT_TRUE(auth::append_bytes(payload, bytes, 4));
+  std::size_t offset = 0;
+  std::vector<std::uint8_t> decoded;
+  ASSERT_TRUE(auth::read_bytes(payload, offset, decoded, 4));
+  EXPECT_EQ(decoded, bytes);
+  offset = 0;
+  EXPECT_FALSE(auth::read_bytes(payload, offset, decoded, 3));
+  EXPECT_FALSE(auth::append_bytes(payload, bytes, 3));
+}
+
+TEST(PamBrokerProtocol, RejectsUnknownMessageTypes) {
+  auto frame = auth::encode_message({auth::message_type_e::cancel, 7, {}});
+  auto *header = reinterpret_cast<auth::wire_header_t *>(frame.data());
+  auth::message_t decoded;
+  header->type = auth::to_little(static_cast<std::uint16_t>(7));
+  EXPECT_FALSE(auth::decode_message(frame, decoded));
+  header->type = 0;
+  EXPECT_FALSE(auth::decode_message(frame, decoded));
+  header->type = auth::to_little(static_cast<std::uint16_t>(auth::message_type_e::begin_gssapi));
+  EXPECT_TRUE(auth::decode_message(frame, decoded));
+}
+
+TEST(PamBrokerClient, GssapiAdmissionIsSingleRoundTrip) {
+  constexpr std::uint64_t transaction_id = 77;
+  const std::vector<std::uint8_t> token {0x60, 0x82, 0x00, 0x10};
+  for (const bool admitted : {true, false}) {
+    std::array<int, 2> sockets {};
+    ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets.data()), 0);
+    auto client = auth::pam_client_t::adopt_for_test(sockets[0], transaction_id);
+    std::thread broker {[&]() {
+      auth::message_t begin;
+      ASSERT_TRUE(auth::read_message(sockets[1], begin));
+      EXPECT_EQ(begin.type, auth::message_type_e::begin_gssapi);
+      auth::begin_request_t request;
+      ASSERT_TRUE(auth::decode_begin(begin.payload, true, request));
+      EXPECT_EQ(request.username, "test-user");
+      EXPECT_EQ(request.gssapi_token, token);
+      std::vector<std::uint8_t> result;
+      auth::append_integer(result, static_cast<std::uint16_t>(
+        admitted ? auth::phase_e::authenticated : auth::phase_e::authenticate
+      ));
+      auth::append_integer(result, static_cast<std::int32_t>(admitted ? 0 : 7));
+      ASSERT_TRUE(auth::write_message(sockets[1], {
+        auth::message_type_e::result, transaction_id, std::move(result),
+      }));
+    }};
+    const auto step = client.submit_gssapi_for_test("test-user", "client", "plank", token);
+    broker.join();
+    EXPECT_EQ(step.state, admitted ? auth::step_t::state_e::authenticated :
+                                     auth::step_t::state_e::denied);
+    EXPECT_EQ(client.connected(), admitted);
+    client.close();
+    close(sockets[1]);
+  }
+}
+
+TEST(PamBrokerClient, GssapiChallengeIsAProtocolDenial) {
+  std::array<int, 2> sockets {};
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets.data()), 0);
+  constexpr std::uint64_t transaction_id = 78;
+  auto client = auth::pam_client_t::adopt_for_test(sockets[0], transaction_id);
+  std::thread broker {[&]() {
+    auth::message_t begin;
+    ASSERT_TRUE(auth::read_message(sockets[1], begin));
+    std::vector<std::uint8_t> challenge;
+    auth::append_integer(challenge, static_cast<std::uint32_t>(1));
+    auth::append_integer(challenge, static_cast<std::int32_t>(1));
+    ASSERT_TRUE(auth::append_string(challenge, "Password: "));
+    ASSERT_TRUE(auth::write_message(sockets[1], {
+      auth::message_type_e::challenge, transaction_id, std::move(challenge),
+    }));
+  }};
+  const std::vector<std::uint8_t> token {1, 2, 3};
+  const auto step = client.submit_gssapi_for_test("test-user", "client", "plank", token);
+  broker.join();
+  EXPECT_EQ(step.state, auth::step_t::state_e::denied);
+  EXPECT_EQ(step.phase, auth::phase_e::protocol);
+  EXPECT_FALSE(client.connected());
+  close(sockets[1]);
+}

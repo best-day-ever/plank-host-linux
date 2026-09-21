@@ -47,6 +47,40 @@ inactivity before the host cleans up the stream. Default: `10000`.
 Allow PAM authentication as root. Default: `false`. Enabling this does not
 bypass PAM/SSSD/HBAC policy or active-desktop ownership checks.
 
+### gssapi_keytab
+
+Keytab holding the host's `plank/<fqdn>@REALM` Kerberos service key, for
+brokered single-sign-on admission (`gssapi_token` in `POST /plank/auth/start`).
+Default: unset, which disables GSSAPI admission; every GSSAPI request is then
+denied and the password path is unaffected. Recommended value:
+`/etc/plank/plank.keytab`. The file must be root-owned, nonempty and have no
+group or other permissions. GSSAPI admission also requires `cert` to be an
+absolute path, because Kerberos channel bindings are computed from that
+certificate. Read only by the root PAM broker from the `[security]` section.
+
+### gssapi_required_indicator
+
+Kerberos authentication indicator that the initiator's service ticket must
+carry, for example `otp` for FreeIPA two-factor logins. Default: `otp`.
+Read only by the root PAM broker from the `[security]` section.
+
+### gssapi_pam_service
+
+PAM service used for account, credential and session phases after GSSAPI
+admission. Default: `plank-remote`. It is separate from the password path's
+`plank-host` service so that account policy evaluated per PAM service, such
+as FreeIPA HBAC, can grant brokered remote access independently of LAN
+password logins. Read only by the root PAM broker from the `[security]`
+section.
+
+### lock_on_disconnect
+
+Lock the captured graphical user session through logind when the last
+authenticated stream ends. Default: `false`. The lock is issued a few seconds
+after the final stream stops and is skipped when a new stream or launch for the
+same desktop has started in the meantime (reconnect or takeover). A greeter
+session is never locked.
+
 ### pkey
 
 Path to the host TLS private key. The packaged profile uses

@@ -141,6 +141,7 @@ endif()
 list(APPEND PLATFORM_TARGET_FILES ${NVENC_SOURCES})
 
 set(SUNSHINE_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/auth/gssapi_admission.h"
         "${CMAKE_SOURCE_DIR}/src/auth/pam_broker_protocol.h"
         "${CMAKE_SOURCE_DIR}/src/auth/pam_client.cpp"
         "${CMAKE_SOURCE_DIR}/src/auth/pam_client.h"
