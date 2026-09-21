@@ -862,6 +862,7 @@ namespace config {
     false,  // PLANK mDNS advertisement
     "physical",  // PLANK startup display policy
     false,  // PLANK lock the captured desktop after the last stream
+    false,  // PLANK greeter sign-in, owner unlock and idle-owner sign-out
   };
 
   /**
@@ -1563,6 +1564,7 @@ namespace config {
     std::string broker_gssapi_pam_service;
     string_f(vars, "gssapi_pam_service", broker_gssapi_pam_service);
     bool_f(vars, "lock_on_disconnect", sunshine.lock_on_disconnect);
+    bool_f(vars, "desktop_handoff", sunshine.desktop_handoff);
 
     string_f(vars, "audio_sink", audio.sink);
 

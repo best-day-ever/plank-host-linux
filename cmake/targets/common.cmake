@@ -135,6 +135,19 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             RUNTIME DESTINATION bin
             COMPONENT sunshine)
 
+    # GDM handoff: consumes the one-shot pass the media worker writes after a
+    # PLANK login at the greeter. See docs/plank-desktop-handoff.md.
+    add_library(pam_plank_handoff MODULE
+            "${CMAKE_SOURCE_DIR}/src/auth/pam_plank_handoff.cpp"
+            "${CMAKE_SOURCE_DIR}/src/auth/desktop_handoff_pass.h")
+    set_target_properties(pam_plank_handoff PROPERTIES PREFIX "")
+    target_include_directories(pam_plank_handoff PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_link_libraries(pam_plank_handoff PRIVATE ${PLANK_PAM_LIBRARY})
+    target_compile_options(pam_plank_handoff PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+    install(TARGETS pam_plank_handoff
+            LIBRARY DESTINATION lib64/security
+            COMPONENT sunshine)
+
     # Operator probe for brokered admission; built, not installed. See
     # docs/plank-gssapi-admission.md.
     add_executable(plank-probe-gssapi

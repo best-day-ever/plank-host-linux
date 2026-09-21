@@ -19,6 +19,7 @@
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 // lib includes
 #include <boost/asio/ssl/context.hpp>
@@ -30,6 +31,7 @@
 #include <nlohmann/json.hpp>
 #include <Simple-Web-Server/server_http.hpp>
 
+#include <pwd.h>
 #include <unistd.h>
 
 #ifdef PLANK_TRANSPORT
@@ -54,6 +56,7 @@
 #include "platform/common.h"
 #include "process.h"
 #include "session_stream.h"
+#include "session/greeter_signin.h"
 #include "session/session_context.h"
 #include "plank_topology.h"
 #include "utility.h"
@@ -520,31 +523,142 @@ namespace nvhttp {
     return web_auth ? web_auth->claim(bearer_token(request), authentication_peer(request)) : nullptr;
   }
 
-  /**
-   * @brief Verify that a request's PAM account owns this user-service process.
-   *
-   * @param request Authorized HTTPS request.
-   * @return True when the authenticated account UID matches the active desktop.
-   */
-  std::optional<uid_t> authenticated_account_uid_for_desktop(
-    const req_https_t &request
-  ) {
-    if (!web_auth) {
-      return std::nullopt;
+  std::string get_arg(const args_t &args, const char *name, const char *default_value);
+
+  /// Account whose streams are running; meaningful only while a stream or launch is active.
+  /// Guarded by session_start_mutex, like every launch/resume decision.
+  std::optional<uid_t> streaming_account_uid;
+
+  std::string account_name(uid_t uid) {
+    std::vector<char> buffer(16384);
+    passwd entry {};
+    passwd *result = nullptr;
+    if (getpwuid_r(uid, &entry, buffer.data(), buffer.size(), &result) != 0 || result == nullptr) {
+      return std::to_string(uid);
     }
+    return result->pw_name;
+  }
+
+  /**
+   * @brief Refuse a stream because another account holds the workstation.
+   *
+   * With feature_desktop_sign_out the reply names that account and whether it
+   * is streaming (`connected`) or only signed in (`available`: the Client may
+   * retry with plankSignOutDesktop=1 and plankSignOutOwner=<account>).
+   */
+  void workstation_in_use(pt::ptree &tree, const char *result_key, const std::string &owner,
+                          std::string_view sign_out) {
+    tree.put(result_key, 0);
+    tree.put("root.<xmlattr>.status_code", 409);
+    tree.put("root.<xmlattr>.status_message", sign_out == "connected"sv ?
+      owner + " is connected to this workstation" :
+      owner + " is signed in on this workstation");
+    tree.put("root.PlankDesktopOwner", owner);
+    tree.put("root.PlankDesktopSignOut", std::string {sign_out});
+  }
+
+  /**
+   * @brief Decide whether a request's PAM account may stream the active desktop.
+   *
+   * One account streams at a time: while another account's stream or launch is
+   * active, even the GDM greeter is refused. A user desktop streams only to its
+   * owner. With `desktop_handoff`, a different account may end an owner's
+   * desktop that no PLANK stream is using, after the Client confirms the owner.
+   *
+   * @return The authenticated account UID, or no value when `tree` holds the refusal.
+   */
+  std::optional<uid_t> admit_desktop_stream(const req_https_t &request, const args_t &args,
+                                            pt::ptree &tree, const char *result_key) {
+    const auto refuse = [&]() -> std::optional<uid_t> {
+      tree.put(result_key, 0);
+      tree.put("root.<xmlattr>.status_code", 403);
+      tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
+      return std::nullopt;
+    };
+    if (!web_auth) return refuse();
     const auto token = bearer_token(request);
     const auto identity = web_auth->identity(token, authentication_peer(request));
-    if (!identity) {
+    if (!identity) return refuse();
+    const auto uid = plank::auth::account_uid(*identity);
+    if (!uid) {
+      web_auth->cancel(token);
+      return refuse();
+    }
+
+    const bool stream_active = session_stream::session_count() > 0 ||
+                               session_stream::launch_session_pending();
+    if (stream_active && streaming_account_uid && *streaming_account_uid != *uid) {
+      web_auth->cancel(token);
+      BOOST_LOG(warning) << "Refusing PLANK stream: another account is connected to this workstation"sv;
+      workstation_in_use(tree, result_key, account_name(*streaming_account_uid), "connected"sv);
       return std::nullopt;
     }
-    const auto uid = plank::auth::account_uid(*identity);
-    if (!uid ||
-        !plank::session::supervisor_attests_account_for_active_seat0(*uid)) {
+    if (plank::session::supervisor_attests_account_for_active_seat0(*uid)) return uid;
+
+    const auto owner = config::sunshine.desktop_handoff ?
+      plank::session::attached_desktop_owner() : std::nullopt;
+    if (!owner || *owner == *uid) {
       web_auth->cancel(token);
       BOOST_LOG(warning) << "Rejecting PLANK stream for an account that is not authorized for the active desktop"sv;
+      return refuse();
+    }
+    const auto owner_account = account_name(*owner);
+    if (stream_active) {
+      web_auth->cancel(token);
+      workstation_in_use(tree, result_key, owner_account, "connected"sv);
       return std::nullopt;
     }
-    return uid;
+    if (get_arg(args, "plankSignOutDesktop", "0") != "1"sv ||
+        get_arg(args, "plankSignOutOwner", "") != owner_account) {
+      // The token stays valid so the Client can confirm the sign-out without a new login.
+      BOOST_LOG(info) << "PLANK workstation is signed in to another account; offering sign-out"sv;
+      workstation_in_use(tree, result_key, owner_account, "available"sv);
+      return std::nullopt;
+    }
+
+    web_auth->cancel(token);
+    BOOST_LOG(warning) << "PLANK sign-out: "sv << *identity << " ended the desktop session of "sv
+                       << owner_account;
+    if (!plank::session::terminate_attached_user_session(*owner)) {
+      BOOST_LOG(error) << "PLANK sign-out: logind refused to end the desktop session"sv;
+      tree.put(result_key, 0);
+      tree.put("root.<xmlattr>.status_code", 500);
+      tree.put("root.<xmlattr>.status_message", "Unable to sign out " + owner_account);
+      return std::nullopt;
+    }
+    tree.put(result_key, 0);
+    tree.put("root.<xmlattr>.status_code", 503);
+    tree.put("root.<xmlattr>.status_message", "Signing out " + owner_account + "...");
+    tree.put("root.PlankDesktopOwner", owner_account);
+    tree.put("root.PlankDesktopSignOut", "started");
+    return std::nullopt;
+  }
+
+  /**
+   * @brief After a stream is admitted, finish the login on the workstation.
+   *
+   * At the greeter, sign the account into GDM; on its own locked desktop,
+   * unlock it. The account just passed PLANK authentication (on the broker
+   * path including the OTP or passkey factor), so neither asks again.
+   */
+  void complete_desktop_login(uid_t uid) {
+    streaming_account_uid = uid;
+    if (!config::sunshine.desktop_handoff) return;
+    const auto stage = plank::session::confirmed_desktop_stage();
+    if (stage == "greeter"sv) {
+      const auto account = account_name(uid);
+      if (!plank::session::sign_into_greeter(uid, account, []() {
+            return session_stream::session_count() > 0;
+          })) {
+        BOOST_LOG(warning) << "PLANK greeter sign-in unavailable for this account; GDM will prompt"sv;
+      } else {
+        BOOST_LOG(info) << "PLANK signing the authenticated account into GDM"sv;
+      }
+    } else if (stage == "user"sv) {
+      if (plank::session::unlock_attached_user_session(uid)) {
+        BOOST_LOG(info) << "PLANK unlocked the owner's desktop after a fresh login"sv;
+      }
+    }
   }
 
   /**
@@ -1408,11 +1522,8 @@ namespace nvhttp {
 
     auto appid = util::from_view(get_arg(args, "appid"));
 
-    const auto authenticated_uid = authenticated_account_uid_for_desktop(request);
+    const auto authenticated_uid = admit_desktop_stream(request, args, tree, "root.gamesession");
     if (!authenticated_uid) {
-      tree.put("root.gamesession", 0);
-      tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
       return;
     }
 
@@ -1543,6 +1654,7 @@ namespace nvhttp {
     tree.put("root.PlankEncodingMode", launch_session->encoding_mode);
 
     session_stream::launch_session_raise(launch_session);
+    complete_desktop_login(*authenticated_uid);
 
     // Stream was started successfully, we will revert the config when the app or session terminates
     revert_display_configuration = false;
@@ -1573,11 +1685,9 @@ namespace nvhttp {
       response->close_connection_after_response = true;
     });
 
-    const auto authenticated_uid = authenticated_account_uid_for_desktop(request);
+    auto args = request->parse_query_string();
+    const auto authenticated_uid = admit_desktop_stream(request, args, tree, "root.resume");
     if (!authenticated_uid) {
-      tree.put("root.resume", 0);
-      tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
       return;
     }
 
@@ -1597,7 +1707,6 @@ namespace nvhttp {
       return;
     }
 
-    auto args = request->parse_query_string();
     const auto takeover_requested = session_takeover_requested(args);
     if (!takeover_requested) {
       tree.put("root.resume", 0);
@@ -1691,6 +1800,7 @@ namespace nvhttp {
     tree.put("root.PlankEncodingMode", launch_session->encoding_mode);
 
     session_stream::launch_session_raise(launch_session);
+    complete_desktop_login(*authenticated_uid);
   }
 
   void start() {
