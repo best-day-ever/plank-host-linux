@@ -85,6 +85,16 @@ after the final stream stops and is skipped when a new stream or launch for the
 same desktop has started in the meantime (reconnect or takeover). A greeter
 session is never locked.
 
+### desktop_handoff
+
+Finish a PLANK login on the workstation. At the GDM greeter, the account is
+signed in without a second password prompt (needs `pam_plank_handoff.so` in
+`/etc/pam.d/gdm-password`). On the account's own locked desktop, the host
+unlocks it through logind. Another account may sign out a desktop no PLANK
+stream is using, after its Client confirms. Default: `false`. See
+`docs/plank-desktop-handoff.md`. Independently of this setting, only one
+account streams at a time.
+
 ### pkey
 
 Path to the host TLS private key. The packaged profile uses

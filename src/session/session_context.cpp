@@ -694,7 +694,7 @@ namespace plank::session {
     constexpr char loginctl_path[] = "/usr/bin/loginctl";
     constexpr auto lock_request_timeout = std::chrono::seconds {5};
 
-    bool lock_session_with_logind(const std::string &session_id) {
+    bool call_logind_session_method(const char *method, const std::string &session_id) {
       sd_bus *raw_bus = nullptr;
       if (sd_bus_open_system(&raw_bus) < 0 || raw_bus == nullptr) return false;
       std::unique_ptr<sd_bus, decltype(&sd_bus_flush_close_unref)> bus {
@@ -708,7 +708,7 @@ namespace plank::session {
       sd_bus_message *reply = nullptr;
       const int result = sd_bus_call_method(
         bus.get(), "org.freedesktop.login1", "/org/freedesktop/login1",
-        "org.freedesktop.login1.Manager", "LockSession", &error, &reply, "s",
+        "org.freedesktop.login1.Manager", method, &error, &reply, "s",
         session_id.c_str()
       );
       sd_bus_message_unref(reply);
@@ -716,11 +716,11 @@ namespace plank::session {
       return result >= 0;
     }
 
-    bool lock_session_with_loginctl(const std::string &session_id) {
+    bool call_loginctl(const char *verb, const std::string &session_id) {
       if (access(loginctl_path, X_OK) != 0) return false;
       const pid_t child = fork();
       if (child == 0) {
-        const char *arguments[] = {loginctl_path, "lock-session", session_id.c_str(), nullptr};
+        const char *arguments[] = {loginctl_path, verb, session_id.c_str(), nullptr};
         execv(loginctl_path, const_cast<char *const *>(arguments));
         std::_Exit(127);
       }
@@ -738,26 +738,55 @@ namespace plank::session {
       return false;
     }
 
+    /** The supervisor-attested session, only while it is still the active seat0 user desktop. */
+    std::optional<descriptor_t> attached_active_user_session() {
+      std::optional<update_t> attestation;
+      {
+        std::lock_guard lock {current_update_mutex};
+        attestation = current_update;
+      }
+      if (!attestation) return std::nullopt;
+      const auto active = active_seat0_graphical_session();
+      if (!active || active->id != attestation->session.id ||
+          active->uid != attestation->session.uid || active->session_class != "user" ||
+          active->uid == 0) {
+        return std::nullopt;
+      }
+      return active;
+    }
+
     std::atomic_uint64_t scheduled_lock_generation {};
   }  // namespace
 
   lock_status lock_attached_user_session() {
-    std::optional<update_t> attestation;
-    {
-      std::lock_guard lock {current_update_mutex};
-      attestation = current_update;
-    }
-    if (!attestation) return lock_status::not_applicable;
-    const auto active = active_seat0_graphical_session();
-    if (!active || active->id != attestation->session.id ||
-        active->uid != attestation->session.uid || active->session_class != "user" ||
-        active->uid == 0) {
-      return lock_status::not_applicable;
-    }
-    if (lock_session_with_logind(active->id) || lock_session_with_loginctl(active->id)) {
+    const auto active = attached_active_user_session();
+    if (!active) return lock_status::not_applicable;
+    if (call_logind_session_method("LockSession", active->id) ||
+        call_loginctl("lock-session", active->id)) {
       return lock_status::locked;
     }
     return lock_status::failed;
+  }
+
+  bool unlock_attached_user_session(uid_t account_uid) {
+    const auto active = attached_active_user_session();
+    if (!active || active->uid != account_uid) return false;
+    // Supersede a lock_on_disconnect request that is still in its grace period.
+    ++scheduled_lock_generation;
+    return call_logind_session_method("UnlockSession", active->id) ||
+           call_loginctl("unlock-session", active->id);
+  }
+
+  std::optional<uid_t> attached_desktop_owner() {
+    const auto active = attached_active_user_session();
+    return active ? std::optional<uid_t> {active->uid} : std::nullopt;
+  }
+
+  bool terminate_attached_user_session(uid_t owner_uid) {
+    const auto active = attached_active_user_session();
+    if (!active || active->uid != owner_uid) return false;
+    return call_logind_session_method("TerminateSession", active->id) ||
+           call_loginctl("terminate-session", active->id);
   }
 
   void schedule_attached_session_lock(std::chrono::milliseconds delay,
