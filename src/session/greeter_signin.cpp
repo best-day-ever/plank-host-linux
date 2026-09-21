@@ -118,7 +118,7 @@ namespace plank::session {
 
       xtest_t &x_;
       x_display *display_;
-      unsigned char shift_ {display_ ? x_.keysym_to_keycode(display_, keysym_shift_left) : 0};
+      unsigned char shift_ {display_ ? x_.keysym_to_keycode(display_, keysym_shift_left) : static_cast<unsigned char>(0)};
     };
 
     std::atomic_uint64_t signin_generation {};
