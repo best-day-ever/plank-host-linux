@@ -60,8 +60,12 @@ certificate. Read only by the root PAM broker from the `[security]` section.
 
 ### gssapi_required_indicator
 
-Kerberos authentication indicator that the initiator's service ticket must
-carry, for example `otp` for FreeIPA two-factor logins. Default: `otp`.
+Whitespace-separated list of Kerberos authentication indicators. Admission
+succeeds when the initiator's service ticket carries any one of them, for
+example `otp passkey` to accept both FreeIPA two-factor (OTP) and passkey
+logins. Default: `otp`. An empty value, more than 16 names, or a name with
+characters other than letters, digits, `.`, `_` and `-` is rejected. A name
+repeated in the list is ignored. The value may be enclosed in double quotes.
 Read only by the root PAM broker from the `[security]` section.
 
 ### gssapi_pam_service

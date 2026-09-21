@@ -29,8 +29,8 @@ namespace {
 
   gssapi::admission_e evaluate(const gssapi::accepted_context_t &context,
                                std::string_view username = "alice",
-                               std::string_view indicator = "otp") {
-    return gssapi::evaluate(context, realm, username, indicator);
+                               const std::vector<std::string> &indicators = {"otp"}) {
+    return gssapi::evaluate(context, realm, username, indicators);
   }
 }  // namespace
 
@@ -100,15 +100,36 @@ TEST(GssapiAdmission, RequiresConfiguredIndicator) {
   EXPECT_EQ(evaluate(context), gssapi::admission_e::missing_indicator);
   context.indicators = {"otpx", "pkinit"};
   EXPECT_EQ(evaluate(context), gssapi::admission_e::missing_indicator);
-  EXPECT_EQ(evaluate(admitted_context(), "alice", "pkinit"), gssapi::admission_e::missing_indicator);
+  EXPECT_EQ(evaluate(admitted_context(), "alice", {"pkinit"}), gssapi::admission_e::missing_indicator);
+}
+
+TEST(GssapiAdmission, AdmitsAnyOfSeveralConfiguredIndicators) {
+  const std::vector<std::string> accepted {"otp", "passkey"};
+  auto context = admitted_context();
+  EXPECT_EQ(evaluate(context, "alice", accepted), gssapi::admission_e::admitted);
+  context.indicators = {"passkey"};
+  EXPECT_EQ(evaluate(context, "alice", accepted), gssapi::admission_e::admitted);
+  context.indicators = {"hardened", "passkey", "otp"};
+  EXPECT_EQ(evaluate(context, "alice", accepted), gssapi::admission_e::admitted);
+  context.indicators = {"passkey"};
+  EXPECT_EQ(evaluate(context), gssapi::admission_e::missing_indicator);
+  context.indicators = {"hardened", "pkinit", "passkeyx"};
+  EXPECT_EQ(evaluate(context, "alice", accepted), gssapi::admission_e::missing_indicator);
+  context.indicators.clear();
+  EXPECT_EQ(evaluate(context, "alice", accepted), gssapi::admission_e::missing_indicator);
 }
 
 TEST(GssapiAdmission, EmptyConfigurationFailsClosed) {
-  EXPECT_EQ(gssapi::evaluate(admitted_context(), "", "alice", "otp"),
+  const std::vector<std::string> otp {"otp"};
+  EXPECT_EQ(gssapi::evaluate(admitted_context(), "", "alice", otp),
             gssapi::admission_e::configuration_error);
-  EXPECT_EQ(gssapi::evaluate(admitted_context(), realm, "", "otp"),
+  EXPECT_EQ(gssapi::evaluate(admitted_context(), realm, "", otp),
             gssapi::admission_e::configuration_error);
-  EXPECT_EQ(gssapi::evaluate(admitted_context(), realm, "alice", ""),
+  EXPECT_EQ(gssapi::evaluate(admitted_context(), realm, "alice", std::vector<std::string> {}),
+            gssapi::admission_e::configuration_error);
+  EXPECT_EQ(gssapi::evaluate(admitted_context(), realm, "alice", std::vector<std::string> {""}),
+            gssapi::admission_e::configuration_error);
+  EXPECT_EQ(gssapi::evaluate(admitted_context(), realm, "alice", std::vector<std::string> {"otp", ""}),
             gssapi::admission_e::configuration_error);
 }
 
