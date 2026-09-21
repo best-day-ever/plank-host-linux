@@ -131,6 +131,10 @@ TOK=$($P initiate --service host@host.example.test --cert $T/cert.pem)
 CONF=$T/wrongsvc.conf check "host/ service key instead of plank/" denied "not for a plank service" alice "$TOK"
 printf '[security]\ncert = %s/cert.pem\ngssapi_keytab = /etc/plank-test.keytab\ngssapi_required_indicator = hardened\n' $T > $T/ind.conf; chmod 600 $T/ind.conf
 CONF=$T/ind.conf check "different required indicator" denied "indicator absent" alice "$(ini)"
+printf '[security]\ncert = %s/cert.pem\ngssapi_keytab = /etc/plank-test.keytab\ngssapi_required_indicator = passkey otp\n' $T > $T/anyof.conf; chmod 600 $T/anyof.conf
+CONF=$T/anyof.conf check "any-of indicator list (passkey otp)" admitted admitted alice "$(ini)"
+printf '[security]\ncert = %s/cert.pem\ngssapi_keytab = /etc/plank-test.keytab\ngssapi_required_indicator = passkey hardened\n' $T > $T/anyof-miss.conf; chmod 600 $T/anyof-miss.conf
+CONF=$T/anyof-miss.conf check "any-of indicator list without otp" denied "indicator absent" alice "$(ini)"
 chmod 640 /etc/plank-test.keytab
 check "group-readable keytab" denied "configuration error" alice "$(ini)"
 chmod 600 /etc/plank-test.keytab

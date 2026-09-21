@@ -67,9 +67,10 @@ forked per-connection handler then does the following:
   - a single-component initiator principal in the host's default realm;
   - `gss_localname()` (the host's `auth_to_local`/SSSD mapping) equal to the
     requested username;
-  - the indicator named by `security.gssapi_required_indicator` (default
-    `otp`) among the KDC-authenticated `auth-indicators` name attribute
-    values.
+  - at least one of the indicators listed in
+    `security.gssapi_required_indicator` (a whitespace-separated list, default
+    `otp`; for example `otp passkey`) among the KDC-authenticated
+    `auth-indicators` name attribute values.
 - skips `pam_authenticate()` after admission and runs `pam_acct_mgmt()`,
   `pam_setcred(PAM_ESTABLISH_CRED)` and `pam_open_session()` under the PAM
   service `security.gssapi_pam_service` (default `plank-remote`). From there

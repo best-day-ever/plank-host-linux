@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -19,13 +20,15 @@
 
 namespace plank::auth {
   constexpr std::string_view default_gssapi_required_indicator = "otp";  ///< Kerberos auth indicator required by default.
+  constexpr std::size_t maximum_gssapi_required_indicators = 16;  ///< Upper bound on accepted indicator names.
   constexpr std::string_view default_gssapi_pam_service = "plank-remote";  ///< PAM service used after GSSAPI admission.
 
   /** Administrator-owned authentication policy. */
   struct broker_policy_t {
     bool allow_root_login {false};  ///< Root remains denied unless explicitly enabled.
     std::string gssapi_keytab;  ///< Acceptor keytab; empty disables GSSAPI admission.
-    std::string gssapi_required_indicator {default_gssapi_required_indicator};  ///< Required Kerberos auth indicator.
+    /// Accepted Kerberos auth indicators; admission requires any one of them.
+    std::vector<std::string> gssapi_required_indicators {std::string {default_gssapi_required_indicator}};
     std::string gssapi_pam_service {default_gssapi_pam_service};  ///< PAM service for GSSAPI-admitted accounts.
     std::string tls_certificate;  ///< Absolute host TLS certificate path used for channel bindings.
 
@@ -83,6 +86,58 @@ namespace plank::auth {
         value = value.substr(1, value.size() - 2);
       }
       return value;
+    }
+
+    /**
+     * @brief Split a whitespace-separated list of auth-indicator names.
+     *
+     * Repeated names are collapsed to their first occurrence.
+     *
+     * @param value Unquoted configuration value.
+     * @param indicators Receives the distinct names in configuration order.
+     * @return True when the list is nonempty, bounded, and every name is a safe token.
+     */
+    inline bool parse_indicator_list(std::string_view value, std::vector<std::string> &indicators) {
+      indicators.clear();
+      while (true) {
+        value = trim(value);
+        if (value.empty()) {
+          break;
+        }
+        std::size_t end = 0;
+        while (end < value.size() && !std::isspace(static_cast<unsigned char>(value[end]))) {
+          ++end;
+        }
+        const auto name = value.substr(0, end);
+        value.remove_prefix(end);
+        if (!safe_token(name)) {
+          return false;
+        }
+        if (std::find(indicators.begin(), indicators.end(), name) == indicators.end()) {
+          if (indicators.size() == maximum_gssapi_required_indicators) {
+            return false;
+          }
+          indicators.emplace_back(name);
+        }
+      }
+      return !indicators.empty();
+    }
+
+    /**
+     * @brief Join indicator names with single spaces for diagnostics.
+     *
+     * @param indicators Indicator names.
+     * @return Space-separated list.
+     */
+    inline std::string join_indicators(const std::vector<std::string> &indicators) {
+      std::string result;
+      for (const auto &indicator : indicators) {
+        if (!result.empty()) {
+          result += ' ';
+        }
+        result += indicator;
+      }
+      return result;
     }
   }  // namespace detail
 
@@ -193,11 +248,12 @@ namespace plank::auth {
         }
         indicator_seen = true;
         const auto value = detail::unquote(raw_value);
-        if (!detail::safe_token(value)) {
-          error = "security.gssapi_required_indicator must be a nonempty indicator name";
+        if (!detail::parse_indicator_list(value, policy.gssapi_required_indicators)) {
+          error = "security.gssapi_required_indicator must be a nonempty, whitespace-separated list of "
+                  "at most " +
+                  std::to_string(maximum_gssapi_required_indicators) + " indicator names";
           return std::nullopt;
         }
-        policy.gssapi_required_indicator = std::string {value};
       } else if (key == "gssapi_pam_service") {
         if (pam_service_seen) {
           error = "duplicate security.gssapi_pam_service setting";

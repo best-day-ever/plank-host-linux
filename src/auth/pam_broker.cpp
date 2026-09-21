@@ -601,7 +601,7 @@ int main(int argc, char **argv) {
               << '\n';
     if (policy->gssapi_enabled()) {
       std::cout << "gssapi_keytab=" << policy->gssapi_keytab << '\n'
-                << "gssapi_required_indicator=" << policy->gssapi_required_indicator << '\n'
+                << "gssapi_required_indicator=" << auth::detail::join_indicators(policy->gssapi_required_indicators) << '\n'
                 << "gssapi_pam_service=" << policy->gssapi_pam_service << '\n'
                 << "channel_binding_certificate=" << policy->tls_certificate << '\n';
     }

@@ -293,7 +293,7 @@ namespace plank::auth::gssapi {
     }
 
     acceptance.result = evaluate(context, realm, requested_username,
-                                 policy.gssapi_required_indicator);
+                                 policy.gssapi_required_indicators);
     if (acceptance.result == admission_e::wrong_service) {
       acceptance.detail = "acceptor " + context.acceptor;
     }

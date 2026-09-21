@@ -1,4 +1,5 @@
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -54,7 +55,7 @@ TEST(PamBrokerPolicy, GssapiIsDisabledByDefault) {
   const auto policy = auth::parse_broker_policy("[security]\ncert = /etc/plank/tls/cert.pem\n", error);
   ASSERT_TRUE(policy.has_value()) << error;
   EXPECT_FALSE(policy->gssapi_enabled());
-  EXPECT_EQ(policy->gssapi_required_indicator, "otp");
+  EXPECT_EQ(policy->gssapi_required_indicators, std::vector<std::string> {"otp"});
   EXPECT_EQ(policy->gssapi_pam_service, "plank-remote");
   EXPECT_EQ(policy->tls_certificate, "/etc/plank/tls/cert.pem");
 }
@@ -72,8 +73,31 @@ TEST(PamBrokerPolicy, ParsesGssapiSettings) {
   ASSERT_TRUE(policy.has_value()) << error;
   EXPECT_TRUE(policy->gssapi_enabled());
   EXPECT_EQ(policy->gssapi_keytab, "/etc/plank/plank.keytab");
-  EXPECT_EQ(policy->gssapi_required_indicator, "pkinit");
+  EXPECT_EQ(policy->gssapi_required_indicators, std::vector<std::string> {"pkinit"});
   EXPECT_EQ(policy->gssapi_pam_service, "plank-remote-test");
+}
+
+TEST(PamBrokerPolicy, ParsesIndicatorList) {
+  std::string error;
+  auto policy = auth::parse_broker_policy("[security]\ngssapi_required_indicator = otp passkey\n", error);
+  ASSERT_TRUE(policy.has_value()) << error;
+  EXPECT_EQ(policy->gssapi_required_indicators, (std::vector<std::string> {"otp", "passkey"}));
+
+  policy = auth::parse_broker_policy(
+    "[security]\ngssapi_required_indicator = \"  passkey\t otp  otp passkey \"\n", error
+  );
+  ASSERT_TRUE(policy.has_value()) << error;
+  EXPECT_EQ(policy->gssapi_required_indicators, (std::vector<std::string> {"passkey", "otp"}));
+
+  std::string sixteen = "[security]\ngssapi_required_indicator =";
+  for (int index = 0; index < 16; ++index) {
+    sixteen += " i" + std::to_string(index);
+  }
+  policy = auth::parse_broker_policy(sixteen + " i0\n", error);
+  ASSERT_TRUE(policy.has_value()) << error;
+  EXPECT_EQ(policy->gssapi_required_indicators.size(), 16U);
+  EXPECT_FALSE(auth::parse_broker_policy(sixteen + " i16\n", error).has_value());
+  EXPECT_FALSE(error.empty());
 }
 
 TEST(PamBrokerPolicy, ReadsCertificateFromAnySectionButGssapiOnlyFromSecurity) {
@@ -124,7 +148,12 @@ TEST(PamBrokerPolicy, RejectsInvalidGssapiSettings) {
          "[security]\ngssapi_keytab = relative.keytab\n",
          "[security]\ngssapi_keytab = /a\ngssapi_keytab = /b\n",
          "[security]\ngssapi_required_indicator =\n",
-         "[security]\ngssapi_required_indicator = otp pkinit\n",
+         "[security]\ngssapi_required_indicator = \"\"\n",
+         "[security]\ngssapi_required_indicator = \"   \"\n",
+         "[security]\ngssapi_required_indicator = otp pass/key\n",
+         "[security]\ngssapi_required_indicator = otp,passkey\n",
+         "[security]\ngssapi_required_indicator = otp .passkey\n",
+         "[security]\ngssapi_required_indicator = otp passkey\ngssapi_required_indicator = otp\n",
          "[security]\ngssapi_required_indicator = otp\ngssapi_required_indicator = otp\n",
          "[security]\ngssapi_pam_service = ../plank-host\n",
          "[security]\ngssapi_pam_service = plank/remote\n",

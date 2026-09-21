@@ -111,19 +111,21 @@ namespace plank::auth::gssapi {
    * Requirements, in order: Kerberos V5 mechanism, verified channel
    * bindings, a non-anonymous initiator, a `plank/<host>` acceptor in the
    * default realm, a single-component initiator in the default realm whose
-   * library-mapped local name equals the requested account, and the required
-   * authentication indicator.
+   * library-mapped local name equals the requested account, and at least one
+   * of the accepted authentication indicators.
    *
    * @param context Facts from the accepted context.
    * @param default_realm Host's default Kerberos realm.
    * @param requested_username Account named in the authentication request.
-   * @param required_indicator Required auth-indicator value.
+   * @param required_indicators Accepted auth-indicator values; any one admits.
    * @return Admission outcome.
    */
   inline admission_e evaluate(const accepted_context_t &context, std::string_view default_realm,
                               std::string_view requested_username,
-                              std::string_view required_indicator) {
-    if (default_realm.empty() || requested_username.empty() || required_indicator.empty()) {
+                              std::span<const std::string> required_indicators) {
+    if (default_realm.empty() || requested_username.empty() || required_indicators.empty() ||
+        std::any_of(required_indicators.begin(), required_indicators.end(),
+                    [](const std::string &indicator) { return indicator.empty(); })) {
       return admission_e::configuration_error;
     }
     if (!context.kerberos_mechanism) {
@@ -150,8 +152,11 @@ namespace plank::auth::gssapi {
     if (context.localname.empty() || context.localname != requested_username) {
       return admission_e::localname_mismatch;
     }
-    if (std::find(context.indicators.begin(), context.indicators.end(), required_indicator) ==
-        context.indicators.end()) {
+    if (std::none_of(required_indicators.begin(), required_indicators.end(),
+                     [&context](const std::string &indicator) {
+                       return std::find(context.indicators.begin(), context.indicators.end(),
+                                        indicator) != context.indicators.end();
+                     })) {
       return admission_e::missing_indicator;
     }
     return admission_e::admitted;
