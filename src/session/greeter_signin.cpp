@@ -32,6 +32,7 @@ namespace plank::session {
     constexpr keysym_t keysym_shift_left = 0xffe1;
     constexpr keysym_t keysym_control_left = 0xffe3;
     constexpr keysym_t keysym_backspace = 0xff08;
+    constexpr keysym_t keysym_tab = 0xff09;
     constexpr keysym_t keysym_a = 'a';
     // Let a new stream's input path and the greeter settle before typing.
     constexpr auto settle_delay = std::chrono::milliseconds {1500};
@@ -169,11 +170,16 @@ namespace plank::session {
         }
       }
       // Wake a blanked greeter with a key that types nothing, then back out
-      // of a half-finished prompt and clear the account entry.
+      // of a half-finished prompt. After the greeter has blanked once, GNOME
+      // Shell no longer gives the account entry key focus; Tab restores it
+      // (the entry is the only focusable control, so Tab keeps it focused).
+      // Then clear the entry.
       typist.press(keysym_shift_left);
       std::this_thread::sleep_for(wake_delay);
       typist.press(keysym_escape);
       std::this_thread::sleep_for(std::chrono::milliseconds {400});
+      typist.press(keysym_tab);
+      std::this_thread::sleep_for(std::chrono::milliseconds {100});
       typist.chord(keysym_control_left, keysym_a);
       typist.press(keysym_backspace);
       for (const char c : account) {

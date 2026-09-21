@@ -26,7 +26,9 @@ moves a stream between clients of the same account.
    secret.
 2. Once the stream is live, the worker opens the greeter's X display and sends
    XTest key events: Shift (wakes a blanked greeter, which drops keys while it
-   fades in), Escape, Control+A and BackSpace (clear the entry), the account
+   fades in), Escape, Tab (after a blank GNOME Shell leaves the entry without key
+   focus; it is the only focusable control), Control+A and BackSpace (clear
+   the entry), the account
    name, Return. Keysyms are resolved against the greeter's keymap, so any
    layout works. If GDM has not claimed the pass six seconds later, the
    sequence runs once more. Account names outside
