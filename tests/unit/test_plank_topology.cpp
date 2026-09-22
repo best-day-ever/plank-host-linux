@@ -274,6 +274,7 @@ TEST(PlankTopology, PublishesTheArrangementVectorExactly) {
   view.request = "1:3024x1890+0+270:auto,3840x2160+3024+0:auto";
   view.state = "applied";
   view.outputs = {{"x11:DP-0", {"virtual", 0}}, {"x11:HDMI-0", {"physical", 1}}};
+  view.lease = true;
   const auto capabilities = plank::arrangement::capabilities_from_json(expected.at("display_capabilities"));
   ASSERT_TRUE(capabilities);
   view.capabilities = *capabilities;
@@ -346,4 +347,50 @@ TEST(PlankTopology, OutsideALeaseEveryOutputIsPhysical) {
   EXPECT_EQ(document.at("outputs")[0].at("backing"), "physical");
   EXPECT_EQ(document.at("outputs")[0].at("arrangement_index"), -1);
   EXPECT_TRUE(document.contains("display_capabilities"));
+  // No lease, no capture_size; and never the macOS fixed-capture `capture` key.
+  EXPECT_FALSE(document.contains("capture_size"));
+  EXPECT_FALSE(document.contains("capture"));
+  EXPECT_FALSE(document.at("outputs")[0].contains("capture_rect"));
+}
+
+TEST(PlankTopology, PublishesAPackedCaptureInCaptureCoordinates) {
+  topology::document_layout_t layout {"physical", false, {}, "physical", {"physical", "single", "dual-horizontal"}};
+  topology::arrangement_view_t view;
+  view.startup_policy = "hybrid";
+  view.lease = true;
+  view.request = "1:3840x2160+0+0:auto,3840x2160+3840+0:auto,3840x2160+7680+0:auto";
+  view.state = "applied";
+  view.outputs = {
+    {"x11:HDMI-0", {"physical", 0}}, {"x11:DP-0", {"virtual", 1}}, {"x11:DP-2", {"virtual", 2}},
+  };
+  view.capture_size = std::pair {7680, 4320};
+  view.capture_rects = {
+    {"x11:HDMI-0", {0, 0, 3840, 2160}}, {"x11:DP-0", {3840, 0, 3840, 2160}}, {"x11:DP-2", {0, 2160, 3840, 2160}},
+  };
+  const auto document = topology::topology_document(
+    topology::protocol_version, topology::feature_flags | topology::feature_display_arrangement,
+    {
+      {"x11:HDMI-0", "HDMI-0", 0, 0, 3840, 2160, 0, 60000, true},
+      {"x11:DP-0", "DP-0", 3840, 0, 3840, 2160, 0, 60000, false},
+      {"x11:DP-2", "DP-2", 7680, 0, 3840, 2160, 0, 60000, false},
+    },
+    layout, view, "x11:3:packed-0123456789abcdef"
+  );
+  // The desktop keeps the requested positions; only the video is packed.
+  EXPECT_EQ(document.at("desktop"), nlohmann::json({{"x", 0}, {"y", 0}, {"width", 11520}, {"height", 2160}}));
+  EXPECT_EQ(document.at("capture_size"), nlohmann::json({{"width", 7680}, {"height", 4320}}));
+  EXPECT_EQ(document.at("outputs")[2].at("x"), 7680);
+  EXPECT_EQ(document.at("outputs")[2].at("capture_rect"),
+            nlohmann::json({{"x", 0}, {"y", 2160}, {"width", 3840}, {"height", 2160}}));
+  EXPECT_EQ(document.at("outputs")[1].at("capture_rect"),
+            nlohmann::json({{"x", 3840}, {"y", 0}, {"width", 3840}, {"height", 2160}}));
+  // source_rect keeps its schema-13 meaning, inside the desktop, for older parsers.
+  EXPECT_EQ(document.at("outputs")[2].at("source_rect"),
+            nlohmann::json({{"x", 7680}, {"y", 0}, {"width", 3840}, {"height", 2160}}));
+  for (const auto &output : document.at("outputs")) {
+    const auto &rect = output.at("source_rect");
+    EXPECT_LE(rect.at("x").get<int>() + rect.at("width").get<int>(), 11520);
+    EXPECT_LE(rect.at("y").get<int>() + rect.at("height").get<int>(), 2160);
+  }
+  EXPECT_FALSE(document.contains("capture"));
 }

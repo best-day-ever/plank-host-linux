@@ -7,6 +7,7 @@
 // standard includes
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <optional>
 #include <string>
@@ -76,6 +77,14 @@ namespace video {
     bool span_desktop {};  ///< Capture and scale the complete virtual desktop rather than one output.
     capture_source_e capture_source {capture_source_e::configured};  ///< Exact capture path negotiated for this session, or configured during probes.
     std::string encoder_backend;  ///< Exact PLANK encoder backend selected for this session.
+    /**
+     * Packed capture (display arrangements): each output's copy from the X
+     * screen into a capture of `width` x `height`. Empty for every other
+     * session, whose capture is the screen or one output.
+     */
+    std::vector<plank::arrangement::capture_region_t> capture_regions;
+    int desktop_width {};  ///< Desktop bounding box, the pointer reference size of a packed capture.
+    int desktop_height {};  ///< Desktop bounding box height.
   };
 
   namespace amf {
@@ -755,6 +764,9 @@ namespace video {
    * @return Limits keyed by PLANK encoding-mode name.
    */
   std::map<std::string, plank::arrangement::encoding_limit_t> encoding_mode_limits();
+
+  /** Return whether this build captures display arrangements into packed rows (NvFBC on Linux). */
+  bool packed_capture_available();
 
   /**
    * @brief Report whether a negotiated PLANK capture source is available.

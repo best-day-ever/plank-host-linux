@@ -10,7 +10,12 @@
 #include <charconv>
 #include <cerrno>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <list>
 #include <numeric>
 #include <thread>
@@ -23,6 +28,7 @@
 
 // lib includes
 #include <boost/pointer_cast.hpp>
+#include <nlohmann/json.hpp>
 
 extern "C" {
 #include <libavutil/imgutils.h>
@@ -43,6 +49,7 @@ extern "C" {
 #include "logging.h"
 #include "nvenc/nvenc_encoder.h"
 #include "nvenc/nvenc_limits.h"
+#include "plank_arrangement_json.h"
 #include "plank_topology.h"
 #include "platform/common.h"
 #include "sync.h"
@@ -1822,6 +1829,14 @@ namespace video {
     return limits;
   }
 
+  bool packed_capture_available() {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    return true;
+#else
+    return false;
+#endif
+  }
+
   bool capture_source_available(std::string_view source) {
 #if defined(__linux__)
     return platf::plank_capture_source_available(source);
@@ -3073,6 +3088,23 @@ namespace video {
    * @return Constructed port object.
    */
   input::touch_port_t make_port(platf::display_t *display, const config_t &config) {
+    if (!config.capture_regions.empty() && config.desktop_width > 0 && config.desktop_height > 0) {
+      // A packed capture rearranges only the video. A client presenting it
+      // in separate windows sends pointer and touch positions in desktop
+      // coordinates with the desktop bounding box as the reference size, so
+      // input maps 1:1 onto the X screen, never through the packed frame.
+      return input::touch_port_t {
+        {0, 0, config.desktop_width, config.desktop_height},
+        display->env_width,
+        display->env_height,
+        0.0f,
+        0.0f,
+        1.0f,
+        1.0f,
+        0,
+        0,
+      };
+    }
     float wd = display->width;
     float hd = display->height;
 
@@ -4413,5 +4445,6 @@ namespace video {
 
     return platf::pix_fmt_e::unknown;
   }
+
 
 }  // namespace video

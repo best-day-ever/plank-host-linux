@@ -1694,7 +1694,37 @@ namespace cuda {
 
         capture_params.dwSamplingRateMs = 1000 /* ms */ / config.framerate;
 
-        if (streamedMonitor != -1) {
+        if (!config.capture_regions.empty()) {
+          // A packed display arrangement: grab the whole X screen and copy
+          // each output's rectangle into its slot of a width x height capture.
+          if (streamedMonitor != -1 || config.width <= 0 || config.height <= 0) {
+            BOOST_LOG(error) << "A packed capture needs the whole screen and a capture size"sv;
+            return -1;
+          }
+          for (const auto &region : config.capture_regions) {
+            const auto &desktop = region.desktop;
+            const auto &packed = region.capture;
+            if (desktop.width != packed.width || desktop.height != packed.height ||
+                desktop.x < 0 || desktop.y < 0 || packed.x < 0 || packed.y < 0 ||
+                desktop.width <= 0 || desktop.height <= 0 ||
+                desktop.x + desktop.width > static_cast<int>(status_params->screenSize.w) ||
+                desktop.y + desktop.height > static_cast<int>(status_params->screenSize.h) ||
+                packed.x + packed.width > config.width || packed.y + packed.height > config.height) {
+              BOOST_LOG(error) << "Packed capture region "sv << desktop.width << 'x' << desktop.height << '+'
+                               << desktop.x << '+' << desktop.y << " does not fit the "sv
+                               << status_params->screenSize.w << 'x' << status_params->screenSize.h
+                               << " screen or the "sv << config.width << 'x' << config.height << " capture"sv;
+              return -1;
+            }
+          }
+          capture_regions = config.capture_regions;
+          capture_params.eTrackingType = NVFBC_TRACKING_SCREEN;
+          width = config.width;
+          height = config.height;
+          BOOST_LOG(info) << "PLANK packed capture: "sv << capture_regions.size() << " output(s) from the "sv
+                          << status_params->screenSize.w << 'x' << status_params->screenSize.h
+                          << " screen into "sv << width << 'x' << height;
+        } else if (streamedMonitor != -1) {
           auto &output = status_params->outputs[streamedMonitor];
 
           width = output.trackedBox.w;
@@ -1910,6 +1940,24 @@ namespace cuda {
           }
         }
 
+        if (!capture_regions.empty()) {
+          // Same context and the same copy as the unpacked path, once per output.
+          const int frame_pitch = static_cast<int>(info.dwWidth) * img->pixel_pitch;
+          for (const auto &region : capture_regions) {
+            const auto &desktop = region.desktop;
+            if (desktop.x + desktop.width > static_cast<int>(info.dwWidth) ||
+                desktop.y + desktop.height > static_cast<int>(info.dwHeight)) {
+              BOOST_LOG(warning) << "The X screen no longer holds the packed capture; reinitializing"sv;
+              return platf::capture_e::reinit;
+            }
+            if (img->tex.copy_rect((const std::uint8_t *) device_ptr, frame_pitch, desktop.x, desktop.y,
+                                   desktop.width, desktop.height, region.capture.x, region.capture.y)) {
+              return platf::capture_e::error;
+            }
+          }
+          return platf::capture_e::ok;
+        }
+
         if (img->tex.copy((std::uint8_t *) device_ptr, img->height, img->row_pitch)) {
           return platf::capture_e::error;
         }
@@ -1961,6 +2009,11 @@ namespace cuda {
         }
 
         img->tex = std::move(*tex_opt);
+        // Packed capture: the gaps between output rectangles stay black; only
+        // the rectangles are rewritten per frame.
+        if (!capture_regions.empty() && img->tex.clear(img->height, img->row_pitch)) {
+          return nullptr;
+        }
 
         return img;
       };
@@ -1980,11 +2033,26 @@ namespace cuda {
       handle_t handle;  ///< NvFBC capture handle owning the active capture session.
 
       NVFBC_CREATE_CAPTURE_SESSION_PARAMS capture_params;  ///< NvFBC capture-session parameters used for frame grabs.
+      std::vector<plank::arrangement::capture_region_t> capture_regions;  ///< Packed-capture copies, or empty.
     };
   }  // namespace nvfbc
 }  // namespace cuda
 
 namespace platf {
+  /**
+   * @brief Read a captured NvFBC CUDA image back to host memory (capture probe).
+   *
+   * @param img Image allocated by the NvFBC display backend.
+   * @param bgra Receives `img.height` rows of `img.row_pitch` BGRA bytes.
+   * @return True when the image was read.
+   */
+  bool download_captured_image(platf::img_t &img, std::vector<std::uint8_t> &bgra) {
+    auto *cuda_img = dynamic_cast<cuda::img_t *>(&img);
+    if (cuda_img == nullptr || img.height <= 0 || img.row_pitch <= 0) return false;
+    bgra.resize(static_cast<std::size_t>(img.row_pitch) * static_cast<std::size_t>(img.height));
+    return cuda_img->tex.download(bgra.data(), img.height, img.row_pitch) == 0;
+  }
+
   /**
    * @brief Create an NvFBC CUDA display capture backend.
    *

@@ -500,6 +500,41 @@ namespace cuda {
     return 0;
   }
 
+  int tex_t::copy_rect(const std::uint8_t *src, int src_pitch, int src_x, int src_y, int width, int height,
+                       int dst_x, int dst_y) {
+    const auto *origin = src + static_cast<std::size_t>(src_y) * src_pitch + static_cast<std::size_t>(src_x) * 4;
+    CU_CHECK(cudaMemcpy2DToArray(array, static_cast<std::size_t>(dst_x) * 4, dst_y, origin, src_pitch,
+                                 static_cast<std::size_t>(width) * 4, height, cudaMemcpyDeviceToDevice),
+             "Couldn't copy a packed capture region to cuda array");
+
+    return 0;
+  }
+
+  int tex_t::clear(int height, int pitch) {
+    // Zero a band of rows once and copy it down the array.
+    constexpr int band_rows = 64;
+    void *zero = nullptr;
+    CU_CHECK(cudaMalloc(&zero, static_cast<std::size_t>(pitch) * band_rows), "Couldn't allocate a cuda clear band");
+    int status = check(cudaMemset(zero, 0, static_cast<std::size_t>(pitch) * band_rows),
+                       "Couldn't clear a cuda band: "sv) ? -1 : 0;
+    for (int row = 0; status == 0 && row < height; row += band_rows) {
+      const int rows = std::min(band_rows, height - row);
+      if (check(cudaMemcpy2DToArray(array, 0, row, zero, pitch, pitch, rows, cudaMemcpyDeviceToDevice),
+                "Couldn't clear cuda array: "sv)) {
+        status = -1;
+      }
+    }
+    cudaFree(zero);
+    return status;
+  }
+
+  int tex_t::download(std::uint8_t *dst, int height, int pitch) {
+    CU_CHECK(cudaMemcpy2DFromArray(dst, pitch, array, 0, 0, pitch, height, cudaMemcpyDeviceToHost),
+             "Couldn't copy cuda array to host");
+
+    return 0;
+  }
+
   std::optional<tex_t> tex_t::make(int height, int pitch) {
     tex_t tex;
 

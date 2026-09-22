@@ -138,7 +138,7 @@ namespace nvhttp {
     const auto inventory = plank::display::read_inventory();
     if (!inventory) return std::nullopt;
     auto capabilities = plank::display::capabilities_from_inventory(
-      *inventory, video::encoding_mode_limits()
+      *inventory, video::encoding_mode_limits(), video::packed_capture_available()
     );
     if (!plank::topology::display_arrangement_advertised(
           policy, inventory->startup_policy, capabilities.max_outputs
@@ -807,6 +807,57 @@ namespace nvhttp {
     return result;
   }
 
+  /**
+   * The encoding mode of the latest launch that asked for an arrangement. A
+   * packed capture depends on it, so the topology of that arrangement is
+   * published packed for this mode once its lease is live.
+   */
+  std::mutex arrangement_mode_mutex;
+  std::string arrangement_mode_request;
+  std::string arrangement_mode;
+
+  void remember_arrangement_mode(const std::string &request, const std::string &mode) {
+    std::lock_guard lock {arrangement_mode_mutex};
+    arrangement_mode_request = request;
+    arrangement_mode = mode;
+  }
+
+  std::optional<std::string> remembered_arrangement_mode(const std::string &request) {
+    std::lock_guard lock {arrangement_mode_mutex};
+    return arrangement_mode_request == request && !arrangement_mode.empty() ?
+             std::optional {arrangement_mode} : std::nullopt;
+  }
+
+  /**
+   * The topology generation. A packed capture changes it, so a client that saw
+   * the unpacked desktop is sent back to refresh (409) before it streams.
+   */
+  std::string topology_generation_for(const std::vector<platf::display_info_t> &outputs,
+                                      const std::optional<plank::arrangement::capture_plan_t> &capture) {
+    auto generation = video::output_topology_generation(outputs);
+    if (capture && capture->packed) {
+      std::string rects = std::format("{}x{}", capture->width, capture->height);
+      for (const auto &rect : capture->source_rects) {
+        rects += std::format(";{}x{}+{}+{}", rect.width, rect.height, rect.x, rect.y);
+      }
+      generation += ":packed-" + plank::display::sha256_hex(rects).substr(0, 16);
+    }
+    return generation;
+  }
+
+  /** The packed capture a live arrangement lease is published with, if any. */
+  std::optional<plank::arrangement::capture_plan_t> live_arrangement_capture(
+    const plank::session::runtime_display_state_2_t &state,
+    const plank::arrangement::capabilities_t &capabilities
+  ) {
+    if (state.origin != "arrangement"sv) return std::nullopt;
+    const auto mode = remembered_arrangement_mode(state.request);
+    const auto request = plank::arrangement::parse(state.request).request;
+    if (!mode || !request) return std::nullopt;
+    const auto plan = plank::arrangement::plan_capture(*request, capabilities, *mode).plan;
+    return plan && plan->packed ? plan : std::nullopt;
+  }
+
   /** The arrangement view of the topology, or no value when the bit is not advertised. */
   std::optional<plank::topology::arrangement_view_t> arrangement_view(const live_layout_t &live_layout) {
     auto capabilities = display_arrangement_capabilities();
@@ -815,11 +866,23 @@ namespace nvhttp {
     view.startup_policy = live_layout.startup_policy;
     view.capabilities = std::move(*capabilities);
     if (live_layout.arrangement) {
+      view.lease = true;
       view.request = live_layout.arrangement->request;
       view.state = "applied";
       for (const auto &output : live_layout.arrangement->outputs) {
         if (output.backing == "off"sv) continue;
         view.outputs["x11:" + output.randr] = {output.backing, output.arrangement_index};
+      }
+      if (const auto capture = live_arrangement_capture(*live_layout.arrangement, view.capabilities)) {
+        view.capture_size = std::pair {capture->width, capture->height};
+        for (const auto &output : live_layout.arrangement->outputs) {
+          if (output.backing == "off"sv || output.arrangement_index < 0 ||
+              static_cast<std::size_t>(output.arrangement_index) >= capture->source_rects.size()) {
+            continue;
+          }
+          view.capture_rects["x11:" + output.randr] =
+            capture->source_rects[static_cast<std::size_t>(output.arrangement_index)];
+        }
       }
     }
     const auto transition = plank::session::read_display_transition(runtime_display_transition);
@@ -863,9 +926,13 @@ namespace nvhttp {
     } else {
       features &= ~plank::topology::feature_display_arrangement;
     }
+    std::optional<plank::arrangement::capture_plan_t> capture;
+    if (arrangement && arrangement->capture_size && live_layout.arrangement) {
+      capture = live_arrangement_capture(*live_layout.arrangement, arrangement->capabilities);
+    }
     return plank::topology::topology_document(
       plank_topology_version, features, document_outputs, layout, arrangement,
-      video::output_topology_generation(outputs)
+      topology_generation_for(outputs, capture)
     );
   }
 
@@ -981,6 +1048,23 @@ namespace nvhttp {
       arrangement_refusal(tree, 409, reason, "The workstation cannot present this display arrangement (" + reason + ")");
       return false;
     }
+    // The capture must fit the launch's encoder, in rows if the host packs.
+    const auto parsed_request = arrangement::parse(session.display_arrangement).request;
+    const auto capture = arrangement::plan_capture(*parsed_request, *capabilities, session.encoding_mode);
+    if (!capture.plan) {
+      const auto code = arrangement::error_code(capture.error);
+      arrangement_refusal(tree, 400, code,
+                          "The display arrangement does not fit the " + session.encoding_mode +
+                            " encoder (" + std::string {code} + ")");
+      return false;
+    }
+    if (capture.plan->packed && session.capture_source != "nvfbc") {
+      arrangement_refusal(tree, 400, arrangement::error_code(arrangement::error_t::canvas_too_large),
+                          "Packed capture needs the NvFBC capture source");
+      return false;
+    }
+    remember_arrangement_mode(session.display_arrangement, session.encoding_mode);
+    session.arrangement_capture = capture.plan;
 
     const auto live_layout = live_display_layout(outputs);
     if (live_layout.temporary_physical_lease && live_layout.lease_uid != authenticated_uid) {
@@ -1204,7 +1288,9 @@ namespace nvhttp {
       tree.put("root.<xmlattr>.status_message", "Missing PLANK topology generation");
       return false;
     }
-    const auto current_generation = video::output_topology_generation(outputs);
+    const auto current_generation = topology_generation_for(
+      outputs, session.capture_regions.empty() ? std::nullopt : session.arrangement_capture
+    );
     if (session.topology_generation != current_generation) {
       tree.put("root.<xmlattr>.status_code", 409);
       tree.put("root.<xmlattr>.status_message", "Host output topology changed; refresh and retry");
@@ -1237,6 +1323,20 @@ namespace nvhttp {
         tree.put("root.<xmlattr>.status_code", 409);
         tree.put("root.<xmlattr>.status_message", "Host desktop topology is unavailable");
         return false;
+      }
+      if (session.arrangement_capture && session.arrangement_capture->packed) {
+        // The client presents a packed capture 1:1 from its source rectangles.
+        if (session.width != session.arrangement_capture->width ||
+            session.height != session.arrangement_capture->height) {
+          tree.put("root.<xmlattr>.status_code", 400);
+          tree.put("root.<xmlattr>.status_message", std::format(
+            "A packed capture streams at {}x{}, not {}x{}", session.arrangement_capture->width,
+            session.arrangement_capture->height, session.width, session.height
+          ));
+          return false;
+        }
+        const auto request = plank::arrangement::parse(session.display_arrangement).request;
+        session.capture_regions = plank::arrangement::capture_regions(*request, *session.arrangement_capture);
       }
       if (!bind_topology_generation(session, outputs, tree)) {
         return false;

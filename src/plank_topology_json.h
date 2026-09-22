@@ -58,6 +58,13 @@ namespace plank::topology {
     std::string reason;  ///< Transition reason, or empty.
     std::map<std::string, std::pair<std::string, int>> outputs;  ///< Output ID -> {backing, arrangement index}.
     plank::arrangement::capabilities_t capabilities;  ///< `display_capabilities`.
+    bool lease {};  ///< An arrangement lease is live: publish `capture_size` and `capture_rect`.
+    /**
+     * Packed capture: `capture_size` and each output's `capture_rect`. Without
+     * it the capture is the desktop and `capture_rect` equals `source_rect`.
+     */
+    std::optional<std::pair<int, int>> capture_size;
+    std::map<std::string, plank::arrangement::rect_t> capture_rects;  ///< Output ID -> capture rectangle.
   };
 
   /**
@@ -143,6 +150,20 @@ namespace plank::topology {
           {"height", output.height},
         }},
       };
+      if (arrangement && arrangement->lease) {
+        // `source_rect` keeps its schema-13 meaning (inside the desktop, which
+        // older parsers require); the encoded position is `capture_rect`.
+        item["capture_rect"] = item["source_rect"];
+        if (const auto packed = arrangement->capture_rects.find(output.id);
+            arrangement->capture_size && packed != arrangement->capture_rects.end()) {
+          item["capture_rect"] = {
+            {"x", packed->second.x},
+            {"y", packed->second.y},
+            {"width", packed->second.width},
+            {"height", packed->second.height},
+          };
+        }
+      }
       if (arrangement) {
         const auto found = arrangement->outputs.find(output.id);
         item["backing"] = found == arrangement->outputs.end() ? std::string {"physical"} :
@@ -155,6 +176,12 @@ namespace plank::topology {
       {"x", min_x}, {"y", min_y}, {"width", max_x - min_x}, {"height", max_y - min_y},
     };
     body["generation"] = generation;
+    if (arrangement && arrangement->lease) {
+      // Not `capture`: that key marks the macOS fixed-capture document, and
+      // older clients route any document containing it to that parser.
+      const auto capture = arrangement->capture_size.value_or(std::pair {max_x - min_x, max_y - min_y});
+      body["capture_size"] = {{"width", capture.first}, {"height", capture.second}};
+    }
     if (arrangement) {
       body["display_capabilities"] = plank::arrangement::capabilities_json(arrangement->capabilities);
     }

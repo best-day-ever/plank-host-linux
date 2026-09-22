@@ -536,6 +536,22 @@ namespace stream {
 
     const auto frame_width = session->config.monitor.width;
     const auto frame_height = session->config.monitor.height;
+    if (!session->config.monitor.capture_regions.empty()) {
+      // A packed capture: the cursor sits in its output's slot of the frame.
+      const auto [packed_x, packed_y] = plank::arrangement::desktop_to_capture(
+        session->config.monitor.capture_regions, root_position.x, root_position.y
+      );
+      PLANK_CURSOR_POSITION_WIRE_MESSAGE position {};
+      write_cursor_little(position.magic, static_cast<std::uint32_t>(PLANK_CURSOR_POSITION_WIRE_MAGIC));
+      write_cursor_little(position.version, static_cast<std::uint16_t>(PLANK_CURSOR_POSITION_WIRE_VERSION));
+      write_cursor_little(position.sequence, ++position_sequence);
+      write_cursor_little(position.x, static_cast<std::uint32_t>(std::clamp(packed_x, 0, frame_width - 1)));
+      write_cursor_little(position.y, static_cast<std::uint32_t>(std::clamp(packed_y, 0, frame_height - 1)));
+      write_cursor_little(position.frameWidth, static_cast<std::uint32_t>(frame_width));
+      write_cursor_little(position.frameHeight, static_cast<std::uint32_t>(frame_height));
+      session->control.cursor_position_event->raise(position);
+      return true;
+    }
     const auto scale = std::min(
       frame_width / static_cast<double>(root_position.desktop_width),
       frame_height / static_cast<double>(root_position.desktop_height)
