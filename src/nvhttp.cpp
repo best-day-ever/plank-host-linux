@@ -1016,7 +1016,8 @@ namespace nvhttp {
   bool bind_display_arrangement(session_stream::launch_session_t &session,
                                 const std::vector<platf::display_info_t> &outputs,
                                 uid_t authenticated_uid,
-                                pt::ptree &tree) {
+                                pt::ptree &tree,
+                                bool preflight_only = false) {
     namespace arrangement = plank::arrangement;
     if (session.plank_protocol_version != plank_topology_version ||
         (session.plank_feature_flags & plank::topology::feature_display_arrangement) == 0) {
@@ -1063,6 +1064,7 @@ namespace nvhttp {
                           "Packed capture needs the NvFBC capture source");
       return false;
     }
+    if (preflight_only) return true;
     remember_arrangement_mode(session.display_arrangement, session.encoding_mode);
     session.arrangement_capture = capture.plan;
 
@@ -1969,6 +1971,11 @@ namespace nvhttp {
       tree.put("root.gamesession", 0);
       return;
     }
+    if (active_session && launch_session->display_arrangement_requested &&
+        !bind_display_arrangement(*launch_session, {}, *authenticated_uid, tree, true)) {
+      tree.put("root.gamesession", 0);
+      return;
+    }
 
     auto current_appid = proc::proc.running();
     if (active_session) {
@@ -2145,6 +2152,11 @@ namespace nvhttp {
       return;
     }
     if (!validate_transport_mtu(*launch_session, tree)) {
+      tree.put("root.resume", 0);
+      return;
+    }
+    if (active_session && launch_session->display_arrangement_requested &&
+        !bind_display_arrangement(*launch_session, {}, *authenticated_uid, tree, true)) {
       tree.put("root.resume", 0);
       return;
     }
