@@ -114,6 +114,8 @@ namespace stream {
 #ifdef PLANK_TRANSPORT
     std::mutex file_clipboard_publish_mutex;
     std::shared_ptr<file_clipboard_publish_t> file_clipboard_publish;
+    std::mutex file_clipboard_source_mutex;
+    std::optional<std::vector<std::string>> file_clipboard_source;
 #endif
 #endif
 
@@ -675,6 +677,13 @@ namespace stream {
             !queue_clipboard_offer(session, content.text)) {
           BOOST_LOG(warning) << "Unable to queue a PLANK clipboard offer"sv;
         }
+#ifdef PLANK_TRANSPORT
+        if (content.kind == platf::x11::clipboard_content_t::kind_e::files &&
+            file_clipboard::host_to_client_allowed(session->file_clipboard_mode)) {
+          std::lock_guard<std::mutex> lock(session->file_clipboard_source_mutex);
+          session->file_clipboard_source = std::move(content.file_uris);
+        }
+#endif
       }
       if (!session->clipboard->wait_for_activity()) {
         BOOST_LOG(error) << "Lost the X11 clipboard connection"sv;
@@ -694,7 +703,7 @@ namespace stream {
     auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(
       session->plank_transport_endpoint.get()
     );
-    file_clipboard::client_to_host_worker(
+    file_clipboard::worker(
       stop_token, endpoint,
       [session, stop_token](const std::vector<std::string> &uris) {
         auto request = std::make_shared<file_clipboard_publish_t>();
@@ -711,6 +720,12 @@ namespace stream {
               })) return request->success;
         }
         return false;
+      },
+      [session]() -> std::optional<std::vector<std::string>> {
+        std::lock_guard<std::mutex> lock(session->file_clipboard_source_mutex);
+        auto result = std::move(session->file_clipboard_source);
+        session->file_clipboard_source.reset();
+        return result;
       },
       session->file_clipboard_mode
     );
@@ -901,7 +916,8 @@ namespace stream {
           }
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11) && defined(PLANK_TRANSPORT)
-          if (file_clipboard::client_to_host_allowed(session->file_clipboard_mode) &&
+          if ((file_clipboard::client_to_host_allowed(session->file_clipboard_mode) ||
+               file_clipboard::host_to_client_allowed(session->file_clipboard_mode)) &&
               !session->fileClipboardThread.joinable()) {
             session->fileClipboardThread = std::jthread(localFileClipboardThread, session);
           }
