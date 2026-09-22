@@ -156,8 +156,13 @@ channels when the setting is `off`.
 
 Display policy applied before the display manager starts. `physical` preserves
 connected displays. `virtual` prepares one internal 1920x1080 login output;
-the authenticated bookmark then supplies the active virtual layout. Default:
-`physical`.
+the authenticated bookmark then supplies the active virtual layout. `hybrid`
+starts like `physical` and also reserves up to three hidden virtual displays on
+free DisplayPort heads, so a display arrangement (feature `0x8000000`) can use
+the physical outputs, exact-size virtual displays, or both. `hybrid` needs the
+display inventory the host records after its first start; until then, and
+whenever the GPU or its outputs change, it behaves like `physical` and the
+greeter restarts once to apply the new inventory. Default: `physical`.
 
 ### adapter_name
 
