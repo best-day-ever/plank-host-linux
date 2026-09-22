@@ -13,10 +13,14 @@ TEST(PlankTopology, PublishesVersionThirteenFeatureContract) {
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
   EXPECT_EQ(topology::feature_flags, 0x47FFFFU);
   EXPECT_NE(topology::feature_flags & topology::feature_clipboard_sync, 0U);
+  EXPECT_EQ(topology::feature_platform_file_clipboard,
+            topology::feature_file_clipboard);
 #else
   EXPECT_EQ(topology::feature_flags, 0x7FFFFU);
   EXPECT_EQ(topology::feature_flags & topology::feature_clipboard_sync, 0U);
+  EXPECT_EQ(topology::feature_platform_file_clipboard, 0U);
 #endif
+  EXPECT_EQ(topology::feature_flags & topology::feature_file_clipboard, 0U);
   EXPECT_NE(topology::feature_flags & topology::feature_nvfbc_hevc10_nvenc, 0U);
   EXPECT_NE(topology::feature_flags & topology::feature_fixed_transport_mtu, 0U);
   EXPECT_NE(topology::feature_flags & topology::feature_session_takeover, 0U);

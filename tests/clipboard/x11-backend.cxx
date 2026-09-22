@@ -14,7 +14,7 @@ using namespace std::chrono_literals;
 struct fixture_t {
   Display *display = XOpenDisplay(nullptr);
   Window window;
-  Atom clipboard, utf8, property, incr;
+  Atom clipboard, utf8, property, incr, targets, uri_list, gnome_files;
   platf::x11::clipboard_t backend;
   fixture_t() : backend(std::move(platf::x11::clipboard_t::make().value())) {
     REQUIRE(display);
@@ -23,6 +23,9 @@ struct fixture_t {
     utf8 = XInternAtom(display, "UTF8_STRING", False);
     property = XInternAtom(display, "TEST_CLIPBOARD", False);
     incr = XInternAtom(display, "INCR", False);
+    targets = XInternAtom(display, "TARGETS", False);
+    uri_list = XInternAtom(display, "text/uri-list", False);
+    gnome_files = XInternAtom(display, "x-special/gnome-copied-files", False);
   }
   ~fixture_t() { XCloseDisplay(display); }
   Window make_window() {
@@ -47,6 +50,9 @@ struct fixture_t {
     REQUIRE(XGetSelectionOwner(display, clipboard) == window);
   }
   bool poll(std::string &text) { return backend.poll_change(text); }
+  bool poll(platf::x11::clipboard_content_t &content) {
+    return backend.poll_change(content);
+  }
   void poll() { std::string ignored; backend.poll_change(ignored); }
   void wait() {
 #ifdef PLANK_CLIPBOARD_SLEEP_POLL
@@ -85,7 +91,22 @@ struct fixture_t {
   XSelectionRequestEvent request() {
     own();
     poll();
-    return event(SelectionRequest).xselectionrequest;
+    return next_text_request();
+  }
+  void advertise(const XSelectionRequestEvent &request,
+                 const std::vector<Atom> &types) {
+    REQUIRE(request.target == targets);
+    XChangeProperty(display, request.requestor, request.property, XA_ATOM, 32,
+      PropModeReplace, reinterpret_cast<const unsigned char *>(types.data()), types.size());
+    notify(request);
+  }
+  XSelectionRequestEvent next_text_request() {
+    auto request = next_request();
+    advertise(request, {utf8});
+    poll();
+    request = next_request();
+    REQUIRE(request.target == utf8);
+    return request;
   }
   void notify(const XSelectionRequestEvent &request, Atom target = None) {
     XEvent result {};
@@ -105,6 +126,12 @@ struct fixture_t {
   }
   void reply(const XSelectionRequestEvent &request, const std::string &text) {
     chunk(request, text);
+    notify(request);
+  }
+  void reply_as(const XSelectionRequestEvent &request, Atom type,
+                const std::string &text) {
+    XChangeProperty(display, request.requestor, request.property, type, 8,
+      PropModeReplace, reinterpret_cast<const unsigned char *>(text.data()), text.size());
     notify(request);
   }
   void begin_incr(const XSelectionRequestEvent &request, unsigned long size) {
@@ -131,6 +158,20 @@ struct fixture_t {
     REQUIRE(XGetWindowProperty(display, window, property, 0, 1024*1024/4, True,
       AnyPropertyType, &type, &format, &count, &after, &data) == Success);
     REQUIRE(type == utf8 && format == 8 && after == 0);
+    std::string result(reinterpret_cast<char *>(data), count);
+    XFree(data);
+    return result;
+  }
+  std::string paste(Atom target) {
+    XConvertSelection(display, clipboard, target, property, window, CurrentTime);
+    XSync(display, False);
+    poll();
+    auto response = event(SelectionNotify).xselection;
+    REQUIRE(response.property == property);
+    Atom type; int format; unsigned long count, after; unsigned char *data = nullptr;
+    REQUIRE(XGetWindowProperty(display, window, property, 0, 1024*1024, True,
+      AnyPropertyType, &type, &format, &count, &after, &data) == Success);
+    REQUIRE(type == target && format == 8 && after == 0);
     std::string result(reinterpret_cast<char *>(data), count);
     XFree(data);
     return result;
@@ -227,7 +268,7 @@ void conversion_rate_is_bounded() {
   f.poll();
   XEvent unexpected {};
   REQUIRE(!XCheckTypedEvent(f.display, SelectionRequest, &unexpected));
-  request = f.next_request();
+  request = f.next_text_request();
   REQUIRE(std::chrono::steady_clock::now() - start >= 200ms);
   const auto refused = std::chrono::steady_clock::now();
   request.property = None;
@@ -235,7 +276,7 @@ void conversion_rate_is_bounded() {
   REQUIRE(!f.poll(text));
   f.poll();
   REQUIRE(!XCheckTypedEvent(f.display, SelectionRequest, &unexpected));
-  f.next_request();
+  f.next_text_request();
   REQUIRE(std::chrono::steady_clock::now() - refused >= 200ms);
 }
 void wakes_for_reply() {
@@ -270,7 +311,7 @@ void oversized_advertisement() {
   f.notify(request);
   std::string text;
   REQUIRE(!f.poll(text));
-  auto next = f.next_request();
+  auto next = f.next_text_request();
   REQUIRE(next.requestor != request.requestor);
   f.reply(next, "recovered");
   REQUIRE(f.poll(text) && text == "recovered");
@@ -287,7 +328,7 @@ void incremental_overflow() {
   }
   f.chunk(request, "overflow");
   REQUIRE(!f.poll(text));
-  auto next = f.next_request();
+  auto next = f.next_text_request();
   REQUIRE(next.requestor != request.requestor);
   f.reply(next, "recovered");
   REQUIRE(f.poll(text) && text == "recovered");
@@ -299,7 +340,7 @@ void conversion_timeout() {
   std::this_thread::sleep_for(5100ms);
   std::string text;
   REQUIRE(!f.poll(text));
-  auto next = f.next_request();
+  auto next = f.next_text_request();
   REQUIRE(next.requestor != request.requestor);
   f.reply(next, "after timeout");
   REQUIRE(f.poll(text) && text == "after timeout");
@@ -313,6 +354,43 @@ void correlated_notify() {
   REQUIRE(!f.poll(text));
   f.notify(request);
   REQUIRE(f.poll(text) && text == "valid text");
+}
+void publishes_file_targets() {
+  fixture_t f;
+  REQUIRE(f.backend.set_files({"file:///tmp/clip%20one", "file:///tmp/clip-two"}));
+  REQUIRE(f.paste(f.uri_list) ==
+          "file:///tmp/clip%20one\r\nfile:///tmp/clip-two\r\n");
+  REQUIRE(f.paste(f.gnome_files) ==
+          "copy\nfile:///tmp/clip%20one\nfile:///tmp/clip-two\n");
+}
+void receives_local_file_targets() {
+  fixture_t f;
+  f.own();
+  f.poll();
+  auto request = f.next_request();
+  f.advertise(request, {f.utf8, f.uri_list, f.gnome_files});
+  f.poll();
+  request = f.next_request();
+  REQUIRE(request.target == f.gnome_files);
+  f.reply_as(request, f.gnome_files,
+             "cut\nfile:///tmp/first%20file\nfile://localhost/tmp/second\n");
+  platf::x11::clipboard_content_t content;
+  REQUIRE(f.poll(content));
+  REQUIRE(content.kind == platf::x11::clipboard_content_t::kind_e::files);
+  REQUIRE(content.file_uris == std::vector<std::string>({
+    "file:///tmp/first%20file", "file://localhost/tmp/second"}));
+}
+void rejects_network_file_targets() {
+  fixture_t f;
+  f.own();
+  f.poll();
+  auto request = f.next_request();
+  f.advertise(request, {f.gnome_files});
+  f.poll();
+  request = f.next_request();
+  f.reply_as(request, f.gnome_files, "copy\nfile://server/share/file\n");
+  platf::x11::clipboard_content_t content;
+  REQUIRE(!f.poll(content));
 }
 int sentinel_errors = 0;
 int sentinel(Display *, XErrorEvent *) { ++sentinel_errors; return 0; }
@@ -343,6 +421,9 @@ int main(int argc, char **argv) {
     {"cumulative INCR overflow", incremental_overflow},
     {"INCR timeout and recovery", conversion_timeout},
     {"correlated notification", correlated_notify},
+    {"publishes file targets", publishes_file_targets},
+    {"receives local file targets", receives_local_file_targets},
+    {"rejects network file targets", rejects_network_file_targets},
     {"unrelated Xlib handler", unrelated_xlib_handler},
   };
   for (const auto &test : tests) {

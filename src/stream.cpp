@@ -6,8 +6,12 @@
 // standard includes
 #include <array>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <limits>
+#include <mutex>
+#include <optional>
+#include <utility>
 
 // lib includes
 extern "C" {
@@ -46,6 +50,7 @@ extern "C" {
   #include "platform/linux/graphics.h"
   #include "platform/linux/x11grab.h"
   #include "platform/linux/x11_clipboard.h"
+  #include "file_clipboard.h"
 #endif
 
 #ifdef PLANK_TRANSPORT
@@ -55,6 +60,16 @@ constexpr int PLANK_TRANSPORT_CONTROL_DRAIN_LIMIT = 16;
 using namespace std::literals;
 
 namespace stream {
+
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11) && defined(PLANK_TRANSPORT)
+  struct file_clipboard_publish_t {
+    std::vector<std::string> uris;
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool complete = false;
+    bool success = false;
+  };
+#endif
 
   static inline void while_starting_do_nothing(std::atomic<session::state_e> &state) {
     while (state.load(std::memory_order_acquire) == session::state_e::STARTING) {
@@ -87,13 +102,19 @@ namespace stream {
     std::jthread videoThread;  ///< Video thread.
     std::jthread cursorThread;  ///< XFixes cursor-shape monitor for local-cursor clients.
     std::jthread clipboardThread;  ///< X11 CLIPBOARD monitor for clipboard-sync clients.
+    std::jthread fileClipboardThread;  ///< Pull-driven file clipboard receiver.
     std::jthread inputThread;  ///< Native KyProto input receiver for PLANK sessions.
     std::uint32_t plank_feature_flags {};  ///< Client-supported PLANK feature bits for this session.
+    std::string file_clipboard_mode {"off"};  ///< Immutable negotiated direction policy.
     clipboard::receiver_t client_clipboard_receiver;
     std::uint64_t outbound_clipboard_generation = 0;
     clipboard::inbox_t client_clipboard_inbox;
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
     std::shared_ptr<platf::x11::clipboard_t> clipboard;  ///< Shared X11 clipboard bridge for this session.
+#ifdef PLANK_TRANSPORT
+    std::mutex file_clipboard_publish_mutex;
+    std::shared_ptr<file_clipboard_publish_t> file_clipboard_publish;
+#endif
 #endif
 
     safe::shared_t<broadcast_ctx_t>::ptr_t broadcast_ref;  ///< Shared broadcast context retained while the session is active.
@@ -620,6 +641,25 @@ namespace stream {
 
     BOOST_LOG(info) << "PLANK clipboard sync watching X11 CLIPBOARD"sv;
     while (!stop_token.stop_requested()) {
+#ifdef PLANK_TRANSPORT
+      std::shared_ptr<file_clipboard_publish_t> file_publish;
+      {
+        std::lock_guard<std::mutex> lock(session->file_clipboard_publish_mutex);
+        file_publish = std::exchange(session->file_clipboard_publish, nullptr);
+      }
+      if (file_publish) {
+        const bool success = session->clipboard->set_files(file_publish->uris);
+        {
+          std::lock_guard<std::mutex> lock(file_publish->mutex);
+          file_publish->success = success;
+          file_publish->complete = true;
+        }
+        file_publish->changed.notify_all();
+        if (!success) {
+          BOOST_LOG(error) << "Unable to publish a PLANK file clipboard to X11"sv;
+        }
+      }
+#endif
       if (auto pending = session->client_clipboard_inbox.take()) {
         if (!session->clipboard->set_text(*pending)) {
           BOOST_LOG(error) << "Unable to apply a PLANK clipboard offer to X11"sv;
@@ -629,9 +669,10 @@ namespace stream {
         BOOST_LOG(info) << "Applied PLANK clipboard offer from client ("sv
                         << pending->size() << " bytes)"sv;
       }
-      std::string text;
-      if (session->clipboard->poll_change(text)) {
-        if (!queue_clipboard_offer(session, text)) {
+      platf::x11::clipboard_content_t content;
+      if (session->clipboard->poll_change(content)) {
+        if (content.kind == platf::x11::clipboard_content_t::kind_e::text &&
+            !queue_clipboard_offer(session, content.text)) {
           BOOST_LOG(warning) << "Unable to queue a PLANK clipboard offer"sv;
         }
       }
@@ -642,6 +683,39 @@ namespace stream {
       }
     }
 #else
+    (void) session;
+#endif
+  }
+
+  void localFileClipboardThread(std::stop_token stop_token, session_t *session) {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11) && defined(PLANK_TRANSPORT)
+    platf::set_thread_name("sc::fileClipboard");
+    if (!session->plank_transport_endpoint || !session->clipboard) return;
+    auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(
+      session->plank_transport_endpoint.get()
+    );
+    file_clipboard::client_to_host_worker(
+      stop_token, endpoint,
+      [session, stop_token](const std::vector<std::string> &uris) {
+        auto request = std::make_shared<file_clipboard_publish_t>();
+        request->uris = uris;
+        {
+          std::lock_guard<std::mutex> lock(session->file_clipboard_publish_mutex);
+          if (session->file_clipboard_publish) return false;
+          session->file_clipboard_publish = request;
+        }
+        while (!stop_token.stop_requested()) {
+          std::unique_lock<std::mutex> lock(request->mutex);
+          if (request->changed.wait_for(lock, 100ms, [&request] {
+                return request->complete;
+              })) return request->success;
+        }
+        return false;
+      },
+      session->file_clipboard_mode
+    );
+#else
+    (void) stop_token;
     (void) session;
 #endif
   }
@@ -825,6 +899,13 @@ namespace stream {
           if (clipboard_sync_enabled(session) && !session->clipboardThread.joinable()) {
             session->clipboardThread = std::jthread(localClipboardThread, session);
           }
+
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11) && defined(PLANK_TRANSPORT)
+          if (file_clipboard::client_to_host_allowed(session->file_clipboard_mode) &&
+              !session->fileClipboardThread.joinable()) {
+            session->fileClipboardThread = std::jthread(localFileClipboardThread, session);
+          }
+#endif
 
           auto &hdr_queue = session->control.hdr_queue;
           while (hdr_queue->peek()) {
@@ -1237,6 +1318,7 @@ namespace stream {
       session.shutdown_event->raise(true);
       session.cursorThread.request_stop();
       session.clipboardThread.request_stop();
+      session.fileClipboardThread.request_stop();
       session.inputThread.request_stop();
     }
 
@@ -1294,6 +1376,10 @@ namespace stream {
       BOOST_LOG(debug) << "Waiting for clipboard monitor to end..."sv;
       if (session.clipboardThread.joinable()) {
         session.clipboardThread.join();
+      }
+      BOOST_LOG(debug) << "Waiting for file clipboard worker to end..."sv;
+      if (session.fileClipboardThread.joinable()) {
+        session.fileClipboardThread.join();
       }
       BOOST_LOG(debug) << "Waiting for native input to end..."sv;
       if (session.inputThread.joinable()) {
@@ -1428,6 +1514,7 @@ namespace stream {
       session->authentication_session = launch_session.authentication_session;
       session->plank_transport_endpoint = launch_session.plank_transport_endpoint;
       session->plank_feature_flags = launch_session.plank_feature_flags;
+      session->file_clipboard_mode = launch_session.file_clipboard_mode;
 
       if (session->plank_display_lease &&
           plank::session::activate_display_lease(

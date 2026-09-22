@@ -31,10 +31,13 @@ namespace plank::topology {
   constexpr std::uint32_t feature_authenticated_desktop_stage = 0x20000;
   constexpr std::uint32_t feature_worker_instance = 0x40000;
   constexpr std::uint32_t feature_clipboard_sync = 0x400000;
+  constexpr std::uint32_t feature_file_clipboard = 0x800000;
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
   constexpr std::uint32_t feature_platform_clipboard_sync = feature_clipboard_sync;
+  constexpr std::uint32_t feature_platform_file_clipboard = feature_file_clipboard;
 #else
   constexpr std::uint32_t feature_platform_clipboard_sync = 0;
+  constexpr std::uint32_t feature_platform_file_clipboard = 0;
 #endif
   constexpr std::uint32_t feature_flags =
     feature_output_topology |
