@@ -832,6 +832,7 @@ namespace {
     std::string mode_2;
     std::string request;
     physical_snapshot_t snapshot;
+    std::optional<std::string> primary_before;  ///< Empty means no RandR primary; nullopt is an old recovery record.
     std::vector<plank::session::runtime_display_output_t> outputs;
     bool active {};
     std::chrono::steady_clock::time_point deadline;
@@ -1082,6 +1083,7 @@ namespace {
     state.mode_1 = lease.mode_1;
     state.mode_2 = lease.mode_2;
     state.request = lease.request;
+    state.primary_before = lease.primary_before;
     state.outputs = lease.outputs;
     state.snapshot = lease.snapshot.assignment;
     return plank::session::runtime_display_state_2_message(state);
@@ -1091,9 +1093,11 @@ namespace {
   struct restore_report_t {
     bool metamode_exact {};  ///< The exact snapshot came back.
     bool visibility_exact {};  ///< Every recorded non-desktop value came back.
+    bool primary_exact {true};  ///< The pre-lease RandR primary came back when recorded.
     bool fallback {};  ///< A currently connected physical output was tried instead.
     bool recovered {};  ///< Exact or fallback succeeded.
     std::string restored;  ///< CurrentMetaMode after the restore.
+    bool exact() const { return metamode_exact && visibility_exact && primary_exact; }
   };
 
   /**
@@ -1131,6 +1135,14 @@ namespace {
       if (restored) report.restored = restored->assignment;
       report.metamode_exact = restored && restored->assignment == lease.snapshot.assignment;
     }
+    if (lease.primary_before) {
+      const auto arguments = lease.primary_before->empty() ?
+        std::vector<std::string> {"--noprimary"} :
+        std::vector<std::string> {"--output", *lease.primary_before, "--primary"};
+      report.primary_exact = run_bounded_user_command(
+        xrandr_path, arguments, lease_command_timeout, *account, environment
+      );
+    }
     if (const auto screen = capture_randr(*account, environment)) {
       report.visibility_exact = std::all_of(lease.outputs.begin(), lease.outputs.end(), [&](const auto &output) {
         if (output.non_desktop_before < 0) return true;
@@ -1139,11 +1151,22 @@ namespace {
         return live != screen->outputs.end() && live->non_desktop &&
                (*live->non_desktop ? 1 : 0) == output.non_desktop_before;
       });
+      if (lease.primary_before) {
+        report.primary_exact = report.primary_exact &&
+          std::all_of(screen->outputs.begin(), screen->outputs.end(), [&](const auto &output) {
+            return output.primary == (output.name == *lease.primary_before);
+          });
+      }
+    } else if (lease.primary_before) {
+      report.primary_exact = false;
     }
     if (!report.visibility_exact) {
       std::cerr << "ERROR: PLANK output visibility (non-desktop) did not return to its pre-session values\n";
     }
-    if (report.metamode_exact && report.visibility_exact) {
+    if (!report.primary_exact) {
+      std::cerr << "ERROR: PLANK RandR primary did not return to its pre-session output\n";
+    }
+    if (report.exact()) {
       record.clear();
       report.recovered = true;
       std::clog << "Restored the exact pre-session NVIDIA MetaMode\n";
@@ -1172,6 +1195,10 @@ namespace {
       lease_command_timeout, *account, environment
     );
     report.recovered = visible && !fallback.empty() && assign_metamode(fallback, *account, environment);
+    if (report.recovered) {
+      run_bounded_user_command(xrandr_path, {"--output", physical_randr, "--primary"},
+                               lease_command_timeout, *account, environment);
+    }
     // A safe physical fallback prevents a black screen, but it is not the
     // user's pre-lease layout. Retain the record for a later exact recovery.
     if (const auto restored = capture_physical_snapshot(*account, environment)) {
@@ -1232,22 +1259,27 @@ namespace {
       report.reason = "unavailable";
       return report;
     }
+    const auto screen = capture_randr(*account, environment);
     std::map<std::string, int> before;
     if (retained != nullptr) {
       lease.snapshot = retained->snapshot;
+      lease.primary_before = retained->primary_before;
       for (const auto &output : retained->outputs) before[output.randr] = output.non_desktop_before;
     } else {
       const auto snapshot = capture_physical_snapshot(*account, environment);
-      if (!snapshot) {
-        std::cerr << "Unable to capture the NVIDIA MetaMode before the PLANK display arrangement\n";
+      if (!snapshot || !screen) {
+        std::cerr << "Unable to capture the NVIDIA MetaMode and RandR primary before the PLANK display arrangement\n";
         report.reason = "snapshot_failed";
         return report;
       }
       lease.snapshot = *snapshot;
+      lease.primary_before = "";
+      for (const auto &output : screen->outputs) {
+        if (output.primary) lease.primary_before = output.name;
+      }
     }
     if (std::any_of(plan.outputs.begin(), plan.outputs.end(),
                     [&](const auto &output) { return !before.contains(output.randr); })) {
-      const auto screen = capture_randr(*account, environment);
       for (const auto &output : plan.outputs) {
         if (before.contains(output.randr)) continue;
         int value = -1;
@@ -1344,6 +1376,7 @@ namespace {
     lease.session_id = state.session_id;
     lease.display = state.display;
     lease.request = state.request;
+    lease.primary_before = state.primary_before;
     lease.outputs = state.outputs;
     lease.snapshot.assignment = state.snapshot;
     if (const auto parsed = plank::display::parse_current_metamode(":: " + state.snapshot)) {
@@ -1352,7 +1385,7 @@ namespace {
     const auto restored = restore_arrangement_lease(
       lease, session, environment, plank::display::read_inventory(), record
     );
-    if (restored.metamode_exact && restored.visibility_exact) {
+    if (restored.exact()) {
       std::clog << "Recovered a stale PLANK display arrangement\n";
       return true;
     }
@@ -1721,6 +1754,7 @@ namespace {
     const auto restore_json = [](const restore_report_t &restore) {
       return nlohmann::json {
         {"metamode_exact", restore.metamode_exact}, {"visibility_exact", restore.visibility_exact},
+        {"primary_exact", restore.primary_exact},
         {"fallback", restore.fallback}, {"recovered", restore.recovered}, {"restored", restore.restored},
       };
     };
@@ -1728,8 +1762,7 @@ namespace {
     if (!applied.reason.empty()) {
       if (applied.restore) report["restore"] = restore_json(*applied.restore);
       report["success"] = false;
-      release(applied.restore && !(applied.restore->metamode_exact &&
-                                   applied.restore->visibility_exact));
+      release(applied.restore && !applied.restore->exact());
       return emit_report(report, options.json, plank::display::qualification_failed);
     }
 
@@ -1772,9 +1805,9 @@ namespace {
     }
     const auto restored = restore_arrangement_lease(lease, *selected, *environment, inventory, record);
     report["restore"] = restore_json(restored);
-    const bool success = restored.metamode_exact && restored.visibility_exact && capture_passed;
+    const bool success = restored.exact() && capture_passed;
     report["success"] = success;
-    release(!(restored.metamode_exact && restored.visibility_exact));
+    release(!restored.exact());
     return emit_report(report, options.json,
                        success ? plank::display::qualification_passed : plank::display::qualification_failed);
   }
@@ -2017,7 +2050,7 @@ int main(int argc, char **argv) {
             const auto restored = restore_arrangement_lease(
               *arrangement_lease, *selected, *environment, inventory
             );
-            arrangement_restore_pending = !(restored.metamode_exact && restored.visibility_exact);
+            arrangement_restore_pending = !restored.exact();
           } else {
             clear_runtime_display_state();
           }

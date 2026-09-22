@@ -216,6 +216,7 @@ namespace {
     state.display = ":1";
     state.origin = "arrangement";
     state.request = "1:3024x1890+0+270:auto,3840x2160+3024+0:auto";
+    state.primary_before = "HDMI-0";
     state.outputs = {
       {"DP-0", "DPY-0", "virtual", "3024x1890", 0, 0, 270, 3024, 1890, 1},
       {"HDMI-0", "DPY-4", "physical", "3840x2160", 1, 3024, 0, 3840, 2160, 0},
@@ -308,10 +309,12 @@ TEST(SessionContext, RoundTripsArrangementLeaseState) {
   const auto message = session::runtime_display_state_2_message(state);
   ASSERT_FALSE(message.empty());
   EXPECT_TRUE(message.starts_with("SC-DISPLAY-STATE-2\nuid=1000\n"));
+  EXPECT_NE(message.find("\nprimary=HDMI-0\n"), std::string::npos);
   EXPECT_NE(message.find("\noutput=DP-2 DPY-2 off - -1 0 0 0 0 1\n"), std::string::npos);
   const auto parsed = session::parse_runtime_display_state_2(message);
   ASSERT_TRUE(parsed);
   EXPECT_EQ(parsed->request, state.request);
+  EXPECT_EQ(parsed->primary_before, state.primary_before);
   ASSERT_EQ(parsed->outputs.size(), 3U);
   EXPECT_EQ(parsed->outputs[0].backing, "virtual");
   EXPECT_EQ(parsed->outputs[0].carrier, "3024x1890");
@@ -319,6 +322,17 @@ TEST(SessionContext, RoundTripsArrangementLeaseState) {
   EXPECT_EQ(parsed->outputs[1].non_desktop_before, 0);
   EXPECT_EQ(parsed->outputs[2].backing, "off");
   EXPECT_EQ(parsed->snapshot, state.snapshot);
+
+  auto no_primary = state;
+  no_primary.primary_before = "";
+  const auto no_primary_message = session::runtime_display_state_2_message(no_primary);
+  ASSERT_TRUE(session::parse_runtime_display_state_2(no_primary_message));
+  EXPECT_NE(no_primary_message.find("\nprimary=\n"), std::string::npos);
+  auto older_record = state;
+  older_record.primary_before.reset();
+  const auto older_message = session::runtime_display_state_2_message(older_record);
+  ASSERT_TRUE(session::parse_runtime_display_state_2(older_message));
+  EXPECT_EQ(older_message.find("\nprimary="), std::string::npos);
 
   // The legacy STATE-1 marker is still parsed, and the two never cross.
   EXPECT_FALSE(session::parse_runtime_display_state(message));
@@ -354,6 +368,9 @@ TEST(SessionContext, RejectsMalformedArrangementLeaseState) {
   EXPECT_TRUE(session::runtime_display_state_2_message(state).empty());
   state = arrangement_state();
   state.display = "remote:0";
+  EXPECT_TRUE(session::runtime_display_state_2_message(state).empty());
+  state = arrangement_state();
+  state.primary_before = "DP-0;rm";
   EXPECT_TRUE(session::runtime_display_state_2_message(state).empty());
   state = arrangement_state();
   state.snapshot = std::string(17000, 'x');

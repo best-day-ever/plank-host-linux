@@ -97,6 +97,7 @@ namespace plank::session {
     std::string mode_1;  ///< Legacy first mode (legacy origin only).
     std::string mode_2;  ///< Legacy second mode (legacy dual only).
     std::string request;  ///< Canonical arrangement.
+    std::optional<std::string> primary_before;  ///< RandR primary before the lease; empty means no primary, nullopt means an older record.
     std::vector<runtime_display_output_t> outputs;  ///< Every output the lease shows or switches off.
     std::string snapshot;  ///< Exact CurrentMetaMode before the lease.
   };

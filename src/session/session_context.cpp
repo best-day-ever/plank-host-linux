@@ -624,6 +624,8 @@ namespace plank::session {
           (legacy && !plank::topology::valid_virtual_layout_modes(state.layout, state.mode_1, state.mode_2)) ||
           (!legacy && (!state.layout.empty() || !state.mode_1.empty() || !state.mode_2.empty())) ||
           !plank::arrangement::parse(state.request).request ||
+          (state.primary_before && !state.primary_before->empty() &&
+           !state_2_name(*state.primary_before)) ||
           state.outputs.empty() || state.outputs.size() > maximum_state_2_outputs ||
           state.snapshot.empty() || !printable_line(state.snapshot)) {
         return false;
@@ -680,6 +682,7 @@ namespace plank::session {
                "\ndisplay=" + state.display + "\norigin=" + state.origin + "\nlayout=" + state.layout +
                "\nmode_1=" + state.mode_1 + "\nmode_2=" + state.mode_2 + "\nrequest=" + state.request +
                "\n";
+    if (state.primary_before) message += "primary=" + *state.primary_before + "\n";
     for (const auto &output : state.outputs) {
       message += "output=" + output.randr + " " + output.dpy + " " + output.backing + " " +
                  (output.carrier.empty() ? std::string {"-"} : output.carrier) + " " +
@@ -712,7 +715,12 @@ namespace plank::session {
     state.mode_1 = std::string {(*lines)[5].second};
     state.mode_2 = std::string {(*lines)[6].second};
     state.request = std::string {(*lines)[7].second};
-    for (std::size_t index = head.size(); index + 1 < lines->size(); ++index) {
+    std::size_t output_start = head.size();
+    if ((*lines)[output_start].first == "primary") {
+      state.primary_before = std::string {(*lines)[output_start].second};
+      ++output_start;
+    }
+    for (std::size_t index = output_start; index + 1 < lines->size(); ++index) {
       if ((*lines)[index].first != "output") return std::nullopt;
       std::vector<std::string_view> words;
       auto rest = (*lines)[index].second;
