@@ -988,7 +988,9 @@ namespace {
       std::cerr << "Unable to stop the display manager to apply the PLANK hybrid layout\n";
       return false;
     }
-    const bool prepared = run_bounded_command(display_prepare_path, {}, std::chrono::seconds {15});
+    const bool prepared = run_bounded_command(
+      display_prepare_path, {"--apply-inventory"}, std::chrono::seconds {15}
+    );
     const bool started = run_bounded_command(
       systemctl_path, {"start", "display-manager.service"}, std::chrono::seconds {30}
     );
@@ -1287,7 +1289,7 @@ namespace {
   }
 
   /** Recover a supervisor-owned STATE-2 left by a previous supervisor on the same X server. */
-  void recover_stale_arrangement(
+  bool recover_stale_arrangement(
     const plank::session::runtime_display_state_2_t &state,
     const plank::session::descriptor_t &session,
     const plank::session::environment_t &environment,
@@ -1296,7 +1298,7 @@ namespace {
     if (state.session_id != session.id || state.display != environment.display) {
       record.clear();
       std::clog << "Discarded a stale PLANK display arrangement from an X server that has ended\n";
-      return;
+      return true;
     }
     arrangement_lease_t lease;
     lease.uid = state.lease_uid;
@@ -1308,8 +1310,15 @@ namespace {
     if (const auto parsed = plank::display::parse_current_metamode(":: " + state.snapshot)) {
       lease.snapshot = *parsed;
     }
-    restore_arrangement_lease(lease, session, environment, plank::display::read_inventory(), record);
-    std::clog << "Recovered a stale PLANK display arrangement\n";
+    const auto restored = restore_arrangement_lease(
+      lease, session, environment, plank::display::read_inventory(), record
+    );
+    if (restored.metamode_exact && restored.visibility_exact) {
+      std::clog << "Recovered a stale PLANK display arrangement\n";
+      return true;
+    }
+    std::cerr << "ERROR: Exact recovery of the stale PLANK display arrangement is still pending\n";
+    return false;
   }
 
   // --- display qualification (root-only hardware qualification) -------------
@@ -1385,31 +1394,43 @@ namespace {
    * Restore the lease of a qualifier that died (its lock is free). The
    * supervisor then removes the record; a new qualification run reuses it.
    */
-  void recover_qualification_record(int descriptor, bool remove) {
+  bool recover_qualification_record(int descriptor, bool remove) {
     const auto contents = read_descriptor(descriptor, 16U * 1024U);
+    if (!contents) return false;
     if (contents && !contents->empty()) {
       const auto state = plank::session::parse_runtime_display_state_2(*contents);
       const auto selected = plank::session::active_seat0_graphical_session();
       const auto environment = selected ? plank::session::discover_environment(*selected) : std::nullopt;
       if (state && selected && environment) {
-        recover_stale_arrangement(*state, *selected, *environment, qualification_record(descriptor));
+        if (!recover_stale_arrangement(*state, *selected, *environment,
+                                       qualification_record(descriptor))) {
+          return false;
+        }
         std::clog << "Restored the display after an interrupted PLANK display qualification\n";
       } else {
-        std::cerr << "Discarded the record of an interrupted PLANK display qualification\n";
+        // Keep the snapshot until its X server can be identified. A failed
+        // environment lookup must not turn a hidden physical output permanent.
+        return false;
       }
     }
     if (remove) unlink(qualification_record_path.data());
+    return true;
   }
 
   /** Supervisor loop: recover a dead qualifier's lease; report whether one is running. */
   bool check_qualification() {
     struct stat status {};
     if (lstat(qualification_record_path.data(), &status) != 0) return false;
+    static auto retry_after = std::chrono::steady_clock::time_point::min();
+    if (std::chrono::steady_clock::now() < retry_after) return true;
     const auto lock = lock_qualification_record(false, 1);
     if (lock.busy) return true;
     if (lock.descriptor >= 0) {
-      recover_qualification_record(lock.descriptor, true);
+      const bool recovered = recover_qualification_record(lock.descriptor, true);
       close(lock.descriptor);
+      retry_after = recovered ? std::chrono::steady_clock::time_point::min() :
+                                std::chrono::steady_clock::now() + std::chrono::seconds {30};
+      return !recovered;
     }
     return false;
   }
@@ -1592,12 +1613,15 @@ namespace {
     }
     if (lock.descriptor < 0) return refuse("unable to lock " + std::string {qualification_record_path});
     const int descriptor = lock.descriptor;
-    const auto release = [&] {
-      unlink(qualification_record_path.data());
+    const auto release = [&](bool retain_record = false) {
+      if (!retain_record) unlink(qualification_record_path.data());
       close(descriptor);
     };
     // A qualifier that died mid-run left its record: restore that first.
-    recover_qualification_record(descriptor, false);
+    if (!recover_qualification_record(descriptor, false)) {
+      release(true);
+      return refuse("an interrupted display qualification still needs recovery");
+    }
     if (ftruncate(descriptor, 0) != 0) {
       release();
       return refuse("unable to reset the qualification record");
@@ -1652,7 +1676,8 @@ namespace {
     if (!applied.reason.empty()) {
       if (applied.restore) report["restore"] = restore_json(*applied.restore);
       report["success"] = false;
-      release();
+      release(applied.restore && !(applied.restore->metamode_exact &&
+                                   applied.restore->visibility_exact));
       return emit_report(report, options.json, plank::display::qualification_failed);
     }
 
@@ -1697,7 +1722,7 @@ namespace {
     report["restore"] = restore_json(restored);
     const bool success = restored.metamode_exact && restored.visibility_exact && capture_passed;
     report["success"] = success;
-    release();
+    release(!(restored.metamode_exact && restored.visibility_exact));
     return emit_report(report, options.json,
                        success ? plank::display::qualification_passed : plank::display::qualification_failed);
   }
@@ -1885,7 +1910,19 @@ int main(int argc, char **argv) {
             lease.active = retained->active;
             if (lease.active) lease.deadline = std::chrono::steady_clock::time_point::max();
           }
-          reason = apply_arrangement_lease(lease, *selected, *environment, *inventory, retained);
+          // The root-only qualifier takes this same lock before its refusal
+          // check. Hold it across the record write and X transaction so a
+          // qualifier cannot pass its check between those two operations.
+          const auto qualification_lock = lock_qualification_record(true, 1);
+          const auto previous_qualification = qualification_lock.descriptor >= 0 ?
+            read_descriptor(qualification_lock.descriptor, 16U * 1024U) : std::nullopt;
+          if (qualification_lock.descriptor < 0 || !previous_qualification ||
+              !previous_qualification->empty()) {
+            reason = "busy";
+          } else {
+            reason = apply_arrangement_lease(lease, *selected, *environment, *inventory, retained);
+          }
+          if (qualification_lock.descriptor >= 0) close(qualification_lock.descriptor);
           if (reason.empty()) {
             if (!lease.active) {
               // Applying can take several seconds; the setup deadline starts now.

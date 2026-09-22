@@ -1950,6 +1950,11 @@ namespace cuda {
         }
 
         if (!capture_regions.empty()) {
+          if (info.dwWidth != static_cast<std::uint32_t>(env_width) ||
+              info.dwHeight != static_cast<std::uint32_t>(env_height)) {
+            BOOST_LOG(warning) << "The X screen changed during packed capture; reinitializing"sv;
+            return platf::capture_e::reinit;
+          }
           // Same context and the same copy as the unpacked path, once per output.
           const int frame_pitch = static_cast<int>(info.dwWidth) * img->pixel_pitch;
           for (const auto &region : capture_regions) {
