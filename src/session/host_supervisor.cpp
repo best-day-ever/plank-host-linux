@@ -979,8 +979,22 @@ namespace {
     }
   }
 
-  /** Stop GDM, rebuild the boot overlay from the display inventory, start GDM. */
-  bool restart_greeter_with_boot_overlay() {
+  /** Wait only for a new usable graphical X server, with a hard deadline. */
+  bool wait_for_graphical_restart(std::string_view previous_session) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds {20};
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto selected = plank::session::active_seat0_graphical_session();
+      if (selected && selected->id != previous_session &&
+          plank::session::discover_environment(*selected)) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds {500});
+    }
+    return false;
+  }
+
+  /** Stop GDM, rebuild the overlay, and recover on the physical layout if X fails. */
+  bool restart_greeter_with_boot_overlay(std::string_view previous_session) {
     const bool stopped = run_bounded_command(
       systemctl_path, {"stop", "display-manager.service"}, std::chrono::seconds {30}
     );
@@ -991,12 +1005,25 @@ namespace {
     const bool prepared = run_bounded_command(
       display_prepare_path, {"--apply-inventory"}, std::chrono::seconds {15}
     );
-    const bool started = run_bounded_command(
+    const bool started = prepared && run_bounded_command(
       systemctl_path, {"start", "display-manager.service"}, std::chrono::seconds {30}
     );
-    if (!prepared) std::cerr << "PLANK hybrid display preparation failed\n";
-    if (!started) std::cerr << "Unable to restart the display manager after PLANK hybrid preparation\n";
-    return prepared && started;
+    if (started && wait_for_graphical_restart(previous_session)) return true;
+    std::cerr << "PLANK hybrid greeter did not start a new X server; reverting to the physical layout\n";
+    if (started && !run_bounded_command(
+          systemctl_path, {"stop", "display-manager.service"}, std::chrono::seconds {30}
+        )) {
+      std::cerr << "Unable to stop the failed PLANK hybrid greeter for fallback\n";
+      return false;
+    }
+    const bool physical = run_bounded_command(display_prepare_path, {}, std::chrono::seconds {15});
+    const bool restarted = physical && run_bounded_command(
+      systemctl_path, {"start", "display-manager.service"}, std::chrono::seconds {30}
+    );
+    if (!physical || !restarted || !wait_for_graphical_restart(previous_session)) {
+      std::cerr << "ERROR: Unable to recover the PLANK greeter on the physical layout\n";
+    }
+    return false;
   }
 
   /**
@@ -1319,6 +1346,19 @@ namespace {
     }
     std::cerr << "ERROR: Exact recovery of the stale PLANK display arrangement is still pending\n";
     return false;
+  }
+
+  /** Do not replace an unowned display-state snapshot with a new lease. */
+  bool recover_unowned_arrangement_state(
+    const plank::session::descriptor_t &session,
+    const plank::session::environment_t &environment
+  ) {
+    struct stat pending_state {};
+    if (lstat(runtime_display_state_path.data(), &pending_state) != 0) {
+      return errno == ENOENT;
+    }
+    const auto stale = plank::session::read_runtime_display_state_2(runtime_display_state_path);
+    return stale && recover_stale_arrangement(*stale, session, environment);
   }
 
   // --- display qualification (root-only hardware qualification) -------------
@@ -1920,7 +1960,16 @@ int main(int argc, char **argv) {
               !previous_qualification->empty()) {
             reason = "busy";
           } else {
-            reason = apply_arrangement_lease(lease, *selected, *environment, *inventory, retained);
+            // A failed release or interrupted apply can leave a STATE-2 on
+            // disk after the in-memory lease is gone. Restore that snapshot
+            // before recording another one, or the original layout is lost.
+            if (retained == nullptr &&
+                !recover_unowned_arrangement_state(*selected, *environment)) {
+              reason = "restore_pending";
+            }
+            if (reason.empty()) {
+              reason = apply_arrangement_lease(lease, *selected, *environment, *inventory, retained);
+            }
           }
           if (qualification_lock.descriptor >= 0) close(qualification_lock.descriptor);
           if (reason.empty()) {
@@ -1949,35 +1998,53 @@ int main(int argc, char **argv) {
           pending_display_request->account_uid, *pending_display_request, {}, {}, false,
           std::chrono::steady_clock::now() + std::chrono::seconds {45}
         };
+        bool arrangement_restore_pending = false;
         if (arrangement_lease && environment && arrangement_lease->uid == lease.uid) {
           // One lease kind at a time: end the arrangement lease first.
           if (arrangement_lease->session_id == selected->id) {
-            restore_arrangement_lease(*arrangement_lease, *selected, *environment, inventory);
+            const auto restored = restore_arrangement_lease(
+              *arrangement_lease, *selected, *environment, inventory
+            );
+            arrangement_restore_pending = !(restored.metamode_exact && restored.visibility_exact);
           } else {
             clear_runtime_display_state();
           }
-          arrangement_lease.reset();
+          if (!arrangement_restore_pending) arrangement_lease.reset();
         }
         if (!environment) {
           std::cerr << "Unable to discover the active X11 environment for a temporary physical-display lease\n";
           write_transition("failed", "unavailable", canonical, lease.uid);
+        } else if (arrangement_restore_pending) {
+          write_transition("failed", "restore_pending", canonical, lease.uid);
         } else if ((physical_display_lease &&
                     physical_display_lease->uid != lease.uid) ||
                    (arrangement_lease && arrangement_lease->uid != lease.uid)) {
           std::cerr << "Refusing to replace a temporary display lease owned by another account\n";
           write_transition("failed", "busy", canonical, lease.uid);
-        } else if (apply_physical_lease(
-                     lease, *selected, *environment,
-                     physical_display_lease &&
-                         physical_display_lease->session_id == selected->id ?
-                       &physical_display_lease->snapshot : nullptr
-                   )) {
-          physical_display_lease = std::move(lease);
-          clear_transition();
-          std::clog << "Temporary PLANK physical-display lease acquired for UID "
-                    << physical_display_lease->uid << '\n';
         } else {
-          write_transition("failed", "apply_failed", canonical, lease.uid);
+          // The qualifier checks this lock and the runtime state together.
+          // Hold it across the physical MetaMode change and state write too.
+          const auto qualification_lock = lock_qualification_record(true, 1);
+          const auto previous_qualification = qualification_lock.descriptor >= 0 ?
+            read_descriptor(qualification_lock.descriptor, 16U * 1024U) : std::nullopt;
+          const bool available = previous_qualification && previous_qualification->empty();
+          const bool recovered = available &&
+            (physical_display_lease || recover_unowned_arrangement_state(*selected, *environment));
+          const bool applied = recovered && apply_physical_lease(
+            lease, *selected, *environment,
+            physical_display_lease && physical_display_lease->session_id == selected->id ?
+              &physical_display_lease->snapshot : nullptr
+          );
+          if (qualification_lock.descriptor >= 0) close(qualification_lock.descriptor);
+          if (applied) {
+            physical_display_lease = std::move(lease);
+            clear_transition();
+            std::clog << "Temporary PLANK physical-display lease acquired for UID "
+                      << physical_display_lease->uid << '\n';
+          } else {
+            write_transition("failed", !available ? "busy" :
+                             !recovered ? "restore_pending" : "apply_failed", canonical, lease.uid);
+          }
         }
       } else if (!virtual_startup) {
         std::cerr << "Refusing a display transition because display.startup_layout is invalid\n";
@@ -2092,7 +2159,7 @@ int main(int argc, char **argv) {
               write_hybrid_restarts(hybrid_restarts);
               std::clog << "Restarting the greeter once to apply the PLANK hybrid display inventory\n";
               stop_worker(worker);
-              restart_greeter_with_boot_overlay();
+              restart_greeter_with_boot_overlay(selected->id);
               inventory_session_id.clear();
               next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {2};
               continue;
