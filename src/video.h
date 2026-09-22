@@ -7,6 +7,7 @@
 // standard includes
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -14,6 +15,7 @@
 
 // local includes
 #include "input.h"
+#include "plank_arrangement.h"
 #include "platform/common.h"
 #include "thread_safe.h"
 #include "video_colorspace.h"
@@ -744,6 +746,15 @@ namespace video {
 
   /** Return whether one exact PLANK encoding mode passed its real encoder probe. */
   bool encoding_mode_available(std::string_view mode);
+
+  /**
+   * @brief Largest and real-time-qualified frame size per available encoding mode.
+   *
+   * Filled from the NVENC WIDTH_MAX/HEIGHT_MAX capabilities of the startup
+   * probe. Modes without a probed limit (the software encoder) are absent.
+   * @return Limits keyed by PLANK encoding-mode name.
+   */
+  std::map<std::string, plank::arrangement::encoding_limit_t> encoding_mode_limits();
 
   /**
    * @brief Report whether a negotiated PLANK capture source is available.

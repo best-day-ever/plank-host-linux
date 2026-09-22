@@ -16,6 +16,7 @@
 #include <vector>
 
 // local includes
+#include "nvenc_limits.h"
 #include "nvenc_utils.h"
 #include "src/config.h"
 #include "src/logging.h"
@@ -205,6 +206,11 @@ namespace NVENC_NAMESPACE {
   bool nvenc_base::validate_encoder_capabilities(const GUID &encode_guid, NV_ENC_BUFFER_FORMAT buffer_format) {
     const auto supported_width = get_encoder_cap(encode_guid, NV_ENC_CAPS_WIDTH_MAX);
     const auto supported_height = get_encoder_cap(encode_guid, NV_ENC_CAPS_HEIGHT_MAX);
+    // The startup probe opens one session per codec; PLANK publishes these
+    // limits as display_capabilities.encoding_limits (feature 0x8000000).
+    const int video_format = equal_guids(encode_guid, NV_ENC_CODEC_H264_GUID) ? 0 :
+                             equal_guids(encode_guid, NV_ENC_CODEC_HEVC_GUID) ? 1 : 2;
+    ::nvenc::record_encoder_size_limit(video_format, supported_width, supported_height);
     if (encoder_params.width > supported_width || encoder_params.height > supported_height) {
       BOOST_LOG(error) << "NvEnc: gpu max encode resolution " << supported_width << "x" << supported_height
                        << ", requested " << encoder_params.width << "x" << encoder_params.height;

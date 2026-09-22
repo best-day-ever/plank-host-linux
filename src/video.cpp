@@ -42,6 +42,7 @@ extern "C" {
 #include "input.h"
 #include "logging.h"
 #include "nvenc/nvenc_encoder.h"
+#include "nvenc/nvenc_limits.h"
 #include "plank_topology.h"
 #include "platform/common.h"
 #include "sync.h"
@@ -1789,6 +1790,36 @@ namespace video {
     (void) mode;
 #endif
     return false;
+  }
+
+  std::map<std::string, plank::arrangement::encoding_limit_t> encoding_mode_limits() {
+    // Sizes qualified in real time on the reference workstation (NvFBC
+    // capture plus NVENC at 60 fps). They never exceed the probed maximum.
+    struct qualified_mode_t {
+      std::string_view mode;
+      int video_format;
+      int qualified_width;
+      int qualified_height;
+    };
+    static constexpr std::array<qualified_mode_t, 5> nvenc_modes {{
+      {"h264-8-444-nvenc"sv, 0, 4096, 2160},
+      {"h264-8-420-nvenc"sv, 0, 4096, 2160},
+      {"hevc-8-444-nvenc"sv, 1, 7680, 4320},
+      {"hevc-10-444-nvenc"sv, 1, 7680, 4320},
+      {"hevc-10-420-nvenc"sv, 1, 7680, 4320},
+    }};
+    std::map<std::string, plank::arrangement::encoding_limit_t> limits;
+    for (const auto &candidate : nvenc_modes) {
+      if (!encoding_mode_available(candidate.mode)) continue;
+      const auto limit = nvenc::encoder_size_limit(candidate.video_format);
+      if (!limit) continue;
+      limits.emplace(std::string {candidate.mode}, plank::arrangement::encoding_limit_t {
+        limit->width, limit->height,
+        std::min(limit->width, candidate.qualified_width),
+        std::min(limit->height, candidate.qualified_height),
+      });
+    }
+    return limits;
   }
 
   bool capture_source_available(std::string_view source) {

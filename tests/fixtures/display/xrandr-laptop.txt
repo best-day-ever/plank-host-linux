@@ -1,0 +1,214 @@
+Screen 0: minimum 8 x 8, current 1920 x 1080, maximum 32767 x 32767
+DP-0 disconnected (normal left inverted right x axis y axis)
+	Identifier: 0x21d
+	Timestamp:  18953364
+	Subpixel:   unknown
+	Clones:    
+	CRTCs:      0 1 2 3
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: 
+	CTM: 0 1 0 0 0 0 0 0 0 1 0 0 0 0 0 0 
+		0 1 
+	CscMatrix: 65536 0 0 0 0 65536 0 0 0 0 65536 0 
+	BorderDimensions: 4 
+		supported: 4
+	Border: 0 0 0 0 
+		range: (0, 65535)
+	SignalFormat: DisplayPort 
+		supported: DisplayPort
+	ConnectorType: DisplayPort 
+	ConnectorNumber: 1 
+	_ConnectorLocation: 1 
+	non-desktop: 0 
+		supported: 0, 1
+DP-1 disconnected (normal left inverted right x axis y axis)
+	Identifier: 0x21e
+	Timestamp:  18953364
+	Subpixel:   unknown
+	Clones:    
+	CRTCs:      0 1 2 3
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: 
+	CTM: 0 1 0 0 0 0 0 0 0 1 0 0 0 0 0 0 
+		0 1 
+	CscMatrix: 65536 0 0 0 0 65536 0 0 0 0 65536 0 
+	BorderDimensions: 4 
+		supported: 4
+	Border: 0 0 0 0 
+		range: (0, 65535)
+	SignalFormat: TMDS 
+		supported: TMDS
+	ConnectorType: DisplayPort 
+	ConnectorNumber: 1 
+	_ConnectorLocation: 1 
+	non-desktop: 0 
+		supported: 0, 1
+DP-2 disconnected (normal left inverted right x axis y axis)
+	Identifier: 0x21f
+	Timestamp:  18953364
+	Subpixel:   unknown
+	Clones:    
+	CRTCs:      0 1 2 3
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: 
+	CTM: 0 1 0 0 0 0 0 0 0 1 0 0 0 0 0 0 
+		0 1 
+	CscMatrix: 65536 0 0 0 0 65536 0 0 0 0 65536 0 
+	BorderDimensions: 4 
+		supported: 4
+	Border: 0 0 0 0 
+		range: (0, 65535)
+	SignalFormat: DisplayPort 
+		supported: DisplayPort
+	ConnectorType: DisplayPort 
+	ConnectorNumber: 2 
+	_ConnectorLocation: 2 
+	non-desktop: 0 
+		supported: 0, 1
+DP-3 disconnected (normal left inverted right x axis y axis)
+	Identifier: 0x220
+	Timestamp:  18953364
+	Subpixel:   unknown
+	Clones:    
+	CRTCs:      0 1 2 3
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: 
+	CTM: 0 1 0 0 0 0 0 0 0 1 0 0 0 0 0 0 
+		0 1 
+	CscMatrix: 65536 0 0 0 0 65536 0 0 0 0 65536 0 
+	BorderDimensions: 4 
+		supported: 4
+	Border: 0 0 0 0 
+		range: (0, 65535)
+	SignalFormat: TMDS 
+		supported: TMDS
+	ConnectorType: DisplayPort 
+	ConnectorNumber: 2 
+	_ConnectorLocation: 2 
+	non-desktop: 0 
+		supported: 0, 1
+HDMI-0 disconnected (normal left inverted right x axis y axis)
+	Identifier: 0x221
+	Timestamp:  18953364
+	Subpixel:   unknown
+	Clones:    
+	CRTCs:      0 1 2 3
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: 
+	CTM: 0 1 0 0 0 0 0 0 0 1 0 0 0 0 0 0 
+		0 1 
+	CscMatrix: 65536 0 0 0 0 65536 0 0 0 0 65536 0 
+	BorderDimensions: 4 
+		supported: 4
+	Border: 0 0 0 0 
+		range: (0, 65535)
+	SignalFormat: TMDS 
+		supported: TMDS
+	ConnectorType: HDMI 
+	ConnectorNumber: 3 
+	_ConnectorLocation: 3 
+	non-desktop: 0 
+		supported: 0, 1
+DP-4 connected primary 1920x1080+0+0 (0x223) normal (normal left inverted right x axis y axis) 381mm x 214mm
+	Identifier: 0x222
+	Timestamp:  18953364
+	Subpixel:   unknown
+	Gamma:      1.0:1.0:1.0
+	Brightness: 1.0
+	Clones:    
+	CRTC:       0
+	CRTCs:      0 1 2 3
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: 
+	_MUTTER_PRESENTATION_OUTPUT: 0 
+	CTM: 492332038 1 272817826 -2147483648 259772431 -2147483648 19023215 -2147483648 -152902417 0 181365917 0 42192278 0 163983497 0 
+		-193706530 0 
+	CscMatrix: 65536 0 0 0 0 65536 0 0 0 0 65536 0 
+	Backlight: 100 
+		range: (0, 100)
+	EDID: 
+		00ffffffffffff000dae381700000000
+		0c1901049526157802a155a556519d28
+		0b505400000001010101010101010101
+		010101010101b43b804a713834403020
+		35007dd61000001acd27804a71383440
+		302035007dd61000001a000000000000
+		00000000000000000000000000000002
+		000c33ff0f3c96161d489600000000db
+	BorderDimensions: 4 
+		supported: 4
+	Border: 0 0 0 0 
+		range: (0, 65535)
+	SignalFormat: DisplayPort 
+		supported: DisplayPort
+	ConnectorType: Panel 
+	ConnectorNumber: 0 
+	_ConnectorLocation: 0 
+	non-desktop: 0 
+		supported: 0, 1
+  1920x1080 (0x223) 152.840MHz +HSync -VSync *current +preferred
+        h: width  1920 start 1968 end 2000 total 2250 skew    0 clock  67.93KHz
+        v: height 1080 start 1083 end 1088 total 1132           clock  60.01Hz
+  1920x1080 (0x224) 101.890MHz +HSync -VSync
+        h: width  1920 start 1968 end 2000 total 2250 skew    0 clock  45.28KHz
+        v: height 1080 start 1083 end 1088 total 1132           clock  40.00Hz
+DP-5 disconnected (normal left inverted right x axis y axis)
+	Identifier: 0x225
+	Timestamp:  18953364
+	Subpixel:   unknown
+	Clones:    
+	CRTCs:      0 1 2 3
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: 
+	CTM: 0 1 0 0 0 0 0 0 0 1 0 0 0 0 0 0 
+		0 1 
+	CscMatrix: 65536 0 0 0 0 65536 0 0 0 0 65536 0 
+	BorderDimensions: 4 
+		supported: 4
+	Border: 0 0 0 0 
+		range: (0, 65535)
+	SignalFormat: DisplayPort 
+		supported: DisplayPort
+	ConnectorType: DisplayPort 
+	ConnectorNumber: 4 
+	_ConnectorLocation: 4 
+	non-desktop: 0 
+		supported: 0, 1
+DP-6 disconnected (normal left inverted right x axis y axis)
+	Identifier: 0x226
+	Timestamp:  18953364
+	Subpixel:   unknown
+	Clones:    
+	CRTCs:      0 1 2 3
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: 
+	CTM: 0 1 0 0 0 0 0 0 0 1 0 0 0 0 0 0 
+		0 1 
+	CscMatrix: 65536 0 0 0 0 65536 0 0 0 0 65536 0 
+	BorderDimensions: 4 
+		supported: 4
+	Border: 0 0 0 0 
+		range: (0, 65535)
+	SignalFormat: TMDS 
+		supported: TMDS
+	ConnectorType: DisplayPort 
+	ConnectorNumber: 4 
+	_ConnectorLocation: 4 
+	non-desktop: 0 
+		supported: 0, 1
