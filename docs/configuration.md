@@ -140,6 +140,16 @@ Remote key-repeat events per second. Default: approximately `24.9`.
 Keyboard, mouse, high-resolution scrolling, and native scancodes are mandatory
 PLANK behaviors and are not configurable.
 
+## Clipboard
+
+### file_clipboard
+
+Maximum file clipboard direction allowed for authenticated desktop sessions.
+Accepted values are `off`, `client-to-host`, `host-to-client`, and
+`bidirectional`. Default: `off`. This setting is independent of bounded
+plain-text clipboard sync. The Host does not advertise or open file-transfer
+channels when the setting is `off`.
+
 ## Display
 
 ### startup_layout

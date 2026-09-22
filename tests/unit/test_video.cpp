@@ -188,6 +188,14 @@ TEST(VideoColorspaceTest, IdentityGbrCudaKernelProducesExact8BitPlanes) {
 TEST(VideoColorspaceTest, IdentityGbrCudaKernelProducesExact10BitPlanes) {
   EXPECT_TRUE(cuda::test_identity_gbr_10bit_conversion());
 }
+
+TEST(VideoColorspaceTest, Bt709LimitedNv12CudaKernelProducesExactCodeValues) {
+  EXPECT_TRUE(cuda::test_bt709_limited_nv12_conversion());
+}
+
+TEST(VideoColorspaceTest, Bt709LimitedP010CudaKernelProducesExactCodeValues) {
+  EXPECT_TRUE(cuda::test_bt709_limited_p010_conversion());
+}
 #endif
 
 struct EncoderTest: PlatformTestSuite, testing::WithParamInterface<video::encoder_t *> {

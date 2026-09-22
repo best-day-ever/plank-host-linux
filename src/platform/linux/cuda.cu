@@ -168,6 +168,21 @@ namespace cuda {
     return (dot(pixel, make_float3(vec_v)) + vec_v.w) * color_matrix->range_uv.x + color_matrix->range_uv.y;
   }
 
+  inline __device__ std::uint16_t to_msb_aligned_10bit(float component) {
+    component = fminf(fmaxf(component, 0.0f), 1.0f);
+    return static_cast<std::uint16_t>(__float2uint_rn(component * 1023.0f) << 6);
+  }
+
+  inline __device__ std::uint8_t to_8bit(float component) {
+    component = fminf(fmaxf(component, 0.0f), 1.0f);
+    return static_cast<std::uint8_t>(__float2uint_rn(component * 255.0f));
+  }
+
+  inline __device__ std::uint16_t to_lsb_aligned_10bit(float component) {
+    component = fminf(fmaxf(component, 0.0f), 1.0f);
+    return static_cast<std::uint16_t>(__float2uint_rn(component * 1023.0f));
+  }
+
   __global__ void RGBA_to_NV12(
     cudaTextureObject_t srcImage,
     std::uint8_t *dstY,
@@ -203,19 +218,17 @@ namespace cuda {
     float3 rgb_lb = bgra_to_rgb(tex2D<float4>(srcImage, x, y + scale));
     float3 rgb_rb = bgra_to_rgb(tex2D<float4>(srcImage, x + scale, y + scale));
 
-    float2 uv_lt = calcUV(rgb_lt, color_matrix) * 256.0f;
-    float2 uv_rt = calcUV(rgb_rt, color_matrix) * 256.0f;
-    float2 uv_lb = calcUV(rgb_lb, color_matrix) * 256.0f;
-    float2 uv_rb = calcUV(rgb_rb, color_matrix) * 256.0f;
+    // Exact 8-bit code values (rounded, clamped), like the 4:2:2 and P010
+    // kernels: the negotiated range must reach the client unscaled.
+    const float2 uv = (calcUV(rgb_lt, color_matrix) + calcUV(rgb_rt, color_matrix) +
+                       calcUV(rgb_lb, color_matrix) + calcUV(rgb_rb, color_matrix)) * 0.25f;
 
-    float2 uv = (uv_lt + uv_lb + uv_rt + uv_rb) * 0.25f;
-
-    dstUV[0] = uv.x;
-    dstUV[1] = uv.y;
-    dstY0[0] = calcY(rgb_lt, color_matrix) * 245.0f;  // 245.0f is a magic number to ensure slight changes in luminosity are more visible
-    dstY0[1] = calcY(rgb_rt, color_matrix) * 245.0f;  // 245.0f is a magic number to ensure slight changes in luminosity are more visible
-    dstY1[0] = calcY(rgb_lb, color_matrix) * 245.0f;  // 245.0f is a magic number to ensure slight changes in luminosity are more visible
-    dstY1[1] = calcY(rgb_rb, color_matrix) * 245.0f;  // 245.0f is a magic number to ensure slight changes in luminosity are more visible
+    dstUV[0] = to_8bit(uv.x);
+    dstUV[1] = to_8bit(uv.y);
+    dstY0[0] = to_8bit(calcY(rgb_lt, color_matrix));
+    dstY0[1] = to_8bit(calcY(rgb_rt, color_matrix));
+    dstY1[0] = to_8bit(calcY(rgb_lb, color_matrix));
+    dstY1[1] = to_8bit(calcY(rgb_rb, color_matrix));
   }
 
   __global__ void RGBA_to_YUV444(
@@ -253,21 +266,6 @@ namespace cuda {
     dstY[0] = calcY(rgb, color_matrix) * 255.0f;
     dstU[0] = calcU(rgb, color_matrix) * 255.0f;
     dstV[0] = calcV(rgb, color_matrix) * 255.0f;
-  }
-
-  inline __device__ std::uint16_t to_msb_aligned_10bit(float component) {
-    component = fminf(fmaxf(component, 0.0f), 1.0f);
-    return static_cast<std::uint16_t>(__float2uint_rn(component * 1023.0f) << 6);
-  }
-
-  inline __device__ std::uint8_t to_8bit(float component) {
-    component = fminf(fmaxf(component, 0.0f), 1.0f);
-    return static_cast<std::uint8_t>(__float2uint_rn(component * 255.0f));
-  }
-
-  inline __device__ std::uint16_t to_lsb_aligned_10bit(float component) {
-    component = fminf(fmaxf(component, 0.0f), 1.0f);
-    return static_cast<std::uint16_t>(__float2uint_rn(component * 1023.0f));
   }
 
   __global__ void RGBA_to_YUV422(
@@ -857,6 +855,83 @@ namespace cuda {
       0, maximum, 0, maximum,
     };
     return std::equal(std::begin(actual), std::end(actual), std::begin(expected));
+  }
+
+  namespace {
+    // 6x2 BGRA: 2x2 blocks of black, red and white, so each 4:2:0 chroma
+    // sample covers one flat colour.
+    constexpr int bt709_420_width = 6;
+    constexpr int bt709_420_height = 2;
+    constexpr std::uint8_t bt709_420_source[] = {
+      0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+      0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    };
+
+    template<typename Sample, typename Convert>
+    bool convert_bt709_420(unsigned bit_depth, Sample (&y)[bt709_420_width * bt709_420_height], Sample (&uv)[bt709_420_width], Convert convert) {
+      constexpr std::uint32_t pitch = bt709_420_width * sizeof(Sample);
+      auto texture = tex_t::make(bt709_420_height, bt709_420_width * 4);
+      auto converter = sws_t::make(bt709_420_width, bt709_420_height, bt709_420_width, bt709_420_height, bt709_420_width * 4);
+      auto stream = make_stream();
+      if (!texture || !converter || !stream) {
+        return false;
+      }
+      converter->apply_colorspace({video::colorspace_e::rec709, false, bit_depth});
+
+      platf::img_t image;
+      image.data = const_cast<std::uint8_t *>(bt709_420_source);
+      image.width = bt709_420_width;
+      image.height = bt709_420_height;
+      image.pixel_pitch = 4;
+      image.row_pitch = bt709_420_width * image.pixel_pitch;
+
+      void *destination = nullptr;
+      if (cudaMalloc(&destination, pitch * (bt709_420_height + 1)) != cudaSuccess) {
+        return false;
+      }
+      const auto cleanup = std::unique_ptr<void, freeCudaPtr_t> {destination};
+      auto *base = static_cast<std::uint8_t *>(destination);
+      if (converter->load_ram(image, texture->array) ||
+          convert(*converter, base, base + pitch * bt709_420_height, pitch, texture->texture.point, stream.get()) ||
+          cudaStreamSynchronize(stream.get()) != cudaSuccess) {
+        return false;
+      }
+      return cudaMemcpy(y, base, sizeof(y), cudaMemcpyDeviceToHost) == cudaSuccess &&
+             cudaMemcpy(uv, base + pitch * bt709_420_height, sizeof(uv), cudaMemcpyDeviceToHost) == cudaSuccess;
+    }
+  }  // namespace
+
+  bool test_bt709_limited_nv12_conversion() {
+    std::uint8_t y[bt709_420_width * bt709_420_height] {};
+    std::uint8_t uv[bt709_420_width] {};
+    if (!convert_bt709_420(8, y, uv, [](sws_t &sws, std::uint8_t *luma, std::uint8_t *chroma, std::uint32_t pitch, cudaTextureObject_t texture, cudaStream_t stream) {
+          return sws.convert_nv12(luma, chroma, pitch, pitch, texture, stream);
+        })) {
+      return false;
+    }
+    // BT.709 limited range: black 16/128/128, red 63/102/240, white 235/128/128.
+    constexpr std::uint8_t expected_y[] = {16, 16, 63, 63, 235, 235, 16, 16, 63, 63, 235, 235};
+    constexpr std::uint8_t expected_uv[] = {128, 128, 102, 240, 128, 128};
+    return std::equal(std::begin(y), std::end(y), std::begin(expected_y)) &&
+           std::equal(std::begin(uv), std::end(uv), std::begin(expected_uv));
+  }
+
+  bool test_bt709_limited_p010_conversion() {
+    std::uint16_t y[bt709_420_width * bt709_420_height] {};
+    std::uint16_t uv[bt709_420_width] {};
+    if (!convert_bt709_420(10, y, uv, [](sws_t &sws, std::uint8_t *luma, std::uint8_t *chroma, std::uint32_t pitch, cudaTextureObject_t texture, cudaStream_t stream) {
+          return sws.convert_p010(luma, chroma, pitch, pitch, texture, stream);
+        })) {
+      return false;
+    }
+    // BT.709 limited range, MSB-aligned: black 64/512/512, red 250/409/960, white 940/512/512.
+    constexpr std::uint16_t expected_y[] = {
+      64 << 6, 64 << 6, 250 << 6, 250 << 6, 940 << 6, 940 << 6,
+      64 << 6, 64 << 6, 250 << 6, 250 << 6, 940 << 6, 940 << 6,
+    };
+    constexpr std::uint16_t expected_uv[] = {512 << 6, 512 << 6, 409 << 6, 960 << 6, 512 << 6, 512 << 6};
+    return std::equal(std::begin(y), std::end(y), std::begin(expected_y)) &&
+           std::equal(std::begin(uv), std::end(uv), std::begin(expected_uv));
   }
   #endif
 

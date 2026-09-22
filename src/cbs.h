@@ -4,6 +4,10 @@
  */
 #pragma once
 
+// standard includes
+#include <cstddef>
+#include <cstdint>
+
 // local includes
 #include "utility.h"
 
@@ -69,4 +73,15 @@ namespace cbs {
    * identity GBR with BT.709 primaries and the sRGB transfer function.
    */
   bool validate_h264_high10_444_identity(const AVPacket *packet);
+
+  /**
+   * @brief Validate the exact PLANK NVENC 4:2:0 tuple from raw encoder output.
+   *
+   * @param data Annex B bytes of an IDR access unit including its parameter sets.
+   * @param size Number of bytes in `data`.
+   * @param codec_id AV_CODEC_ID_H264 (High, 8-bit) or AV_CODEC_ID_H265 (Main 10).
+   * @return `true` only for the expected profile and bit depth in 4:2:0 with a
+   * limited-range BT.709 matrix, BT.709 primaries and the sRGB transfer.
+   */
+  bool validate_nvenc_420(const std::uint8_t *data, std::size_t size, int codec_id);
 }  // namespace cbs

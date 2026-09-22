@@ -118,6 +118,7 @@ TEST(ConfigConsistencyTest, RuntimeOptionsMatchPlankProductPolicy) {
     "audio_sink",
     "cert",
     "file_state",
+    "file_clipboard",
     "key_repeat_delay",
     "key_repeat_frequency",
     "keybindings",
