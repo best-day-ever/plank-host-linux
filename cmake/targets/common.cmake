@@ -161,6 +161,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_options(plank-probe-gssapi PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
 
     add_executable(plank-host-supervisor
+            "${CMAKE_SOURCE_DIR}/src/session/display_metamode.cpp"
+            "${CMAKE_SOURCE_DIR}/src/session/display_metamode.h"
             "${CMAKE_SOURCE_DIR}/src/session/host_supervisor.cpp"
             "${CMAKE_SOURCE_DIR}/src/session/session_context.cpp"
             "${CMAKE_SOURCE_DIR}/src/session/session_context.h")
