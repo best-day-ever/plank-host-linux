@@ -972,7 +972,8 @@ namespace nvhttp {
   bool submit_arrangement_transition(const plank::session::display_request_t &request,
                                      const std::string &canonical,
                                      uid_t authenticated_uid,
-                                     pt::ptree &tree) {
+                                     pt::ptree &tree,
+                                     std::string_view encoding_mode = {}) {
     const auto status = plank::session::transition_status(
       plank::session::read_display_transition(runtime_display_transition), canonical,
       authenticated_uid, static_cast<std::int64_t>(std::time(nullptr))
@@ -991,6 +992,9 @@ namespace nvhttp {
     }
     const auto transition = plank::session::request_display_transition(request);
     if (transition == plank::session::display_request_status::submitted) {
+      // A refused launch must not change how an existing packed stream is
+      // described by output_topology_json().
+      if (!encoding_mode.empty()) remember_arrangement_mode(canonical, std::string {encoding_mode});
       tree.put("root.<xmlattr>.status_code", 425);
       tree.put("root.<xmlattr>.status_message", "PLANK host display transition started");
       return false;
@@ -1071,7 +1075,6 @@ namespace nvhttp {
       return false;
     }
     if (preflight_only) return true;
-    remember_arrangement_mode(session.display_arrangement, session.encoding_mode);
     session.arrangement_capture = capture.plan;
 
     const auto live_layout = live_display_layout(outputs);
@@ -1087,6 +1090,7 @@ namespace nvhttp {
       // The canonical arrangement is already live: a no-op binding.
       session.plank_display_lease = true;
       session.plank_display_lease_uid = authenticated_uid;
+      remember_arrangement_mode(session.display_arrangement, session.encoding_mode);
       BOOST_LOG(info) << "PLANK display arrangement is live: "sv << session.display_arrangement;
       return true;
     }
@@ -1094,7 +1098,8 @@ namespace nvhttp {
     request.action = plank::session::display_request_t::action_t::acquire;
     request.account_uid = authenticated_uid;
     request.arrangement = session.display_arrangement;
-    return submit_arrangement_transition(request, session.display_arrangement, authenticated_uid, tree);
+    return submit_arrangement_transition(request, session.display_arrangement, authenticated_uid,
+                                         tree, session.encoding_mode);
   }
 
   bool bind_host_layout(session_stream::launch_session_t &session,
