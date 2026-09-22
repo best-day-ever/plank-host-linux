@@ -3,6 +3,7 @@
  * @brief Definitions for the main entry point for Sunshine.
  */
 // standard includes
+#include <charconv>
 #include <codecvt>
 #include <csignal>
 #include <cstdlib>
@@ -72,6 +73,39 @@ std::map<std::string_view, std::function<int(const char *name, int argc, char **
 #ifdef _WIN32
   {"restore-nvprefs-undo"sv, [](const char *name, int argc, char **argv) {
      return args::restore_nvprefs_undo();
+   }},
+#endif
+#ifdef __linux__
+  // Root-only hardware qualification: capture a display arrangement through
+  // the stream's packed-capture path without a client. See the host's
+  // systemd README, "Qualify a workstation's display arrangements".
+  {"capture-probe"sv, [](const char *name, int argc, char **argv) {
+     if (argc < 2 || argc > 4) {
+       std::cerr << "usage: " << name << " [CONFIG] --capture-probe REQUEST ENCODING_MODE [FRAMES] [OUTPUT_DIRECTORY]\n";
+       return 2;
+     }
+     int frames = 120;
+     if (argc >= 3) {
+       const std::string_view value {argv[2]};
+       const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), frames);
+       if (error != std::errc {} || end != value.data() + value.size()) {
+         std::cerr << "FRAMES must be a number\n";
+         return 2;
+       }
+     }
+     const std::filesystem::path output {argc >= 4 ? argv[3] : "/var/tmp/plank-capture-probe"};
+     if (!plank::arrangement::parse(argv[0]).request || frames < 1 || frames > 3600 ||
+         !output.is_absolute()) {
+       std::cerr << "REQUEST must be a canonical display arrangement, FRAMES 1 to 3600, "
+                    "and OUTPUT_DIRECTORY absolute\n";
+       return 2;
+     }
+     auto platform = platf::init();
+     if (!platform) {
+       std::cerr << "PLANK platform initialization failed\n";
+       return 3;
+     }
+     return video::capture_probe(argv[0], argv[1], frames, output);
    }},
 #endif
 };

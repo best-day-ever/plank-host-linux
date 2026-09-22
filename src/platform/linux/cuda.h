@@ -120,6 +120,19 @@ namespace cuda {
 
     int copy(std::uint8_t *src, int height, int pitch);
 
+    /**
+     * Copy one rectangle of a larger BGRA frame into the texture (packed
+     * capture). Offsets and sizes are in pixels; `src_pitch` is in bytes.
+     */
+    int copy_rect(const std::uint8_t *src, int src_pitch, int src_x, int src_y, int width, int height,
+                  int dst_x, int dst_y);
+
+    /** Fill the whole texture with transparent black (packed capture gaps). */
+    int clear(int height, int pitch);
+
+    /** Read the texture back to host memory (capture probe). */
+    int download(std::uint8_t *dst, int height, int pitch);
+
     cudaArray_t array;
 
     struct texture {

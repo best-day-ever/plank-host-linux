@@ -912,6 +912,17 @@ namespace platf {
    */
   std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
 
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+  /**
+   * @brief Read a captured NvFBC CUDA image back to host memory (capture probe).
+   *
+   * @param img Image allocated by the NvFBC display backend.
+   * @param bgra Receives `img.height` rows of `img.row_pitch` BGRA bytes.
+   * @return True when the image was read.
+   */
+  bool download_captured_image(img_t &img, std::vector<std::uint8_t> &bgra);
+#endif
+
   // A list of names of displays accepted as display_name with the mem_type_e
   /**
    * @brief List display names accepted by the selected capture backend.

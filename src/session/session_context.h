@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <sys/types.h>
 
@@ -54,6 +55,11 @@ namespace plank::session {
     std::string mode_1;
     std::string mode_2;
     uid_t account_uid {};
+    /**
+     * Canonical display arrangement (feature 0x8000000). A non-empty value is
+     * carried in an SC-DISPLAY-4 record instead of SC-DISPLAY-3.
+     */
+    std::string arrangement {};
   };
 
   struct runtime_display_state_t {
@@ -61,6 +67,49 @@ namespace plank::session {
     std::string mode_1;
     std::string mode_2;
     uid_t lease_uid {};
+  };
+
+  /**
+   * @brief One output an arrangement lease changed, in SC-DISPLAY-STATE-2.
+   */
+  struct runtime_display_output_t {
+    std::string randr;  ///< RandR output name.
+    std::string dpy;  ///< NVIDIA display device used in MetaModes.
+    std::string backing;  ///< `physical`, `physical-viewport`, `virtual`, or `off` when switched off.
+    std::string carrier;  ///< Driven mode or carrier timing `WxH`; empty when off.
+    int arrangement_index {-1};  ///< Entry number, or -1 when off.
+    int x {};  ///< Desktop X (shown outputs).
+    int y {};  ///< Desktop Y (shown outputs).
+    int width {};  ///< Desktop width (shown outputs).
+    int height {};  ///< Desktop height (shown outputs).
+    int non_desktop_before {-1};  ///< `non-desktop` before the lease: 0, 1, or -1 when unknown.
+  };
+
+  /**
+   * @brief Supervisor-owned record of a live arrangement lease (SC-DISPLAY-STATE-2).
+   */
+  struct runtime_display_state_2_t {
+    uid_t lease_uid {};  ///< Account that owns the lease.
+    std::string session_id;  ///< logind session of the leased X server.
+    std::string display;  ///< X display of the leased X server, for example `:0`.
+    std::string origin;  ///< `arrangement`, or `legacy` for a single/dual request served by the engine.
+    std::string layout;  ///< Legacy layout (legacy origin only).
+    std::string mode_1;  ///< Legacy first mode (legacy origin only).
+    std::string mode_2;  ///< Legacy second mode (legacy dual only).
+    std::string request;  ///< Canonical arrangement.
+    std::vector<runtime_display_output_t> outputs;  ///< Every output the lease shows or switches off.
+    std::string snapshot;  ///< Exact CurrentMetaMode before the lease.
+  };
+
+  /**
+   * @brief Pending or failed display transition, published for the media worker.
+   */
+  struct display_transition_t {
+    std::string state;  ///< `pending` or `failed`.
+    std::string reason;  ///< Short code, for example `too_many_displays`; empty while pending.
+    std::string request;  ///< Canonical arrangement the transition is for.
+    uid_t account_uid {};  ///< Requesting account.
+    std::int64_t time {};  ///< Wall-clock seconds when the state was written.
   };
 
   enum class display_request_status {
@@ -73,6 +122,7 @@ namespace plank::session {
   enum class startup_layout_t {
     physical,
     virtual_display,
+    hybrid,  ///< Physical startup plus up to three inactive virtual heads.
     invalid,
   };
 
@@ -109,9 +159,17 @@ namespace plank::session {
   std::string session_update_message(const update_t &update);
   std::optional<update_t> parse_session_update(std::string_view message);
 
-  /** Encode or decode one bounded worker-to-supervisor display request. */
+  /**
+   * Encode or decode one bounded worker-to-supervisor display request.
+   *
+   * A request with an arrangement is encoded as SC-DISPLAY-4; the parser
+   * accepts SC-DISPLAY-3 and SC-DISPLAY-4 records.
+   */
   std::string display_request_message(const display_request_t &request);
   std::optional<display_request_t> parse_display_request(std::string_view message);
+
+  /** Encode any action as an SC-DISPLAY-4 record (acquire carries the canonical arrangement). */
+  std::string display_arrangement_request_message(const display_request_t &request);
 
   /** Encode, decode, or read the supervisor-owned live display-layout marker. */
   std::string runtime_display_state_message(const runtime_display_state_t &state);
@@ -121,6 +179,42 @@ namespace plank::session {
   std::optional<runtime_display_state_t> read_runtime_display_state(
     std::string_view path
   );
+
+  /** Encode, decode, or read the supervisor's arrangement-lease record (SC-DISPLAY-STATE-2, at most 16 KiB). */
+  std::string runtime_display_state_2_message(const runtime_display_state_2_t &state);
+  std::optional<runtime_display_state_2_t> parse_runtime_display_state_2(std::string_view message);
+  std::optional<runtime_display_state_2_t> read_runtime_display_state_2(std::string_view path);
+
+  /** Encode, decode, or read the pending/failed display-transition record. */
+  std::string display_transition_message(const display_transition_t &transition);
+  std::optional<display_transition_t> parse_display_transition(std::string_view message);
+  std::optional<display_transition_t> read_display_transition(std::string_view path);
+
+  /**
+   * @brief What a published transition means for one launch.
+   */
+  enum class transition_status_t {
+    none,  ///< No transition for this request: submit one.
+    pending,  ///< Still running (at most two minutes old): answer 425.
+    failed,  ///< Failed within the last 30 seconds: answer 409 with its reason.
+  };
+
+  /**
+   * @brief Interpret a transition record for a launch's canonical request and account.
+   * @param transition Record, if any.
+   * @param request Canonical arrangement of the launch.
+   * @param account_uid Authenticated account.
+   * @param now Wall-clock seconds.
+   */
+  transition_status_t transition_status(
+    const std::optional<display_transition_t> &transition,
+    std::string_view request,
+    uid_t account_uid,
+    std::int64_t now
+  );
+
+  /** Whether a transition record is recent enough to publish in the topology. */
+  bool transition_current(const display_transition_t &transition, std::int64_t now);
 
   /** Read the intended secondary-monitor visibility from an owned Xorg overlay. */
   std::optional<bool> secondary_output_visible_from_overlay(std::string_view overlay);

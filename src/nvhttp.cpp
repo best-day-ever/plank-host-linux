@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
 #include <format>
 #include <functional>
@@ -56,9 +57,14 @@
 #include "platform/common.h"
 #include "process.h"
 #include "session_stream.h"
+#include "session/display_inventory.h"
+#include "session/display_metamode.h"
 #include "session/greeter_signin.h"
 #include "session/session_context.h"
+#include "plank_arrangement.h"
+#include "plank_arrangement_json.h"
 #include "plank_topology.h"
+#include "plank_topology_json.h"
 #include "utility.h"
 #include "uuid.h"
 #include "video.h"
@@ -83,6 +89,8 @@ namespace nvhttp {
 
   constexpr std::string_view runtime_display_state =
     "/run/plank/host/display-state"sv;
+  constexpr std::string_view runtime_display_transition =
+    "/run/plank/host/display-transition"sv;
   std::unique_ptr<plank::auth::web_auth_manager_t> web_auth;  ///< PAM conversations and ephemeral tokens.
   constexpr auto plank_topology_version = plank::topology::protocol_version;
   constexpr std::uint32_t plank_host_metadata_version = 1;
@@ -112,10 +120,41 @@ namespace nvhttp {
     plank::topology::feature_fixed_transport_mtu;
   constexpr auto plank_feature_session_takeover =
     plank::topology::feature_session_takeover;
+  /** The administrator's display policy: `physical`, `virtual` or `hybrid`. */
+  std::string configured_startup_policy() {
+    const auto &policy = config::sunshine.startup_layout;
+    return policy == "virtual"sv || policy == "hybrid"sv ? policy : std::string {"physical"};
+  }
+
+  /**
+   * @brief `display_capabilities` from the supervisor's display inventory.
+   *
+   * @return Capabilities only when feature_display_arrangement is advertised:
+   *   a physical or hybrid startup with an inventory taken under that policy.
+   */
+  std::optional<plank::arrangement::capabilities_t> display_arrangement_capabilities() {
+    const auto policy = configured_startup_policy();
+    if (policy != "physical"sv && policy != "hybrid"sv) return std::nullopt;
+    const auto inventory = plank::display::read_inventory();
+    if (!inventory) return std::nullopt;
+    auto capabilities = plank::display::capabilities_from_inventory(
+      *inventory, video::encoding_mode_limits(), video::packed_capture_available()
+    );
+    if (!plank::topology::display_arrangement_advertised(
+          policy, inventory->startup_policy, capabilities.max_outputs
+        )) {
+      return std::nullopt;
+    }
+    return capabilities;
+  }
+
   std::uint32_t plank_topology_features() {
     auto features = plank::topology::feature_flags;
     if (config::sunshine.file_clipboard != "off"sv) {
       features |= plank::topology::feature_platform_file_clipboard;
+    }
+    if (display_arrangement_capabilities()) {
+      features |= plank::topology::feature_display_arrangement;
     }
     return features;
   }
@@ -700,11 +739,13 @@ namespace nvhttp {
 
   struct live_layout_t {
     std::string startup_kind;
+    std::string startup_policy;
     std::string kind;
     bool virtual_layout {};
     std::vector<std::string> virtual_modes;
     bool temporary_physical_lease {};
     uid_t lease_uid {};
+    std::optional<plank::session::runtime_display_state_2_t> arrangement;  ///< Live arrangement lease.
   };
 
   live_layout_t live_display_layout(
@@ -712,10 +753,35 @@ namespace nvhttp {
   ) {
     live_layout_t result;
     // The protocol field describes the concrete boot topology, while the
-    // administrator setting is now a physical/virtual policy. Virtual hosts
-    // always initialize one 1920x1080 output before bookmark negotiation.
-    result.startup_kind = config::sunshine.startup_layout == "virtual" ?
-      "single" : "physical";
+    // administrator setting is a physical/virtual/hybrid policy. Virtual hosts
+    // always initialize one 1920x1080 output before bookmark negotiation;
+    // hybrid hosts start physically, so older clients keep parsing them.
+    result.startup_policy = configured_startup_policy();
+    result.startup_kind = result.startup_policy == "virtual" ? "single" : "physical";
+    if (result.startup_policy != "virtual"sv) {
+      if (auto state = plank::session::read_runtime_display_state_2(runtime_display_state)) {
+        result.temporary_physical_lease = true;
+        result.lease_uid = state->lease_uid;
+        // The supervisor records a lease before applying it; while that
+        // transition runs the legacy view is not live yet.
+        const auto transition = plank::session::read_display_transition(runtime_display_transition);
+        const bool applying = transition && transition->state == "pending"sv &&
+          transition->request == state->request &&
+          plank::session::transition_current(*transition, static_cast<std::int64_t>(std::time(nullptr)));
+        if (state->origin == "legacy"sv && !applying) {
+          // A legacy single/dual request served by the arrangement engine
+          // keeps the exact legacy view its client binds to.
+          result.kind = state->layout;
+          result.virtual_layout = true;
+          result.virtual_modes = {state->mode_1};
+          if (!state->mode_2.empty()) result.virtual_modes.push_back(state->mode_2);
+        } else {
+          result.kind = "physical";
+        }
+        result.arrangement = std::move(state);
+        return result;
+      }
+    }
     if (const auto runtime = plank::session::read_runtime_display_state(
           runtime_display_state
         )) {
@@ -741,82 +807,299 @@ namespace nvhttp {
     return result;
   }
 
+  /**
+   * The encoding mode of the latest launch that asked for an arrangement. A
+   * packed capture depends on it, so the topology of that arrangement is
+   * published packed for this mode once its lease is live.
+   */
+  std::mutex arrangement_mode_mutex;
+  std::string arrangement_mode_request;
+  std::string arrangement_mode;
+
+  void remember_arrangement_mode(const std::string &request, const std::string &mode) {
+    std::lock_guard lock {arrangement_mode_mutex};
+    arrangement_mode_request = request;
+    arrangement_mode = mode;
+  }
+
+  std::optional<std::string> remembered_arrangement_mode(const std::string &request) {
+    std::lock_guard lock {arrangement_mode_mutex};
+    return arrangement_mode_request == request && !arrangement_mode.empty() ?
+             std::optional {arrangement_mode} : std::nullopt;
+  }
+
+  /**
+   * The topology generation. A packed capture changes it, so a client that saw
+   * the unpacked desktop is sent back to refresh (409) before it streams.
+   */
+  std::string topology_generation_for(const std::vector<platf::display_info_t> &outputs,
+                                      const std::optional<plank::arrangement::capture_plan_t> &capture) {
+    auto generation = video::output_topology_generation(outputs);
+    if (capture && capture->packed) {
+      std::string rects = std::format("{}x{}", capture->width, capture->height);
+      for (const auto &rect : capture->source_rects) {
+        rects += std::format(";{}x{}+{}+{}", rect.width, rect.height, rect.x, rect.y);
+      }
+      generation += ":packed-" + plank::display::sha256_hex(rects).substr(0, 16);
+    }
+    return generation;
+  }
+
+  /** The packed capture a live arrangement lease is published with, if any. */
+  std::optional<plank::arrangement::capture_plan_t> live_arrangement_capture(
+    const plank::session::runtime_display_state_2_t &state,
+    const plank::arrangement::capabilities_t &capabilities
+  ) {
+    if (state.origin != "arrangement"sv) return std::nullopt;
+    const auto mode = remembered_arrangement_mode(state.request);
+    const auto request = plank::arrangement::parse(state.request).request;
+    if (!mode || !request) return std::nullopt;
+    const auto plan = plank::arrangement::plan_capture(*request, capabilities, *mode).plan;
+    return plan && plan->packed ? plan : std::nullopt;
+  }
+
+  /** The arrangement view of the topology, or no value when the bit is not advertised. */
+  std::optional<plank::topology::arrangement_view_t> arrangement_view(const live_layout_t &live_layout) {
+    auto capabilities = display_arrangement_capabilities();
+    if (!capabilities) return std::nullopt;
+    plank::topology::arrangement_view_t view;
+    view.startup_policy = live_layout.startup_policy;
+    view.capabilities = std::move(*capabilities);
+    if (live_layout.arrangement) {
+      view.lease = true;
+      view.request = live_layout.arrangement->request;
+      view.state = "applied";
+      for (const auto &output : live_layout.arrangement->outputs) {
+        if (output.backing == "off"sv) continue;
+        view.outputs["x11:" + output.randr] = {output.backing, output.arrangement_index};
+      }
+      if (const auto capture = live_arrangement_capture(*live_layout.arrangement, view.capabilities)) {
+        view.capture_size = std::pair {capture->width, capture->height};
+        for (const auto &output : live_layout.arrangement->outputs) {
+          if (output.backing == "off"sv || output.arrangement_index < 0 ||
+              static_cast<std::size_t>(output.arrangement_index) >= capture->source_rects.size()) {
+            continue;
+          }
+          view.capture_rects["x11:" + output.randr] =
+            capture->source_rects[static_cast<std::size_t>(output.arrangement_index)];
+        }
+      }
+    }
+    const auto transition = plank::session::read_display_transition(runtime_display_transition);
+    if (transition && plank::session::transition_current(
+                        *transition, static_cast<std::int64_t>(std::time(nullptr))
+                      )) {
+      view.state = transition->state;
+      view.reason = transition->reason;
+    }
+    return view;
+  }
+
   nlohmann::json output_topology_json() {
     auto outputs = video::output_topology();
     std::sort(outputs.begin(), outputs.end(), [](const auto &left, const auto &right) {
       return std::tie(left.x, left.y, left.id) < std::tie(right.x, right.y, right.id);
     });
-    int min_x = 0;
-    int min_y = 0;
-    int max_x = 0;
-    int max_y = 0;
-    bool first = true;
-    for (const auto &output : outputs) {
-      if (first) {
-        min_x = output.x;
-        min_y = output.y;
-        max_x = output.x + output.width;
-        max_y = output.y + output.height;
-        first = false;
-      } else {
-        min_x = std::min(min_x, output.x);
-        min_y = std::min(min_y, output.y);
-        max_x = std::max(max_x, output.x + output.width);
-        max_y = std::max(max_y, output.y + output.height);
-      }
-    }
-
     const auto live_layout = live_display_layout(outputs);
-    nlohmann::json virtual_modes = live_layout.virtual_modes;
-    nlohmann::json allowed_layouts = nlohmann::json::array();
-    if (live_layout.startup_kind == "physical") {
-      allowed_layouts.push_back("physical");
-    }
-    allowed_layouts.push_back("single");
-    allowed_layouts.push_back("dual-horizontal");
-    nlohmann::json body {
-      {"schema_version", plank_topology_version},
-      {"feature_flags", plank_topology_features()},
-      {"layout", {
-        {"kind", live_layout.kind},
-        {"virtual", live_layout.virtual_layout},
-        {"virtual_modes", virtual_modes},
-        {"output_count", outputs.size()},
-        {"startup_kind", live_layout.startup_kind},
-        {"allowed_kinds", allowed_layouts},
-      }},
-      {"outputs", nlohmann::json::array()},
+    plank::topology::document_layout_t layout {
+      live_layout.kind, live_layout.virtual_layout, live_layout.virtual_modes,
+      live_layout.startup_kind, {},
     };
-    for (std::size_t index = 0; index < outputs.size(); ++index) {
-      const auto &output = outputs[index];
-      const std::string configured_mode = !live_layout.virtual_layout ? std::string {} :
-        index < live_layout.virtual_modes.size() ? live_layout.virtual_modes[index] :
-                                                   std::string {};
-      body["outputs"].push_back({
-        {"id", output.id},
-        {"name", output.name},
-        {"x", output.x},
-        {"y", output.y},
-        {"width", output.width},
-        {"height", output.height},
-        {"rotation", output.rotation},
-        {"refresh_millihz", output.refresh_millihz},
-        {"primary", output.primary},
-        {"virtual", live_layout.virtual_layout},
-        {"configured_mode", configured_mode},
-        {"source_rect", {
-          {"x", output.x - min_x},
-          {"y", output.y - min_y},
-          {"width", output.width},
-          {"height", output.height},
-        }},
+    if (live_layout.startup_kind == "physical") {
+      layout.allowed_kinds.push_back("physical");
+    }
+    layout.allowed_kinds.push_back("single");
+    layout.allowed_kinds.push_back("dual-horizontal");
+    std::vector<plank::topology::document_output_t> document_outputs;
+    document_outputs.reserve(outputs.size());
+    for (const auto &output : outputs) {
+      document_outputs.push_back({
+        output.id, output.name, output.x, output.y, output.width, output.height,
+        output.rotation, output.refresh_millihz, output.primary,
       });
     }
-    body["desktop"] = {
-      {"x", min_x}, {"y", min_y}, {"width", max_x - min_x}, {"height", max_y - min_y},
-    };
-    body["generation"] = video::output_topology_generation(outputs);
-    return body;
+    const auto arrangement = arrangement_view(live_layout);
+    auto features = plank_topology_features();
+    // The capabilities and the feature bit come from the same inventory read.
+    if (arrangement) {
+      features |= plank::topology::feature_display_arrangement;
+    } else {
+      features &= ~plank::topology::feature_display_arrangement;
+    }
+    std::optional<plank::arrangement::capture_plan_t> capture;
+    if (arrangement && arrangement->capture_size && live_layout.arrangement) {
+      capture = live_arrangement_capture(*live_layout.arrangement, arrangement->capabilities);
+    }
+    return plank::topology::topology_document(
+      plank_topology_version, features, document_outputs, layout, arrangement,
+      topology_generation_for(outputs, capture)
+    );
+  }
+
+  /** Refuse a launch with a display-arrangement error code. */
+  void arrangement_refusal(pt::ptree &tree, int status, std::string_view code,
+                           const std::string &message) {
+    tree.put("root.<xmlattr>.status_code", status);
+    tree.put("root.<xmlattr>.status_message", message);
+    if (!code.empty()) tree.put("root.PlankDisplayArrangementError", std::string {code});
+  }
+
+  /** Whether the live outputs are exactly the shown outputs of an arrangement lease. */
+  bool arrangement_outputs_live(const plank::session::runtime_display_state_2_t &state,
+                                const std::vector<platf::display_info_t> &outputs) {
+    std::size_t shown = 0;
+    for (const auto &output : state.outputs) {
+      if (output.backing == "off"sv) continue;
+      ++shown;
+      const auto id = "x11:" + output.randr;
+      const auto live = std::find_if(outputs.begin(), outputs.end(), [&](const auto &candidate) {
+        return candidate.id == id;
+      });
+      if (live == outputs.end() || live->x != output.x || live->y != output.y ||
+          live->width != output.width || live->height != output.height) {
+        return false;
+      }
+    }
+    return shown == outputs.size();
+  }
+
+  /**
+   * @brief Answer a canonical arrangement that is not live yet from the published transition.
+   *
+   * @return False with `tree` set: 425 while running, 409 after a failure, or
+   *   425 after submitting a new acquire.
+   */
+  bool submit_arrangement_transition(const plank::session::display_request_t &request,
+                                     const std::string &canonical,
+                                     uid_t authenticated_uid,
+                                     pt::ptree &tree,
+                                     std::string_view encoding_mode = {}) {
+    const auto status = plank::session::transition_status(
+      plank::session::read_display_transition(runtime_display_transition), canonical,
+      authenticated_uid, static_cast<std::int64_t>(std::time(nullptr))
+    );
+    if (status == plank::session::transition_status_t::pending) {
+      tree.put("root.<xmlattr>.status_code", 425);
+      tree.put("root.<xmlattr>.status_message", "PLANK host display transition is running");
+      return false;
+    }
+    if (status == plank::session::transition_status_t::failed) {
+      const auto transition = plank::session::read_display_transition(runtime_display_transition);
+      const auto reason = transition ? transition->reason : std::string {"apply_failed"};
+      BOOST_LOG(warning) << "PLANK display transition failed: "sv << reason;
+      arrangement_refusal(tree, 409, reason, "The workstation could not apply the display layout (" + reason + ")");
+      return false;
+    }
+    const auto transition = plank::session::request_display_transition(request);
+    if (transition == plank::session::display_request_status::submitted) {
+      // A refused launch must not change how an existing packed stream is
+      // described by output_topology_json().
+      if (!encoding_mode.empty()) remember_arrangement_mode(canonical, std::string {encoding_mode});
+      tree.put("root.<xmlattr>.status_code", 425);
+      tree.put("root.<xmlattr>.status_message", "PLANK host display transition started");
+      return false;
+    }
+    if (transition == plank::session::display_request_status::wrong_user) {
+      tree.put("root.<xmlattr>.status_code", 423);
+      tree.put("root.<xmlattr>.status_message",
+               "Only the active desktop user may change its display layout");
+      return false;
+    }
+    tree.put("root.<xmlattr>.status_code", 503);
+    tree.put("root.<xmlattr>.status_message", "Host display layout transition is currently unavailable");
+    return false;
+  }
+
+  /**
+   * @brief Bind `plankDisplayArrangement` (feature 0x8000000) before any PAM state is consumed.
+   *
+   * Parse, canonicalise and validate in contract order (400 with the error
+   * code), check the host can present it (409), then accept the live lease or
+   * start/await the transition (425).
+   */
+  bool bind_display_arrangement(session_stream::launch_session_t &session,
+                                const std::vector<platf::display_info_t> &outputs,
+                                uid_t authenticated_uid,
+                                pt::ptree &tree,
+                                bool preflight_only = false) {
+    namespace arrangement = plank::arrangement;
+    if (session.plank_protocol_version != plank_topology_version ||
+        (session.plank_feature_flags & plank::topology::feature_display_arrangement) == 0) {
+      arrangement_refusal(tree, 400, arrangement::error_code(arrangement::error_t::not_negotiated),
+                          "PLANK display arrangements were not negotiated");
+      return false;
+    }
+    if (!session.host_layout.empty() || !session.virtual_mode_1.empty() ||
+        !session.virtual_mode_2.empty()) {
+      arrangement_refusal(tree, 400, arrangement::error_code(arrangement::error_t::malformed),
+                          "plankDisplayArrangement cannot be combined with plankHostLayout or virtual modes");
+      return false;
+    }
+    const auto capabilities = display_arrangement_capabilities();
+    const auto inventory = plank::display::read_inventory();
+    if (!capabilities || !inventory) {
+      tree.put("root.<xmlattr>.status_code", 503);
+      tree.put("root.<xmlattr>.status_message", "The workstation display inventory is unavailable");
+      return false;
+    }
+    const auto result = arrangement::evaluate(session.display_arrangement, *capabilities);
+    if (!result.resolution) {
+      const auto code = arrangement::error_code(result.error);
+      arrangement_refusal(tree, 400, code, "Invalid PLANK display arrangement (" + std::string {code} + ")");
+      return false;
+    }
+    std::string reason;
+    if (!plank::display::plan_arrangement(*result.resolution, *inventory, reason)) {
+      arrangement_refusal(tree, 409, reason, "The workstation cannot present this display arrangement (" + reason + ")");
+      return false;
+    }
+    // The capture must fit the launch's encoder, in rows if the host packs.
+    const auto parsed_request = arrangement::parse(session.display_arrangement).request;
+    const auto capture = arrangement::plan_capture(*parsed_request, *capabilities, session.encoding_mode);
+    if (!capture.plan) {
+      const auto code = arrangement::error_code(capture.error);
+      arrangement_refusal(tree, 400, code,
+                          "The display arrangement does not fit the " + session.encoding_mode +
+                            " encoder (" + std::string {code} + ")");
+      return false;
+    }
+    if (capture.plan->packed && session.capture_source != "nvfbc") {
+      arrangement_refusal(tree, 400, arrangement::error_code(arrangement::error_t::canvas_too_large),
+                          "Packed capture needs the NvFBC capture source");
+      return false;
+    }
+    if (capture.plan->packed &&
+        (session.width != capture.plan->width || session.height != capture.plan->height)) {
+      arrangement_refusal(tree, 400, arrangement::error_code(arrangement::error_t::canvas_too_large),
+                          "A packed capture must stream at its packed frame size");
+      return false;
+    }
+    if (preflight_only) return true;
+    session.arrangement_capture = capture.plan;
+
+    const auto live_layout = live_display_layout(outputs);
+    if (live_layout.temporary_physical_lease && live_layout.lease_uid != authenticated_uid) {
+      tree.put("root.<xmlattr>.status_code", 423);
+      tree.put("root.<xmlattr>.status_message",
+               "The temporary workstation display layout belongs to another account");
+      return false;
+    }
+    if (live_layout.arrangement && live_layout.arrangement->origin == "arrangement"sv &&
+        live_layout.arrangement->request == session.display_arrangement &&
+        arrangement_outputs_live(*live_layout.arrangement, outputs)) {
+      // The canonical arrangement is already live: a no-op binding.
+      session.plank_display_lease = true;
+      session.plank_display_lease_uid = authenticated_uid;
+      remember_arrangement_mode(session.display_arrangement, session.encoding_mode);
+      BOOST_LOG(info) << "PLANK display arrangement is live: "sv << session.display_arrangement;
+      return true;
+    }
+    plank::session::display_request_t request;
+    request.action = plank::session::display_request_t::action_t::acquire;
+    request.account_uid = authenticated_uid;
+    request.arrangement = session.display_arrangement;
+    return submit_arrangement_transition(request, session.display_arrangement, authenticated_uid,
+                                         tree, session.encoding_mode);
   }
 
   bool bind_host_layout(session_stream::launch_session_t &session,
@@ -886,7 +1169,7 @@ namespace nvhttp {
       return false;
     }
     if (validation == plank::topology::layout_error::mismatch &&
-        live_layout.startup_kind == "physical" && !live_layout.temporary_physical_lease &&
+        live_layout.startup_policy == "physical" && !live_layout.temporary_physical_lease &&
         !plank::topology::physical_lease_feasible(session.host_layout, outputs.size())) {
       // A physical host leases its lit scanouts. Without enough of them the
       // supervisor cannot apply the layout, so refuse it now instead of
@@ -899,7 +1182,43 @@ namespace nvhttp {
         outputs.size(), session.host_layout,
         plank::topology::layout_output_count(session.host_layout)
       ));
+      tree.put("root.PlankDisplayArrangementError", "too_many_displays");
       return false;
+    }
+    if (validation == plank::topology::layout_error::mismatch &&
+        live_layout.startup_policy != "virtual") {
+      // Physical and hybrid hosts publish the transition outcome, so a
+      // failure answers 409 instead of leaving the client waiting on 425.
+      const auto legacy = plank::arrangement::from_legacy(
+        session.host_layout, session.virtual_mode_1, session.virtual_mode_2
+      );
+      const auto canonical = legacy ? plank::arrangement::serialize(*legacy) : std::string {};
+      if (live_layout.startup_policy == "hybrid" && legacy) {
+        // Hybrid serves legacy layouts with the arrangement engine (auto backing).
+        const auto capabilities = display_arrangement_capabilities();
+        const auto inventory = plank::display::read_inventory();
+        if (capabilities && inventory) {
+          const auto result = plank::arrangement::evaluate(canonical, *capabilities);
+          std::string reason {plank::arrangement::error_code(result.error)};
+          if (result.resolution) {
+            reason.clear();
+            plank::display::plan_arrangement(*result.resolution, *inventory, reason);
+          }
+          if (!reason.empty()) {
+            arrangement_refusal(tree, 409, reason,
+                                "The workstation cannot present the " + session.host_layout +
+                                  " layout (" + reason + ")");
+            return false;
+          }
+        }
+      }
+      if (!canonical.empty()) {
+        return submit_arrangement_transition({
+          plank::session::display_request_t::action_t::acquire,
+          session.host_layout, session.virtual_mode_1, session.virtual_mode_2,
+          authenticated_uid
+        }, canonical, authenticated_uid, tree);
+      }
     }
     if (validation == plank::topology::layout_error::mismatch) {
       const auto transition = plank::session::request_display_transition({
@@ -982,7 +1301,9 @@ namespace nvhttp {
       tree.put("root.<xmlattr>.status_message", "Missing PLANK topology generation");
       return false;
     }
-    const auto current_generation = video::output_topology_generation(outputs);
+    const auto current_generation = topology_generation_for(
+      outputs, session.capture_regions.empty() ? std::nullopt : session.arrangement_capture
+    );
     if (session.topology_generation != current_generation) {
       tree.put("root.<xmlattr>.status_code", 409);
       tree.put("root.<xmlattr>.status_message", "Host output topology changed; refresh and retry");
@@ -995,7 +1316,10 @@ namespace nvhttp {
                                uid_t authenticated_uid,
                                pt::ptree &tree) {
     const auto outputs = video::output_topology();
-    if (!bind_host_layout(session, outputs, authenticated_uid, tree)) {
+    const bool bound = session.display_arrangement_requested ?
+      bind_display_arrangement(session, outputs, authenticated_uid, tree) :
+      bind_host_layout(session, outputs, authenticated_uid, tree);
+    if (!bound) {
       return false;
     }
     if (session.display_mode == "scaled-span" || session.display_mode == "separate-displays") {
@@ -1012,6 +1336,20 @@ namespace nvhttp {
         tree.put("root.<xmlattr>.status_code", 409);
         tree.put("root.<xmlattr>.status_message", "Host desktop topology is unavailable");
         return false;
+      }
+      if (session.arrangement_capture && session.arrangement_capture->packed) {
+        // The client presents a packed capture 1:1 from its source rectangles.
+        if (session.width != session.arrangement_capture->width ||
+            session.height != session.arrangement_capture->height) {
+          tree.put("root.<xmlattr>.status_code", 400);
+          tree.put("root.<xmlattr>.status_message", std::format(
+            "A packed capture streams at {}x{}, not {}x{}", session.arrangement_capture->width,
+            session.arrangement_capture->height, session.width, session.height
+          ));
+          return false;
+        }
+        const auto request = plank::arrangement::parse(session.display_arrangement).request;
+        session.capture_regions = plank::arrangement::capture_regions(*request, *session.arrangement_capture);
       }
       if (!bind_topology_generation(session, outputs, tree)) {
         return false;
@@ -1120,6 +1458,22 @@ namespace nvhttp {
       tree.put("root.<xmlattr>.status_code", 503);
       tree.put("root.<xmlattr>.status_message",
                "Requested PLANK encoding mode is unavailable");
+      return false;
+    }
+    // The transport frame must fit the encoder before any PAM state is used.
+    const auto limits = video::encoding_mode_limits();
+    const auto limit = limits.find(session.encoding_mode);
+    if (limit != limits.end() &&
+        !plank::topology::stream_size_fits(session.width, session.height,
+                                           limit->second.width, limit->second.height)) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", std::format(
+        "{}x{} exceeds the {} encoder limit of {}x{}", session.width, session.height,
+        session.encoding_mode, limit->second.width, limit->second.height
+      ));
+      if ((session.plank_feature_flags & plank::topology::feature_display_arrangement) != 0) {
+        tree.put("root.PlankDisplayArrangementError", "canvas_too_large");
+      }
       return false;
     }
     return true;
@@ -1269,6 +1623,9 @@ namespace nvhttp {
     launch_session->host_layout = get_arg(args, "plankHostLayout", "");
     launch_session->virtual_mode_1 = get_arg(args, "plankVirtualMode1", "");
     launch_session->virtual_mode_2 = get_arg(args, "plankVirtualMode2", "");
+    launch_session->display_arrangement_requested =
+      args.find("plankDisplayArrangement"s) != std::end(args);
+    launch_session->display_arrangement = get_arg(args, "plankDisplayArrangement", "");
     launch_session->capture_source = get_arg(args, "plankCaptureSource", "");
     launch_session->encoder_backend = get_arg(args, "plankEncoderBackend", "");
     launch_session->encoding_mode = get_arg(args, "plankEncodingMode", "");
@@ -1625,6 +1982,11 @@ namespace nvhttp {
       tree.put("root.gamesession", 0);
       return;
     }
+    if (active_session && launch_session->display_arrangement_requested &&
+        !bind_display_arrangement(*launch_session, {}, *authenticated_uid, tree, true)) {
+      tree.put("root.gamesession", 0);
+      return;
+    }
 
     auto current_appid = proc::proc.running();
     if (active_session) {
@@ -1801,6 +2163,11 @@ namespace nvhttp {
       return;
     }
     if (!validate_transport_mtu(*launch_session, tree)) {
+      tree.put("root.resume", 0);
+      return;
+    }
+    if (active_session && launch_session->display_arrangement_requested &&
+        !bind_display_arrangement(*launch_session, {}, *authenticated_uid, tree, true)) {
       tree.put("root.resume", 0);
       return;
     }

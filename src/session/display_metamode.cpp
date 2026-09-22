@@ -169,4 +169,184 @@ namespace plank::display {
     if (!temporary) return std::nullopt;
     return lease_plan_t {snapshot, std::move(*temporary)};
   }
+
+  std::string physical_mode_token(std::string_view mode) {
+    return std::string {mode};
+  }
+
+  std::optional<arrangement_plan_t> plan_arrangement(
+    const plank::arrangement::resolution_t &resolution,
+    const inventory_t &inventory,
+    std::string &reason
+  ) {
+    namespace arrangement = plank::arrangement;
+    arrangement_plan_t plan;
+    plan.width = resolution.desktop_width;
+    plan.height = resolution.desktop_height;
+    for (const auto &output : inventory.physical) {
+      plan.outputs.push_back({output.device.randr, output.device.dpy, true, "off", {}, -1, {}});
+    }
+    const auto heads = std::min<std::size_t>(
+      static_cast<std::size_t>(std::max(inventory.virtual_heads, 0)), inventory.virtual_candidates.size()
+    );
+    for (std::size_t head = 0; head < heads; ++head) {
+      const auto &device = inventory.virtual_candidates[head].device;
+      plan.outputs.push_back({device.randr, device.dpy, false, "off", {}, -1, {}});
+    }
+    if (resolution.outputs.size() > arrangement::maximum_entries) {
+      reason = std::string {arrangement::error_code(arrangement::error_t::too_many_displays)};
+      return std::nullopt;
+    }
+    std::vector<std::string> lit;
+    for (const auto &output : resolution.outputs) {
+      arrangement_output_plan_t *target = nullptr;
+      std::string carrier;
+      if (output.backing == arrangement::backing_t::virtual_output) {
+        if (output.head < 1 || static_cast<std::size_t>(output.head) > heads) {
+          reason = std::string {arrangement::error_code(arrangement::error_t::no_virtual_output)};
+          return std::nullopt;
+        }
+        target = &plan.outputs[inventory.physical.size() + static_cast<std::size_t>(output.head) - 1];
+        carrier = output.carrier;
+      } else {
+        const auto randr = randr_name_from_id(output.output);
+        for (std::size_t index = 0; index < inventory.physical.size(); ++index) {
+          if (plan.outputs[index].randr == randr) target = &plan.outputs[index];
+        }
+        if (target == nullptr) {
+          reason = std::string {arrangement::error_code(arrangement::error_t::no_physical_output)};
+          return std::nullopt;
+        }
+        carrier = output.backing == arrangement::backing_t::physical ?
+                    physical_mode_token(output.mode) : output.mode;
+      }
+      const auto carrier_size = arrangement::parse_mode_name(carrier);
+      if (target->backing != "off" || !carrier_size) {
+        reason = std::string {arrangement::error_code(arrangement::error_t::too_many_displays)};
+        return std::nullopt;
+      }
+      // Hardware probe P4: ViewPortIn downscales up to 2:1 per axis.
+      if (arrangement::downscale_factor(output.rect.width, output.rect.height, carrier) >
+          static_cast<double>(maximum_downscale)) {
+        reason = std::string {arrangement::error_code(arrangement::error_t::output_too_large)};
+        return std::nullopt;
+      }
+      target->backing = std::string {arrangement::backing_name(output.backing)};
+      target->mode = carrier;
+      target->index = static_cast<int>(output.index);
+      target->rect = output.rect;
+      const auto size = arrangement::mode_name(output.rect.width, output.rect.height);
+      lit.push_back(target->dpy + ": " + carrier + " @" + size + " +" + std::to_string(output.rect.x) +
+                    "+" + std::to_string(output.rect.y) + " {ViewPortIn=" + size +
+                    ", ViewPortOut=" + carrier + "+0+0}");
+      if (output.index == 0) plan.primary = target->randr;
+    }
+    // Hardware probe P13: a fifth head is silently dropped, so never ask for one.
+    if (lit.size() > arrangement::maximum_entries || plan.primary.empty()) {
+      reason = std::string {arrangement::error_code(arrangement::error_t::too_many_displays)};
+      return std::nullopt;
+    }
+    for (const auto &output : plan.outputs) {
+      if (output.backing == "off") lit.push_back(output.dpy + ": NULL");
+    }
+    for (const auto &clause : lit) {
+      if (!plan.metamode.empty()) plan.metamode += ", ";
+      plan.metamode += clause;
+    }
+    return plan;
+  }
+
+  std::vector<std::string> visibility_arguments(const arrangement_plan_t &plan, bool hide_physical) {
+    std::vector<std::string> arguments;
+    for (const auto &output : plan.outputs) {
+      if (output.backing != "off") {
+        arguments.insert(arguments.end(), {"--output", output.randr, "--set", "non-desktop", "0"});
+      } else if (!output.physical || hide_physical) {
+        arguments.insert(arguments.end(), {"--output", output.randr, "--off", "--set", "non-desktop", "1"});
+      }
+    }
+    return arguments;
+  }
+
+  bool arrangement_live(const randr_screen_t &screen, const arrangement_plan_t &plan) {
+    if (screen.width != plan.width || screen.height != plan.height) return false;
+    for (const auto &output : plan.outputs) {
+      const auto live = std::find_if(screen.outputs.begin(), screen.outputs.end(),
+                                     [&](const auto &candidate) { return candidate.name == output.randr; });
+      if (output.backing == "off") {
+        if (live != screen.outputs.end() && live->enabled) return false;
+        continue;
+      }
+      if (live == screen.outputs.end() || !live->enabled || live->x != output.rect.x ||
+          live->y != output.rect.y || live->width != output.rect.width ||
+          live->height != output.rect.height || (output.index == 0 && !live->primary)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  std::string rest_metamode(const inventory_t &inventory) {
+    if (inventory.physical.empty()) return {};
+    return inventory.physical.front().device.dpy + ": nvidia-auto-select +0+0";
+  }
+
+  std::string boot_metamode(const inventory_t &inventory) {
+    std::string metamode;
+    int x = 0;
+    for (const auto &output : inventory.physical) {
+      if (!metamode.empty()) metamode += ", ";
+      metamode += output.device.dpy + ": nvidia-auto-select +" + std::to_string(x) + "+0";
+      const auto size = plank::arrangement::parse_mode_name(output.preferred);
+      x += size ? size->first : 1920;
+    }
+    const auto heads = std::min<std::size_t>(
+      static_cast<std::size_t>(std::max(inventory.virtual_heads, 0)), inventory.virtual_candidates.size()
+    );
+    for (std::size_t head = 0; head < heads; ++head) {
+      if (!metamode.empty()) metamode += ", ";
+      metamode += inventory.virtual_candidates[head].device.dpy + ": NULL";
+    }
+    return metamode;
+  }
+
+  std::vector<std::string> hide_virtual_head_arguments(const inventory_t &inventory) {
+    std::vector<std::string> arguments;
+    const auto heads = std::min<std::size_t>(
+      static_cast<std::size_t>(std::max(inventory.virtual_heads, 0)), inventory.virtual_candidates.size()
+    );
+    for (std::size_t head = 0; head < heads; ++head) {
+      arguments.insert(arguments.end(), {
+        "--output", inventory.virtual_candidates[head].device.randr, "--off", "--set", "non-desktop", "1"
+      });
+    }
+    return arguments;
+  }
+
+  bool rest_needed(
+    const physical_snapshot_t &current, const inventory_t &inventory, bool require_all_physical
+  ) {
+    const auto lit = [&](std::string_view dpy) {
+      return std::any_of(current.outputs.begin(), current.outputs.end(),
+                         [&](const auto &output) { return output.name == dpy; });
+    };
+    const auto heads = std::min<std::size_t>(
+      static_cast<std::size_t>(std::max(inventory.virtual_heads, 0)), inventory.virtual_candidates.size()
+    );
+    for (std::size_t head = 0; head < heads; ++head) {
+      if (lit(inventory.virtual_candidates[head].device.dpy)) return true;
+    }
+    if (require_all_physical) {
+      for (const auto &output : inventory.physical) {
+        if (!lit(output.device.dpy)) return true;
+      }
+    }
+    int minimum_x = current.outputs.empty() ? 0 : current.outputs.front().x;
+    int minimum_y = current.outputs.empty() ? 0 : current.outputs.front().y;
+    for (const auto &output : current.outputs) {
+      minimum_x = std::min(minimum_x, output.x);
+      minimum_y = std::min(minimum_y, output.y);
+    }
+    return minimum_x != 0 || minimum_y != 0;
+  }
 }  // namespace plank::display

@@ -7,6 +7,9 @@
 // standard includes
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -14,6 +17,7 @@
 
 // local includes
 #include "input.h"
+#include "plank_arrangement.h"
 #include "platform/common.h"
 #include "thread_safe.h"
 #include "video_colorspace.h"
@@ -74,6 +78,20 @@ namespace video {
     bool span_desktop {};  ///< Capture and scale the complete virtual desktop rather than one output.
     capture_source_e capture_source {capture_source_e::configured};  ///< Exact capture path negotiated for this session, or configured during probes.
     std::string encoder_backend;  ///< Exact PLANK encoder backend selected for this session.
+    /**
+     * Packed capture (display arrangements): each output's copy from the X
+     * screen into a capture of `width` x `height`. Empty for every other
+     * session, whose capture is the screen or one output.
+     */
+    std::vector<plank::arrangement::capture_region_t> capture_regions;
+    int desktop_width {};  ///< Desktop bounding box, the pointer reference size of a packed capture.
+    int desktop_height {};  ///< Desktop bounding box height.
+    /**
+     * Capture probe only: called on the capture thread with each packed
+     * capture after its copy (never set for a stream).
+     */
+    std::function<void(platf::img_t &)> captured_image_hook;
+    bool probe_synchronous_teardown {};  ///< Capture probe waits for NVENC destruction before process exit.
   };
 
   namespace amf {
@@ -744,6 +762,32 @@ namespace video {
 
   /** Return whether one exact PLANK encoding mode passed its real encoder probe. */
   bool encoding_mode_available(std::string_view mode);
+
+  /**
+   * @brief Largest and real-time-qualified frame size per available encoding mode.
+   *
+   * Filled from the NVENC WIDTH_MAX/HEIGHT_MAX capabilities of the startup
+   * probe. Modes without a probed limit (the software encoder) are absent.
+   * @return Limits keyed by PLANK encoding-mode name.
+   */
+  std::map<std::string, plank::arrangement::encoding_limit_t> encoding_mode_limits();
+
+  /** Return whether this build captures display arrangements into packed rows (NvFBC on Linux). */
+  bool packed_capture_available();
+
+  /**
+   * @brief Hardware probe: capture a display arrangement through the stream's packing path.
+   *
+   * Packs `request` for the probed limit of `encoding_mode` with the launch
+   * binding's rule, captures `frames` frames of the live X screen through the
+   * NvFBC packed-capture path, encodes them with that NVENC mode and writes
+   * `capture.h264`/`capture.hevc`, the last frame as `capture.ppm` and
+   * `probe.json` into `output_directory`.
+   *
+   * @return 0 on success; 2 usage, 3 unavailable, 4 canvas_too_large, 5 capture or encoder setup, 6 runtime failure.
+   */
+  int capture_probe(std::string_view request, std::string_view encoding_mode, int frames,
+                    const std::filesystem::path &output_directory);
 
   /**
    * @brief Report whether a negotiated PLANK capture source is available.

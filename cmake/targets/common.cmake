@@ -161,12 +161,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_options(plank-probe-gssapi PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
 
     add_executable(plank-host-supervisor
+            "${CMAKE_SOURCE_DIR}/src/plank_arrangement.cpp"
+            "${CMAKE_SOURCE_DIR}/src/plank_arrangement.h"
+            "${CMAKE_SOURCE_DIR}/src/session/display_inventory.cpp"
+            "${CMAKE_SOURCE_DIR}/src/session/display_inventory.h"
             "${CMAKE_SOURCE_DIR}/src/session/display_metamode.cpp"
             "${CMAKE_SOURCE_DIR}/src/session/display_metamode.h"
+            "${CMAKE_SOURCE_DIR}/src/session/display_qualify.cpp"
+            "${CMAKE_SOURCE_DIR}/src/session/display_qualify.h"
             "${CMAKE_SOURCE_DIR}/src/session/host_supervisor.cpp"
             "${CMAKE_SOURCE_DIR}/src/session/session_context.cpp"
             "${CMAKE_SOURCE_DIR}/src/session/session_context.h")
-    target_link_libraries(plank-host-supervisor PRIVATE ${PLANK_SYSTEMD_LIBRARY})
+    target_link_libraries(plank-host-supervisor PRIVATE ${PLANK_SYSTEMD_LIBRARY} nlohmann_json::nlohmann_json)
     target_compile_options(plank-host-supervisor PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
     target_link_options(plank-host-supervisor PRIVATE ${SUNSHINE_LINK_OPTIONS})
     install(TARGETS plank-host-supervisor

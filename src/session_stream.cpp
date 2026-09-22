@@ -210,6 +210,16 @@ namespace session_stream {
 
     stream::config_t config {};
     config.monitor.span_desktop = launch_session->span_desktop;
+    if (launch_session->span_desktop && !launch_session->capture_regions.empty()) {
+      // A packed display arrangement: the capture is the packed rows, and
+      // pointer input keeps the desktop as its reference.
+      config.monitor.capture_regions = launch_session->capture_regions;
+      const auto desktop = plank::arrangement::desktop_bounds(
+        *plank::arrangement::parse(launch_session->display_arrangement).request
+      );
+      config.monitor.desktop_width = desktop.width;
+      config.monitor.desktop_height = desktop.height;
+    }
     config.monitor.output_name = launch_session->span_desktop ?
       std::string {} : launch_session->output_name;
     config.monitor.encoder_backend = launch_session->encoder_backend;

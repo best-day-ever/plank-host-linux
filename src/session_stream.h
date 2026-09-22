@@ -7,9 +7,14 @@
 // standard includes
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include <sys/types.h>
+
+// local includes
+#include "plank_arrangement.h"
 
 namespace session_stream {
   /**
@@ -34,6 +39,10 @@ namespace session_stream {
     std::string host_layout;  ///< Exact PLANK host display layout required by the bookmark.
     std::string virtual_mode_1;  ///< Exact qualified mode required for virtual output 1.
     std::string virtual_mode_2;  ///< Exact qualified mode required for virtual output 2.
+    bool display_arrangement_requested {};  ///< Whether the launch carried plankDisplayArrangement.
+    std::string display_arrangement;  ///< Requested display arrangement (feature 0x8000000), as sent.
+    std::optional<plank::arrangement::capture_plan_t> arrangement_capture;  ///< Capture plan for the launch's encoding mode.
+    std::vector<plank::arrangement::capture_region_t> capture_regions;  ///< Packed-capture copies (composite modes only).
     std::string capture_source;  ///< Exact PLANK capture source requested by the client.
     std::string encoder_backend;  ///< Exact PLANK encoder backend requested by the client.
     std::string encoding_mode;  ///< Exact PLANK codec/depth/chroma/encoder mode requested by the client.

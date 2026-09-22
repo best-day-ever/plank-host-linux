@@ -9,6 +9,9 @@
  */
 #pragma once
 
+#include "../plank_arrangement.h"
+#include "display_inventory.h"
+
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -110,5 +113,91 @@ namespace plank::display {
     std::string_view layout,
     std::string_view mode_1,
     std::string_view mode_2
+  );
+
+  /**
+   * @brief How one inventory output takes part in an arrangement lease.
+   */
+  struct arrangement_output_plan_t {
+    std::string randr;  ///< RandR output name.
+    std::string dpy;  ///< NVIDIA display device used in the MetaMode.
+    bool physical {};  ///< Physical output (true) or virtual head (false).
+    std::string backing;  ///< `physical`, `physical-viewport`, `virtual`, or `off`.
+    std::string mode;  ///< Driven mode or carrier `WxH` (empty when off).
+    int index {-1};  ///< Arrangement entry, or -1 when off.
+    plank::arrangement::rect_t rect;  ///< Desktop rectangle (shown outputs).
+  };
+
+  /**
+   * @brief Everything the supervisor applies for one arrangement.
+   */
+  struct arrangement_plan_t {
+    std::vector<arrangement_output_plan_t> outputs;  ///< Every physical output and reserved virtual head.
+    std::string metamode;  ///< One CurrentMetaMode over every connector.
+    std::string primary;  ///< RandR name of entry 0.
+    int width {};  ///< Desktop width.
+    int height {};  ///< Desktop height.
+  };
+
+  /**
+   * @brief MetaMode mode token for a physical output driven at an exact `WxH`.
+   *
+   * Hardware probe P11: the driver accepts the plain RandR size name and
+   * normalises it to `WxH @WxH {ViewPortIn=WxH, ViewPortOut=WxH+0+0}`.
+   */
+  std::string physical_mode_token(std::string_view mode);
+
+  /**
+   * @brief Turn a backing resolution into MetaMode clauses and visibility.
+   *
+   * @param resolution Output of plank::arrangement::resolve().
+   * @param inventory The inventory the resolution's capabilities came from.
+   * @param reason Set to an arrangement error code when planning fails.
+   * @return The plan, or no value when an output is missing, the head budget
+   *   is exceeded, or a ViewPortIn downscale exceeds the qualified limit.
+   */
+  std::optional<arrangement_plan_t> plan_arrangement(
+    const plank::arrangement::resolution_t &resolution,
+    const inventory_t &inventory,
+    std::string &reason
+  );
+
+  /**
+   * @brief xrandr arguments that make planned outputs visible and hide the others.
+   *
+   * Shown outputs get `non-desktop 0`. Virtual heads that are off are switched
+   * off and marked `non-desktop 1`; so are physical outputs when
+   * `hide_physical` is set (hardware probe P2).
+   */
+  std::vector<std::string> visibility_arguments(const arrangement_plan_t &plan, bool hide_physical);
+
+  /**
+   * @brief Whether a live xrandr state shows exactly the planned desktop.
+   */
+  bool arrangement_live(const randr_screen_t &screen, const arrangement_plan_t &plan);
+
+  /**
+   * @brief Recovery MetaMode: the first physical output at its native mode.
+   */
+  std::string rest_metamode(const inventory_t &inventory);
+
+  /**
+   * @brief The boot MetaMode: every physical output left to right, virtual heads off.
+   */
+  std::string boot_metamode(const inventory_t &inventory);
+
+  /**
+   * @brief xrandr arguments that switch off and hide every reserved virtual head.
+   */
+  std::vector<std::string> hide_virtual_head_arguments(const inventory_t &inventory);
+
+  /**
+   * @brief Whether a new X server needs the boot MetaMode reasserted.
+   *
+   * True when a virtual head is lit or the lit desktop does not start at 0,0;
+   * with `require_all_physical`, also when a physical output is dark.
+   */
+  bool rest_needed(
+    const physical_snapshot_t &current, const inventory_t &inventory, bool require_all_physical
   );
 }  // namespace plank::display

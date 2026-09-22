@@ -1,0 +1,76 @@
+
+8 Display Devices on workstation:1
+
+    [0] workstation:1[dpy:0] (DP-0)
+
+      Has the following names:
+        DFP
+        DFP-0
+        DPY-0
+        DP-0
+        Connector-1
+
+    [1] workstation:1[dpy:1] (DP-1)
+
+      Has the following names:
+        DFP
+        DFP-1
+        DPY-1
+        DP-1
+        Connector-1
+
+    [2] workstation:1[dpy:2] (DP-2)
+
+      Has the following names:
+        DFP
+        DFP-2
+        DPY-2
+        DP-2
+        Connector-2
+
+    [3] workstation:1[dpy:3] (DP-3)
+
+      Has the following names:
+        DFP
+        DFP-3
+        DPY-3
+        DP-3
+        Connector-2
+
+    [4] workstation:1[dpy:4] (HDMI-0)
+
+      Has the following names:
+        DFP
+        DFP-4
+        DPY-4
+        HDMI-0
+        Connector-3
+
+    [5] workstation:1[dpy:5] (DP-4) (connected, enabled)
+
+      Has the following names:
+        DFP
+        DFP-5
+        DPY-EDID-b91a88da-0a20-c721-1633-ed92fd5d69a4
+        DPY-5
+        DP-4
+        Connector-0
+
+    [6] workstation:1[dpy:6] (DP-5)
+
+      Has the following names:
+        DFP
+        DFP-6
+        DPY-6
+        DP-5
+        Connector-4
+
+    [7] workstation:1[dpy:7] (DP-6)
+
+      Has the following names:
+        DFP
+        DFP-7
+        DPY-7
+        DP-6
+        Connector-4
+

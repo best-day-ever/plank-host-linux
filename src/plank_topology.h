@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -39,6 +40,11 @@ namespace plank::topology {
   // (the panel below the camera housing). A client may request them only
   // after negotiating this bit, so older clients never see them offered.
   constexpr std::uint32_t feature_notch_safe_laptop_modes = 0x4000000;
+  // Up to four desktop outputs of any size in client positions, backed by
+  // physical outputs or virtual heads (protocol/output-topology.md, "Display
+  // arrangement extension"). Advertised per host, never in feature_flags:
+  // only a physical or hybrid startup with a valid display inventory has it.
+  constexpr std::uint32_t feature_display_arrangement = 0x8000000;
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
   constexpr std::uint32_t feature_platform_clipboard_sync = feature_clipboard_sync;
   constexpr std::uint32_t feature_platform_file_clipboard = feature_file_clipboard;
@@ -85,6 +91,18 @@ namespace plank::topology {
   struct mode_size {
     int width;
     int height;
+  };
+
+  /**
+   * @brief The virtual-EDID timing pool in allowlist order.
+   *
+   * Every PLANK virtual connector carries all of these exact 60 Hz timings.
+   * Arrangement leases also use them as ViewPortIn carriers.
+   */
+  inline constexpr std::array<std::string_view, 13> virtual_mode_pool {
+    "1024x2160", "1280x2160", "1920x1080", "1920x1200", "2560x1440",
+    "2560x1600", "2560x2160", "3024x1890", "3440x1440", "3840x1600",
+    "3840x2160", "4096x2160", "5120x2160",
   };
 
   constexpr mode_size virtual_mode_size(std::string_view mode) {
@@ -139,6 +157,29 @@ namespace plank::topology {
     if (layout == "physical") return physical_outputs > 0;
     const auto required = layout_output_count(layout);
     return required > 0 && physical_outputs >= required;
+  }
+
+  /**
+   * @brief Whether a host advertises feature_display_arrangement.
+   *
+   * Only a physical or hybrid startup with a valid display inventory taken
+   * under the same policy, and at least one usable output, has it.
+   */
+  constexpr bool display_arrangement_advertised(
+    std::string_view startup_policy, std::string_view inventory_policy, int max_outputs
+  ) {
+    return (startup_policy == "physical" || startup_policy == "hybrid") &&
+           inventory_policy == startup_policy && max_outputs > 0;
+  }
+
+  /**
+   * @brief Whether a requested stream (transport) size fits an encoder's limit.
+   *
+   * With `packed_capture: false` the encoded frame is the desktop, so a larger
+   * frame is refused at launch, before the one-use PAM state is consumed.
+   */
+  constexpr bool stream_size_fits(int width, int height, int maximum_width, int maximum_height) {
+    return width <= maximum_width && height <= maximum_height;
   }
 
   constexpr bool valid_virtual_mode(std::string_view mode) {

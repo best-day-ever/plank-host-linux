@@ -1591,7 +1591,8 @@ namespace config {
     }
 
     bool_f(vars, "mdns_discovery", sunshine.mdns_discovery);
-    string_restricted_f(vars, "startup_layout", sunshine.startup_layout, {"physical"sv, "virtual"sv});
+    string_restricted_f(vars, "startup_layout", sunshine.startup_layout,
+                        {"physical"sv, "virtual"sv, "hybrid"sv});
     string_restricted_f(vars, "file_clipboard", sunshine.file_clipboard,
                         {"off"sv, "client-to-host"sv, "host-to-client"sv,
                          "bidirectional"sv});

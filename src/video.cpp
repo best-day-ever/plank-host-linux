@@ -10,7 +10,12 @@
 #include <charconv>
 #include <cerrno>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <list>
 #include <numeric>
 #include <thread>
@@ -23,6 +28,7 @@
 
 // lib includes
 #include <boost/pointer_cast.hpp>
+#include <nlohmann/json.hpp>
 
 extern "C" {
 #include <libavutil/imgutils.h>
@@ -42,6 +48,8 @@ extern "C" {
 #include "input.h"
 #include "logging.h"
 #include "nvenc/nvenc_encoder.h"
+#include "nvenc/nvenc_limits.h"
+#include "plank_arrangement_json.h"
 #include "plank_topology.h"
 #include "platform/common.h"
 #include "sync.h"
@@ -1791,6 +1799,44 @@ namespace video {
     return false;
   }
 
+  std::map<std::string, plank::arrangement::encoding_limit_t> encoding_mode_limits() {
+    // Sizes qualified in real time on the reference workstation (NvFBC
+    // capture plus NVENC at 60 fps). They never exceed the probed maximum.
+    struct qualified_mode_t {
+      std::string_view mode;
+      int video_format;
+      int qualified_width;
+      int qualified_height;
+    };
+    static constexpr std::array<qualified_mode_t, 5> nvenc_modes {{
+      {"h264-8-444-nvenc"sv, 0, 4096, 2160},
+      {"h264-8-420-nvenc"sv, 0, 4096, 2160},
+      {"hevc-8-444-nvenc"sv, 1, 7680, 4320},
+      {"hevc-10-444-nvenc"sv, 1, 7680, 4320},
+      {"hevc-10-420-nvenc"sv, 1, 7680, 4320},
+    }};
+    std::map<std::string, plank::arrangement::encoding_limit_t> limits;
+    for (const auto &candidate : nvenc_modes) {
+      if (!encoding_mode_available(candidate.mode)) continue;
+      const auto limit = nvenc::encoder_size_limit(candidate.video_format);
+      if (!limit) continue;
+      limits.emplace(std::string {candidate.mode}, plank::arrangement::encoding_limit_t {
+        limit->width, limit->height,
+        std::min(limit->width, candidate.qualified_width),
+        std::min(limit->height, candidate.qualified_height),
+      });
+    }
+    return limits;
+  }
+
+  bool packed_capture_available() {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    return true;
+#else
+    return false;
+#endif
+  }
+
   bool capture_source_available(std::string_view source) {
 #if defined(__linux__)
     return platf::plank_capture_source_available(source);
@@ -2015,6 +2061,8 @@ namespace video {
       }
     };
 
+    // Why the platform capture loop last returned, for the log.
+    std::string_view capture_stop_reason = "the capture backend returned on its own";
     auto pull_free_image_callback = [&](std::shared_ptr<platf::img_t> &img_out) -> bool {
       img_out.reset();
       while (capture_ctx_queue->running()) {
@@ -2056,6 +2104,7 @@ namespace video {
           std::this_thread::sleep_for(1ms);
         }
       }
+      capture_stop_reason = "pull_free_image returned false: the capture queue stopped";
       return false;
     };
 
@@ -2081,10 +2130,12 @@ namespace video {
         })
 
         if (capture_ctxs.empty()) {
+          capture_stop_reason = "push_captured_image returned false: no session is listening";
           return false;
         }
 
         if (!capture_ctx_queue->running()) {
+          capture_stop_reason = "push_captured_image returned false: the capture queue stopped";
           return false;
         }
 
@@ -2094,6 +2145,7 @@ namespace video {
 
         if (switch_display_event->peek() || desktop_reattach_event->peek()) {
           artificial_reinit = true;
+          capture_stop_reason = "push_captured_image returned false: display switch or desktop reattach";
           return false;
         }
 
@@ -2103,7 +2155,15 @@ namespace video {
       // PLANK always transports cursor shape separately. It is never
       // composited into the captured video frame.
       bool capture_cursor = false;
+      capture_stop_reason = "the capture backend returned on its own";
       auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &capture_cursor);
+      {
+        constexpr std::array<std::string_view, 5> status_names {"ok", "reinit", "timeout", "interrupted", "error"};
+        const auto index = static_cast<std::size_t>(status);
+        BOOST_LOG(info) << "Video capture loop ended with status "sv
+                        << (index < status_names.size() ? status_names[index] : "unknown"sv)
+                        << " ("sv << capture_stop_reason << ')';
+      }
 
 #ifdef __linux__
       if (status == platf::capture_e::error &&
@@ -2896,8 +2956,12 @@ namespace video {
     // to restart encoding as soon as possible. For cases where the NVENC driver
     // hang occurs, this thread may probably never exit, but it will allow
     // streaming to continue without requiring a full restart of Sunshine.
-    auto fail_guard = util::fail_guard([&encoder, &session] {
-      if (encoder.flags & ASYNC_TEARDOWN) {
+    auto fail_guard = util::fail_guard([&encoder, &session, &config] {
+      if (config.probe_synchronous_teardown) {
+        // The probe is a short-lived process. A detached NVENC destructor can
+        // still be using the driver when main exits after capture() returns.
+        session.reset();
+      } else if (encoder.flags & ASYNC_TEARDOWN) {
         std::jthread encoder_teardown_thread {[session = std::move(session)]() mutable {
           BOOST_LOG(info) << "Starting async encoder teardown";
           session.reset();
@@ -3042,6 +3106,23 @@ namespace video {
    * @return Constructed port object.
    */
   input::touch_port_t make_port(platf::display_t *display, const config_t &config) {
+    if (!config.capture_regions.empty() && config.desktop_width > 0 && config.desktop_height > 0) {
+      // A packed capture rearranges only the video. A client presenting it
+      // in separate windows sends pointer and touch positions in desktop
+      // coordinates with the desktop bounding box as the reference size, so
+      // input maps 1:1 onto the X screen, never through the packed frame.
+      return input::touch_port_t {
+        {0, 0, config.desktop_width, config.desktop_height},
+        display->env_width,
+        display->env_height,
+        0.0f,
+        0.0f,
+        1.0f,
+        1.0f,
+        0,
+        0,
+      };
+    }
     float wd = display->width;
     float hd = display->height;
 
@@ -4383,4 +4464,220 @@ namespace video {
     return platf::pix_fmt_e::unknown;
   }
 
+
+  namespace {
+    /** Stream parameters of one NVENC encoding mode, as a client would request them. */
+    std::optional<config_t> probe_config_for_mode(std::string_view mode) {
+      config_t config {};
+      config.framerate = 60;
+      config.bitrate = 150000;
+      config.slicesPerFrame = 1;
+      config.numRefFrames = 0;
+      config.enableIntraRefresh = 0;
+      const int identity = (COLORSPACE_IDENTITY_GBR << 1) | 1;
+      if (mode == "h264-8-444-nvenc"sv) {
+        config.videoFormat = 0, config.dynamicRange = 0, config.chromaSamplingType = 1, config.encoderCscMode = identity;
+      } else if (mode == "hevc-8-444-nvenc"sv) {
+        config.videoFormat = 1, config.dynamicRange = 0, config.chromaSamplingType = 1, config.encoderCscMode = identity;
+      } else if (mode == "hevc-10-444-nvenc"sv) {
+        config.videoFormat = 1, config.dynamicRange = 1, config.chromaSamplingType = 1, config.encoderCscMode = identity;
+      } else if (mode == "h264-8-420-nvenc"sv) {
+        config.videoFormat = 0, config.dynamicRange = 0, config.chromaSamplingType = 0,
+        config.encoderCscMode = plank::topology::nvenc_420_encoder_csc_mode;
+      } else if (mode == "hevc-10-420-nvenc"sv) {
+        config.videoFormat = 1, config.dynamicRange = 1, config.chromaSamplingType = 0,
+        config.encoderCscMode = plank::topology::nvenc_420_encoder_csc_mode;
+      } else {
+        return std::nullopt;
+      }
+      config.capture_source = capture_source_e::nvfbc_8bit;
+      config.encoder_backend = "nvenc-direct";
+      config.span_desktop = true;
+      return config;
+    }
+  }  // namespace
+
+  int capture_probe(std::string_view request_text, std::string_view encoding_mode, int frames,
+                    const std::filesystem::path &output_directory) {
+    nlohmann::json report {
+      {"request", std::string {request_text}}, {"encoding_mode", std::string {encoding_mode}},
+      {"frames_requested", frames},
+    };
+    std::error_code directory_error;
+    std::filesystem::create_directories(output_directory, directory_error);
+    const auto finish = [&](int code, std::string_view message = {}) {
+      if (!message.empty()) {
+        report["error"] = std::string {message};
+        BOOST_LOG(error) << "PLANK capture probe: "sv << message;
+      }
+      report["exit_code"] = code;
+      std::ofstream {output_directory / "probe.json"} << report.dump(2) << '\n';
+      std::cout << report.dump(2) << std::endl;
+      return code;
+    };
+    if (directory_error) return finish(2, "unable to create " + output_directory.string());
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    const auto request = plank::arrangement::parse(request_text).request;
+    if (!request) return finish(2, "not a canonical display arrangement");
+    if (frames <= 0 || frames > 3600) return finish(2, "frames must be 1 to 3600");
+    auto config = probe_config_for_mode(encoding_mode);
+    if (!config) return finish(2, "not an NVENC encoding mode");
+    config->probe_synchronous_teardown = true;
+    if (probe_encoders() || !select_encoder_backend_for_session("nvenc-direct"sv) ||
+        !encoding_mode_available(encoding_mode)) {
+      return finish(3, "the NVENC encoding mode is unavailable on this host");
+    }
+    const auto limits = encoding_mode_limits();
+    const auto limit = limits.find(std::string {encoding_mode});
+    if (limit == limits.end()) return finish(3, "no probed encoder limit for this mode");
+
+    // The same packing rule the launch binding uses.
+    const auto capture = plank::arrangement::pack(*request, limit->second.width, limit->second.height);
+    if (!capture.plan) return finish(4, "canvas_too_large");
+    const auto desktop = plank::arrangement::desktop_bounds(*request);
+    config->width = capture.plan->width;
+    config->height = capture.plan->height;
+    config->capture_regions = plank::arrangement::capture_regions(*request, *capture.plan);
+    config->desktop_width = desktop.width;
+    config->desktop_height = desktop.height;
+    report["plan"] = plank::arrangement::capture_plan_json(*capture.plan);
+    report["desktop"] = {{"width", desktop.width}, {"height", desktop.height}};
+    report["encoder_limit"] = {{"width", limit->second.width}, {"height", limit->second.height}};
+
+    // The stream's own pipeline: video::capture() with its shared capture
+    // thread, image pool, latest-frame hand-off and NVENC encode loop. The
+    // probe only reads the packets a stream would send.
+    struct frame_dump_t {
+      std::mutex mutex;
+      std::condition_variable ready;
+      bool wanted {};
+      bool done {};
+      bool read {};
+      int width {};
+      int height {};
+      int pitch {};
+      std::vector<std::uint8_t> bgra;
+    };
+    auto dump = std::make_shared<frame_dump_t>();
+    config->captured_image_hook = [dump](platf::img_t &img) {
+      std::lock_guard lock {dump->mutex};
+      if (!dump->wanted || dump->done) return;
+      dump->read = platf::download_captured_image(img, dump->bgra);
+      dump->width = img.width;
+      dump->height = img.height;
+      dump->pitch = img.row_pitch;
+      dump->done = true;
+      dump->ready.notify_all();
+    };
+
+    auto mail = std::make_shared<safe::mail_raw_t>();
+    auto shutdown_event = mail->event<bool>(mail::shutdown);
+    auto packets = mail::man->queue<packet_t>(mail::video_packets);
+    std::thread pipeline {[mail, stream_config = *config]() {
+      platf::set_thread_name("probe::encode");
+      video::capture(mail, stream_config, nullptr);
+    }};
+
+    const auto extension = config->videoFormat == 0 ? ".h264" : ".hevc";
+    const auto stream_path = output_directory / (std::string {"capture"} + extension);
+    std::ofstream stream_file {stream_path, std::ios::binary};
+    std::size_t bytes = 0;
+    int encoded = 0;
+    std::string failure;
+    std::string loop_end = "the requested frames were encoded";
+    const auto started = std::chrono::steady_clock::now();
+    while (encoded < frames) {
+      auto packet = packets->pop(5s);
+      if (!packet) {
+        failure = shutdown_event->peek() ?
+          "the stream pipeline stopped before the requested frames (see host.log: capture loop status)" :
+          "no encoded frame within five seconds";
+        loop_end = failure;
+        break;
+      }
+      if (encoded == 0) report["first_frame_idr"] = packet->is_idr();
+      stream_file.write(reinterpret_cast<const char *>(packet->data()),
+                        static_cast<std::streamsize>(packet->data_size()));
+      bytes += packet->data_size();
+      ++encoded;
+    }
+    const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+
+    // One packed frame, read back on the capture thread (a debug copy only).
+    if (encoded > 0 && !shutdown_event->peek()) {
+      std::unique_lock lock {dump->mutex};
+      dump->wanted = true;
+      dump->ready.wait_for(lock, 5s, [&] { return dump->done; });
+    }
+    shutdown_event->raise(true);
+    pipeline.join();
+    stream_file.close();
+    report["frames_encoded"] = encoded;
+    report["bytes"] = bytes;
+    report["seconds"] = elapsed;
+    report["fps"] = elapsed > 0 ? encoded / elapsed : 0.0;
+    report["loop_end"] = loop_end;
+    report["stream"] = stream_path.string();
+    BOOST_LOG(info) << "PLANK capture probe: "sv << encoded << " frame(s) in "sv << elapsed << " s; "sv << loop_end;
+
+    std::lock_guard lock {dump->mutex};
+    if (dump->done && dump->read) {
+      // Mark each output's slot in the debug copy: a frame and a block in
+      // the output's colour, with index+1 white squares inside the block.
+      constexpr std::array<std::array<std::uint8_t, 3>, 4> colours {{
+        {255, 32, 32}, {32, 224, 32}, {48, 96, 255}, {255, 64, 255},
+      }};
+      const auto paint = [&](int x0, int y0, int width, int height, const std::array<std::uint8_t, 3> &rgb) {
+        for (int y = std::max(0, y0); y < std::min(dump->height, y0 + height); ++y) {
+          for (int x = std::max(0, x0); x < std::min(dump->width, x0 + width); ++x) {
+            auto *pixel = dump->bgra.data() + static_cast<std::size_t>(y) * dump->pitch + static_cast<std::size_t>(x) * 4;
+            pixel[0] = rgb[2];
+            pixel[1] = rgb[1];
+            pixel[2] = rgb[0];
+          }
+        }
+      };
+      const auto &slots = capture.plan->source_rects;
+      for (std::size_t index = 0; index < slots.size(); ++index) {
+        const auto &slot = slots[index];
+        const auto &colour = colours[index % colours.size()];
+        constexpr int border = 6;
+        paint(slot.x, slot.y, slot.width, border, colour);
+        paint(slot.x, slot.y + slot.height - border, slot.width, border, colour);
+        paint(slot.x, slot.y, border, slot.height, colour);
+        paint(slot.x + slot.width - border, slot.y, border, slot.height, colour);
+        paint(slot.x + 32, slot.y + 32, 64 + 40 * static_cast<int>(index + 1), 96, colour);
+        for (std::size_t square = 0; square <= index; ++square) {
+          paint(slot.x + 64 + 40 * static_cast<int>(square), slot.y + 64, 24, 32, {255, 255, 255});
+        }
+      }
+      const auto ppm = output_directory / "capture.ppm";
+      std::ofstream image {ppm, std::ios::binary};
+      image << "P6\n" << dump->width << ' ' << dump->height << "\n255\n";
+      std::vector<char> row(static_cast<std::size_t>(dump->width) * 3);
+      for (int y = 0; y < dump->height; ++y) {
+        const auto *source = dump->bgra.data() + static_cast<std::size_t>(y) * dump->pitch;
+        for (int x = 0; x < dump->width; ++x) {
+          row[static_cast<std::size_t>(x) * 3 + 0] = static_cast<char>(source[x * 4 + 2]);
+          row[static_cast<std::size_t>(x) * 3 + 1] = static_cast<char>(source[x * 4 + 1]);
+          row[static_cast<std::size_t>(x) * 3 + 2] = static_cast<char>(source[x * 4 + 0]);
+        }
+        image.write(row.data(), static_cast<std::streamsize>(row.size()));
+      }
+      report["image"] = ppm.string();
+      report["image_markers"] =
+        "each output's slot is framed in its colour (red, green, blue, magenta by entry) "
+        "with entry+1 white squares in the corner block; the encoded stream is unmarked";
+    } else if (encoded > 0) {
+      report["image_error"] = "no packed frame could be read back";
+    }
+    if (!failure.empty()) return finish(6, failure);
+    return finish(0);
+#else
+    (void) request_text;
+    (void) encoding_mode;
+    (void) frames;
+    return finish(3, "this build has no NvFBC capture");
+#endif
+  }
 }  // namespace video

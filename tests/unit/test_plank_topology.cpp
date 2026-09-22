@@ -4,6 +4,13 @@
  */
 #include "src/plank_topology.h"
 
+#include "src/plank_arrangement_json.h"
+#include "src/plank_topology_json.h"
+
+#include <fstream>
+#include <iterator>
+#include <set>
+
 #include <gtest/gtest.h>
 
 namespace topology = plank::topology;
@@ -212,4 +219,178 @@ TEST(PlankTopology, RefusesPhysicalLeasesWithTooFewScanouts) {
   EXPECT_FALSE(topology::physical_lease_feasible("physical", 0));
   EXPECT_FALSE(topology::physical_lease_feasible("single", 0));
   EXPECT_FALSE(topology::physical_lease_feasible("dual-vertical", 4));
+}
+
+namespace {
+  nlohmann::json arrangement_topology_vector() {
+    std::ifstream input {std::string {SUNSHINE_SOURCE_DIR} +
+                         "/tests/fixtures/protocol/output-topology-v13-arrangement.json"};
+    return nlohmann::json::parse(input);
+  }
+
+  std::vector<topology::document_output_t> vector_outputs(const nlohmann::json &document) {
+    std::vector<topology::document_output_t> outputs;
+    for (const auto &output : document.at("outputs")) {
+      outputs.push_back({
+        output.at("id"), output.at("name"), output.at("x"), output.at("y"), output.at("width"),
+        output.at("height"), output.at("rotation"), output.at("refresh_millihz"), output.at("primary"),
+      });
+    }
+    return outputs;
+  }
+
+  std::set<std::string> keys(const nlohmann::json &object) {
+    std::set<std::string> result;
+    for (const auto &[key, value] : object.items()) result.insert(key);
+    return result;
+  }
+}  // namespace
+
+TEST(PlankTopology, GatesTheArrangementFeaturePerHost) {
+  EXPECT_EQ(topology::feature_display_arrangement, 0x8000000U);
+  EXPECT_EQ(topology::feature_flags & topology::feature_display_arrangement, 0U);
+  EXPECT_TRUE(topology::display_arrangement_advertised("physical", "physical", 1));
+  EXPECT_TRUE(topology::display_arrangement_advertised("hybrid", "hybrid", 4));
+  EXPECT_FALSE(topology::display_arrangement_advertised("virtual", "virtual", 2));
+  EXPECT_FALSE(topology::display_arrangement_advertised("hybrid", "physical", 1));
+  EXPECT_FALSE(topology::display_arrangement_advertised("physical", "", 1));
+  EXPECT_FALSE(topology::display_arrangement_advertised("physical", "physical", 0));
+}
+
+TEST(PlankTopology, RefusesStreamsLargerThanTheEncoder) {
+  EXPECT_TRUE(topology::stream_size_fits(4096, 2160, 4096, 4096));
+  EXPECT_FALSE(topology::stream_size_fits(6864, 2160, 4096, 4096));
+  EXPECT_TRUE(topology::stream_size_fits(7680, 4320, 8192, 8192));
+  EXPECT_FALSE(topology::stream_size_fits(8194, 2160, 8192, 8192));
+}
+
+TEST(PlankTopology, PublishesTheArrangementVectorExactly) {
+  const auto expected = arrangement_topology_vector();
+  topology::document_layout_t layout {
+    "physical", false, {}, "physical", {"physical", "single", "dual-horizontal"},
+  };
+  topology::arrangement_view_t view;
+  view.startup_policy = "hybrid";
+  view.request = "1:3024x1890+0+270:auto,3840x2160+3024+0:auto";
+  view.state = "applied";
+  view.outputs = {{"x11:DP-0", {"virtual", 0}}, {"x11:HDMI-0", {"physical", 1}}};
+  view.lease = true;
+  const auto capabilities = plank::arrangement::capabilities_from_json(expected.at("display_capabilities"));
+  ASSERT_TRUE(capabilities);
+  view.capabilities = *capabilities;
+  const auto document = topology::topology_document(
+    topology::protocol_version, expected.at("feature_flags"), vector_outputs(expected), layout, view,
+    expected.at("generation")
+  );
+  EXPECT_EQ(document, expected);
+}
+
+TEST(PlankTopology, KeepsTheLegacyContractWithoutTheBit) {
+  const auto vector = arrangement_topology_vector();
+  topology::document_layout_t layout {
+    "physical", false, {}, "physical", {"physical", "single", "dual-horizontal"},
+  };
+  const auto document = topology::topology_document(
+    topology::protocol_version, topology::feature_flags, vector_outputs(vector), layout,
+    std::nullopt, "x11:0000000000000000"
+  );
+  EXPECT_EQ(keys(document), (std::set<std::string> {
+    "schema_version", "feature_flags", "layout", "outputs", "desktop", "generation",
+  }));
+  EXPECT_EQ(keys(document.at("layout")), (std::set<std::string> {
+    "kind", "virtual", "virtual_modes", "output_count", "startup_kind", "allowed_kinds",
+  }));
+  for (const auto &output : document.at("outputs")) {
+    EXPECT_EQ(keys(output), (std::set<std::string> {
+      "id", "name", "x", "y", "width", "height", "rotation", "refresh_millihz", "primary",
+      "virtual", "configured_mode", "source_rect",
+    }));
+  }
+  EXPECT_EQ(document.at("desktop"), vector.at("desktop"));
+
+  // During an arrangement lease the legacy fields stay valid for 1.0.129.
+  EXPECT_EQ(vector.at("layout").at("kind"), "physical");
+  EXPECT_EQ(vector.at("layout").at("virtual"), false);
+  EXPECT_TRUE(vector.at("layout").at("virtual_modes").empty());
+  EXPECT_EQ(vector.at("layout").at("allowed_kinds"),
+            nlohmann::json({"physical", "single", "dual-horizontal"}));
+  for (const auto &output : vector.at("outputs")) {
+    EXPECT_EQ(output.at("virtual"), false);
+    EXPECT_EQ(output.at("configured_mode"), "");
+  }
+
+  // A legacy request served by the engine keeps its exact legacy view.
+  topology::document_layout_t legacy {
+    "dual-horizontal", true, {"3024x1890", "3840x2160"}, "physical",
+    {"physical", "single", "dual-horizontal"},
+  };
+  auto outputs = vector_outputs(vector);
+  outputs[0].y = 0;
+  const auto served = topology::topology_document(
+    topology::protocol_version, topology::feature_flags, outputs, legacy, std::nullopt, "x11:1"
+  );
+  EXPECT_EQ(served.at("outputs")[0].at("configured_mode"), "3024x1890");
+  EXPECT_EQ(served.at("outputs")[1].at("configured_mode"), "3840x2160");
+  EXPECT_EQ(served.at("outputs")[1].at("virtual"), true);
+}
+
+TEST(PlankTopology, OutsideALeaseEveryOutputIsPhysical) {
+  topology::document_layout_t layout {"physical", false, {}, "physical", {"physical", "single", "dual-horizontal"}};
+  topology::arrangement_view_t view;
+  view.startup_policy = "physical";
+  const auto document = topology::topology_document(
+    topology::protocol_version, topology::feature_flags | topology::feature_display_arrangement,
+    {{"x11:DP-4", "DP-4", 0, 0, 1920, 1080, 0, 60008, true}}, layout, view, "x11:2"
+  );
+  EXPECT_EQ(document.at("layout").at("arrangement"),
+            nlohmann::json({{"request", ""}, {"transition", {{"state", "idle"}, {"reason", ""}}}}));
+  EXPECT_EQ(document.at("outputs")[0].at("backing"), "physical");
+  EXPECT_EQ(document.at("outputs")[0].at("arrangement_index"), -1);
+  EXPECT_TRUE(document.contains("display_capabilities"));
+  // No lease, no capture_size; and never the macOS fixed-capture `capture` key.
+  EXPECT_FALSE(document.contains("capture_size"));
+  EXPECT_FALSE(document.contains("capture"));
+  EXPECT_FALSE(document.at("outputs")[0].contains("capture_rect"));
+}
+
+TEST(PlankTopology, PublishesAPackedCaptureInCaptureCoordinates) {
+  topology::document_layout_t layout {"physical", false, {}, "physical", {"physical", "single", "dual-horizontal"}};
+  topology::arrangement_view_t view;
+  view.startup_policy = "hybrid";
+  view.lease = true;
+  view.request = "1:3840x2160+0+0:auto,3840x2160+3840+0:auto,3840x2160+7680+0:auto";
+  view.state = "applied";
+  view.outputs = {
+    {"x11:HDMI-0", {"physical", 0}}, {"x11:DP-0", {"virtual", 1}}, {"x11:DP-2", {"virtual", 2}},
+  };
+  view.capture_size = std::pair {7680, 4320};
+  view.capture_rects = {
+    {"x11:HDMI-0", {0, 0, 3840, 2160}}, {"x11:DP-0", {3840, 0, 3840, 2160}}, {"x11:DP-2", {0, 2160, 3840, 2160}},
+  };
+  const auto document = topology::topology_document(
+    topology::protocol_version, topology::feature_flags | topology::feature_display_arrangement,
+    {
+      {"x11:HDMI-0", "HDMI-0", 0, 0, 3840, 2160, 0, 60000, true},
+      {"x11:DP-0", "DP-0", 3840, 0, 3840, 2160, 0, 60000, false},
+      {"x11:DP-2", "DP-2", 7680, 0, 3840, 2160, 0, 60000, false},
+    },
+    layout, view, "x11:3:packed-0123456789abcdef"
+  );
+  // The desktop keeps the requested positions; only the video is packed.
+  EXPECT_EQ(document.at("desktop"), nlohmann::json({{"x", 0}, {"y", 0}, {"width", 11520}, {"height", 2160}}));
+  EXPECT_EQ(document.at("capture_size"), nlohmann::json({{"width", 7680}, {"height", 4320}}));
+  EXPECT_EQ(document.at("outputs")[2].at("x"), 7680);
+  EXPECT_EQ(document.at("outputs")[2].at("capture_rect"),
+            nlohmann::json({{"x", 0}, {"y", 2160}, {"width", 3840}, {"height", 2160}}));
+  EXPECT_EQ(document.at("outputs")[1].at("capture_rect"),
+            nlohmann::json({{"x", 3840}, {"y", 0}, {"width", 3840}, {"height", 2160}}));
+  // source_rect keeps its schema-13 meaning, inside the desktop, for older parsers.
+  EXPECT_EQ(document.at("outputs")[2].at("source_rect"),
+            nlohmann::json({{"x", 7680}, {"y", 0}, {"width", 3840}, {"height", 2160}}));
+  for (const auto &output : document.at("outputs")) {
+    const auto &rect = output.at("source_rect");
+    EXPECT_LE(rect.at("x").get<int>() + rect.at("width").get<int>(), 11520);
+    EXPECT_LE(rect.at("y").get<int>() + rect.at("height").get<int>(), 2160);
+  }
+  EXPECT_FALSE(document.contains("capture"));
 }

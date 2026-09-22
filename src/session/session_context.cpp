@@ -4,6 +4,7 @@
  */
 #include "session_context.h"
 
+#include "../plank_arrangement.h"
 #include "../plank_topology.h"
 
 #include <algorithm>
@@ -37,8 +38,13 @@ namespace plank::session {
   namespace {
     constexpr std::string_view update_prefix = "SC-SESSION-2";
     constexpr std::string_view display_request_prefix = "SC-DISPLAY-3";
+    constexpr std::string_view arrangement_request_prefix = "SC-DISPLAY-4";
     constexpr std::string_view runtime_display_state_prefix = "SC-DISPLAY-STATE-1";
+    constexpr std::string_view runtime_display_state_2_prefix = "SC-DISPLAY-STATE-2";
+    constexpr std::string_view display_transition_prefix = "SC-DISPLAY-TRANSITION-1";
     constexpr std::size_t maximum_update_size = 8192;
+    constexpr std::size_t maximum_state_2_size = 16U * 1024U;
+    constexpr std::size_t maximum_state_2_outputs = 12;
     using login_string_t = std::unique_ptr<char, decltype(&free)>;
 
     std::mutex current_update_mutex;
@@ -420,6 +426,7 @@ namespace plank::session {
   }
 
   std::string display_request_message(const display_request_t &request) {
+    if (!request.arrangement.empty()) return display_arrangement_request_message(request);
     const std::string_view action =
       request.action == display_request_t::action_t::acquire ? "acquire" :
       request.action == display_request_t::action_t::activate ? "activate" :
@@ -448,6 +455,31 @@ namespace plank::session {
     return message.size() <= maximum_update_size ? message : std::string {};
   }
 
+  std::string display_arrangement_request_message(const display_request_t &request) {
+    const std::string_view action =
+      request.action == display_request_t::action_t::acquire ? "acquire" :
+      request.action == display_request_t::action_t::activate ? "activate" :
+                                                               "release";
+    const bool acquire = request.action == display_request_t::action_t::acquire;
+    const auto parsed = acquire ? plank::arrangement::parse(request.arrangement) :
+                                  plank::arrangement::parse_result_t {};
+    if (request.account_uid == 0 || !request.layout.empty() || !request.mode_1.empty() ||
+        !request.mode_2.empty() || (acquire && !parsed.request) ||
+        (!acquire && !request.arrangement.empty())) {
+      return {};
+    }
+    const auto account_uid = std::to_string(request.account_uid);
+    const std::array<std::string_view, 4> fields {
+      arrangement_request_prefix, action, account_uid, request.arrangement
+    };
+    std::string message;
+    for (const auto field : fields) {
+      message.append(field);
+      message.push_back('\0');
+    }
+    return message.size() <= maximum_update_size ? message : std::string {};
+  }
+
   std::optional<display_request_t> parse_display_request(std::string_view message) {
     std::vector<std::string_view> fields;
     std::size_t offset = 0;
@@ -457,8 +489,22 @@ namespace plank::session {
       fields.emplace_back(message.substr(offset, end - offset));
       offset = end + 1;
     }
-    if (message.size() > maximum_update_size || fields.size() != 6 ||
-        fields.front() != display_request_prefix) return std::nullopt;
+    if (message.size() > maximum_update_size) return std::nullopt;
+    if (fields.size() == 4 && fields.front() == arrangement_request_prefix) {
+      const auto account_uid = parse_integer<unsigned long long>(fields[2]);
+      if (!account_uid || *account_uid == 0 ||
+          *account_uid > std::numeric_limits<uid_t>::max()) return std::nullopt;
+      display_request_t request;
+      if (fields[1] == "acquire") request.action = display_request_t::action_t::acquire;
+      else if (fields[1] == "activate") request.action = display_request_t::action_t::activate;
+      else if (fields[1] == "release") request.action = display_request_t::action_t::release;
+      else return std::nullopt;
+      request.account_uid = static_cast<uid_t>(*account_uid);
+      request.arrangement = std::string {fields[3]};
+      return display_arrangement_request_message(request) == message ?
+               std::optional<display_request_t> {std::move(request)} : std::nullopt;
+    }
+    if (fields.size() != 6 || fields.front() != display_request_prefix) return std::nullopt;
     const auto account_uid = parse_integer<unsigned long long>(fields[5]);
     if (!account_uid || *account_uid == 0 ||
         *account_uid > std::numeric_limits<uid_t>::max()) return std::nullopt;
@@ -539,6 +585,236 @@ namespace plank::session {
     return input.bad() ? std::nullopt : parse_runtime_display_state(contents);
   }
 
+  namespace {
+    bool state_2_name(std::string_view value) {
+      return !value.empty() && value.size() <= 32 &&
+             std::ranges::all_of(value, [](char c) {
+               return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                      (c >= '0' && c <= '9') || c == '-' || c == '_';
+             });
+    }
+
+    bool printable_line(std::string_view value) {
+      return std::ranges::all_of(value, [](char c) {
+        return static_cast<unsigned char>(c) >= 0x20 && static_cast<unsigned char>(c) <= 0x7e;
+      });
+    }
+
+    bool valid_state_2_output(const runtime_display_output_t &output) {
+      if (!state_2_name(output.randr) || !state_2_name(output.dpy) ||
+          output.non_desktop_before < -1 || output.non_desktop_before > 1) return false;
+      if (output.backing == "off") {
+        return output.carrier.empty() && output.arrangement_index == -1 && output.x == 0 &&
+               output.y == 0 && output.width == 0 && output.height == 0;
+      }
+      return (output.backing == "physical" || output.backing == "physical-viewport" ||
+              output.backing == "virtual") &&
+             plank::arrangement::parse_mode_name(output.carrier).has_value() &&
+             output.arrangement_index >= 0 &&
+             output.arrangement_index < static_cast<int>(plank::arrangement::maximum_entries) &&
+             output.x >= 0 && output.y >= 0 && output.width > 0 && output.height > 0;
+    }
+
+    bool valid_state_2(const runtime_display_state_2_t &state) {
+      static const std::regex local_display {R"(^:[0-9]+(?:\.[0-9]+)?$)"};
+      const bool legacy = state.origin == "legacy";
+      if (state.lease_uid == 0 || !state_2_name(state.session_id) ||
+          !std::regex_match(state.display, local_display) ||
+          (state.origin != "arrangement" && !legacy) ||
+          (legacy && !plank::topology::valid_virtual_layout_modes(state.layout, state.mode_1, state.mode_2)) ||
+          (!legacy && (!state.layout.empty() || !state.mode_1.empty() || !state.mode_2.empty())) ||
+          !plank::arrangement::parse(state.request).request ||
+          state.outputs.empty() || state.outputs.size() > maximum_state_2_outputs ||
+          state.snapshot.empty() || !printable_line(state.snapshot)) {
+        return false;
+      }
+      return std::ranges::all_of(state.outputs, valid_state_2_output);
+    }
+
+    std::optional<std::string> read_root_file(std::string_view path, std::size_t maximum_size) {
+      struct stat status {};
+      const std::string owned_path {path};
+      if (lstat(owned_path.c_str(), &status) != 0 || status.st_uid != 0 ||
+          !S_ISREG(status.st_mode) || status.st_size <= 0 ||
+          status.st_size > static_cast<off_t>(maximum_size)) {
+        return std::nullopt;
+      }
+      std::ifstream input {owned_path, std::ios::binary};
+      if (!input) return std::nullopt;
+      std::string contents(
+        std::istreambuf_iterator<char> {input}, std::istreambuf_iterator<char> {}
+      );
+      if (input.bad()) return std::nullopt;
+      return contents;
+    }
+
+    /** Split `key=value` lines; the first line is the prefix. */
+    std::optional<std::vector<std::pair<std::string_view, std::string_view>>> record_lines(
+      std::string_view message, std::string_view prefix
+    ) {
+      if (!message.ends_with('\n')) return std::nullopt;
+      std::vector<std::pair<std::string_view, std::string_view>> lines;
+      std::size_t offset = 0;
+      bool first = true;
+      while (offset < message.size()) {
+        const auto end = message.find('\n', offset);
+        const auto line = message.substr(offset, end - offset);
+        offset = end + 1;
+        if (first) {
+          if (line != prefix) return std::nullopt;
+          first = false;
+          continue;
+        }
+        const auto separator = line.find('=');
+        if (separator == std::string_view::npos) return std::nullopt;
+        lines.emplace_back(line.substr(0, separator), line.substr(separator + 1));
+      }
+      return lines;
+    }
+  }  // namespace
+
+  std::string runtime_display_state_2_message(const runtime_display_state_2_t &state) {
+    if (!valid_state_2(state)) return {};
+    std::string message {runtime_display_state_2_prefix};
+    message += "\nuid=" + std::to_string(state.lease_uid) + "\nsession=" + state.session_id +
+               "\ndisplay=" + state.display + "\norigin=" + state.origin + "\nlayout=" + state.layout +
+               "\nmode_1=" + state.mode_1 + "\nmode_2=" + state.mode_2 + "\nrequest=" + state.request +
+               "\n";
+    for (const auto &output : state.outputs) {
+      message += "output=" + output.randr + " " + output.dpy + " " + output.backing + " " +
+                 (output.carrier.empty() ? std::string {"-"} : output.carrier) + " " +
+                 std::to_string(output.arrangement_index) + " " + std::to_string(output.x) + " " +
+                 std::to_string(output.y) + " " + std::to_string(output.width) + " " +
+                 std::to_string(output.height) + " " + std::to_string(output.non_desktop_before) + "\n";
+    }
+    message += "snapshot=" + state.snapshot + "\n";
+    return message.size() <= maximum_state_2_size ? message : std::string {};
+  }
+
+  std::optional<runtime_display_state_2_t> parse_runtime_display_state_2(std::string_view message) {
+    if (message.size() > maximum_state_2_size) return std::nullopt;
+    const auto lines = record_lines(message, runtime_display_state_2_prefix);
+    if (!lines || lines->size() < 10) return std::nullopt;
+    constexpr std::array<std::string_view, 8> head {
+      "uid", "session", "display", "origin", "layout", "mode_1", "mode_2", "request"
+    };
+    for (std::size_t index = 0; index < head.size(); ++index) {
+      if ((*lines)[index].first != head[index]) return std::nullopt;
+    }
+    runtime_display_state_2_t state;
+    const auto uid = parse_integer<unsigned long long>((*lines)[0].second);
+    if (!uid || *uid > std::numeric_limits<uid_t>::max()) return std::nullopt;
+    state.lease_uid = static_cast<uid_t>(*uid);
+    state.session_id = std::string {(*lines)[1].second};
+    state.display = std::string {(*lines)[2].second};
+    state.origin = std::string {(*lines)[3].second};
+    state.layout = std::string {(*lines)[4].second};
+    state.mode_1 = std::string {(*lines)[5].second};
+    state.mode_2 = std::string {(*lines)[6].second};
+    state.request = std::string {(*lines)[7].second};
+    for (std::size_t index = head.size(); index + 1 < lines->size(); ++index) {
+      if ((*lines)[index].first != "output") return std::nullopt;
+      std::vector<std::string_view> words;
+      auto rest = (*lines)[index].second;
+      while (!rest.empty()) {
+        const auto space = rest.find(' ');
+        words.push_back(rest.substr(0, space));
+        if (space == std::string_view::npos) break;
+        rest = rest.substr(space + 1);
+      }
+      if (words.size() != 10) return std::nullopt;
+      runtime_display_output_t output;
+      output.randr = std::string {words[0]};
+      output.dpy = std::string {words[1]};
+      output.backing = std::string {words[2]};
+      output.carrier = words[3] == "-" ? std::string {} : std::string {words[3]};
+      const auto index_value = parse_integer<int>(words[4]);
+      const auto x = parse_integer<int>(words[5]);
+      const auto y = parse_integer<int>(words[6]);
+      const auto width = parse_integer<int>(words[7]);
+      const auto height = parse_integer<int>(words[8]);
+      const auto non_desktop = parse_integer<int>(words[9]);
+      if (!index_value || !x || !y || !width || !height || !non_desktop) return std::nullopt;
+      output.arrangement_index = *index_value;
+      output.x = *x;
+      output.y = *y;
+      output.width = *width;
+      output.height = *height;
+      output.non_desktop_before = *non_desktop;
+      state.outputs.push_back(std::move(output));
+    }
+    if (lines->back().first != "snapshot") return std::nullopt;
+    state.snapshot = std::string {lines->back().second};
+    return runtime_display_state_2_message(state) == message ?
+             std::optional<runtime_display_state_2_t> {std::move(state)} : std::nullopt;
+  }
+
+  std::optional<runtime_display_state_2_t> read_runtime_display_state_2(std::string_view path) {
+    const auto contents = read_root_file(path, maximum_state_2_size);
+    return contents ? parse_runtime_display_state_2(*contents) : std::nullopt;
+  }
+
+  std::string display_transition_message(const display_transition_t &transition) {
+    const bool pending = transition.state == "pending";
+    const bool failed = transition.state == "failed";
+    const bool reason_valid = transition.reason.size() <= 32 &&
+      std::ranges::all_of(transition.reason, [](char c) { return (c >= 'a' && c <= 'z') || c == '_'; });
+    if ((!pending && !failed) || !reason_valid || (pending && !transition.reason.empty()) ||
+        (failed && transition.reason.empty()) || transition.account_uid == 0 ||
+        transition.time < 0 || !plank::arrangement::parse(transition.request).request) {
+      return {};
+    }
+    return std::string {display_transition_prefix} + "\nstate=" + transition.state +
+           "\nreason=" + transition.reason + "\nrequest=" + transition.request +
+           "\nuid=" + std::to_string(transition.account_uid) +
+           "\ntime=" + std::to_string(transition.time) + "\n";
+  }
+
+  std::optional<display_transition_t> parse_display_transition(std::string_view message) {
+    if (message.size() > maximum_update_size) return std::nullopt;
+    const auto lines = record_lines(message, display_transition_prefix);
+    if (!lines || lines->size() != 5 || (*lines)[0].first != "state" ||
+        (*lines)[1].first != "reason" || (*lines)[2].first != "request" ||
+        (*lines)[3].first != "uid" || (*lines)[4].first != "time") {
+      return std::nullopt;
+    }
+    const auto uid = parse_integer<unsigned long long>((*lines)[3].second);
+    const auto time = parse_integer<std::int64_t>((*lines)[4].second);
+    if (!uid || *uid > std::numeric_limits<uid_t>::max() || !time) return std::nullopt;
+    display_transition_t transition {
+      std::string {(*lines)[0].second}, std::string {(*lines)[1].second},
+      std::string {(*lines)[2].second}, static_cast<uid_t>(*uid), *time,
+    };
+    return display_transition_message(transition) == message ?
+             std::optional<display_transition_t> {std::move(transition)} : std::nullopt;
+  }
+
+  std::optional<display_transition_t> read_display_transition(std::string_view path) {
+    const auto contents = read_root_file(path, maximum_update_size);
+    return contents ? parse_display_transition(*contents) : std::nullopt;
+  }
+
+  bool transition_current(const display_transition_t &transition, std::int64_t now) {
+    constexpr std::int64_t pending_lifetime = 120;
+    constexpr std::int64_t failure_lifetime = 30;
+    const auto age = now - transition.time;
+    if (age < -5) return false;  // Clock stepped backwards; do not trust it.
+    return transition.state == "pending" ? age <= pending_lifetime : age <= failure_lifetime;
+  }
+
+  transition_status_t transition_status(
+    const std::optional<display_transition_t> &transition,
+    std::string_view request,
+    uid_t account_uid,
+    std::int64_t now
+  ) {
+    if (!transition || transition->request != request || transition->account_uid != account_uid ||
+        !transition_current(*transition, now)) {
+      return transition_status_t::none;
+    }
+    return transition->state == "pending" ? transition_status_t::pending : transition_status_t::failed;
+  }
+
   std::optional<bool> secondary_output_visible_from_overlay(std::string_view overlay) {
     constexpr std::string_view marker = "# Generated by PLANK; do not edit.";
     constexpr std::string_view option = "Option \"MetaModes\"";
@@ -598,6 +874,10 @@ namespace plank::session {
       }
       if (value == "virtual") {
         layout = startup_layout_t::virtual_display;
+        continue;
+      }
+      if (value == "hybrid") {
+        layout = startup_layout_t::hybrid;
         continue;
       }
       return startup_layout_t::invalid;
