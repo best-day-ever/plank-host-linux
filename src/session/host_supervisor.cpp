@@ -4,9 +4,11 @@
  */
 #include "display_inventory.h"
 #include "display_metamode.h"
+#include "display_qualify.h"
 #include "session_context.h"
 #include "worker_control.h"
 #include "../plank_arrangement.h"
+#include "../plank_arrangement_json.h"
 #include "../plank_topology.h"
 #include "../auth/pam_broker_channel.h"
 
@@ -19,6 +21,7 @@
 #include <filesystem>
 #include <fcntl.h>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -31,6 +34,7 @@
 
 #include <poll.h>
 #include <pwd.h>
+#include <sys/file.h>
 #include <systemd/sd-login.h>
 #include <linux/capability.h>
 #include <sys/prctl.h>
@@ -43,7 +47,6 @@
 #include <unistd.h>
 
 namespace {
-  constexpr std::string_view default_worker = "/usr/bin/plank-host";
   constexpr std::string_view machine_home = "/var/lib/plank";
   constexpr std::string_view runtime_pulse_cookie =
     "/run/plank/host/pulse-cookie";
@@ -803,6 +806,11 @@ namespace {
     "/run/plank/host/display-transition";
   constexpr std::string_view hybrid_restart_marker_path =
     "/run/plank/host/display-hybrid-restart";
+  // A qualification run keeps its own lease record here, never in
+  // display-state: the media worker and a client never see it, and the
+  // supervisor restores it only after the qualifier died (its lock is free).
+  constexpr std::string_view qualification_record_path =
+    "/run/plank/host/display-qualify";
   constexpr std::string_view nvidia_pci_driver_path = "/sys/bus/pci/drivers/nvidia";
   constexpr std::string_view nvidia_version_path = "/sys/module/nvidia/version";
   // Hardware probe P2: non-desktop works on physical outputs too, so outputs a
@@ -1018,7 +1026,24 @@ namespace {
     }
   }
 
-  bool write_arrangement_state(const arrangement_lease_t &lease) {
+  /**
+   * Where a lease's SC-DISPLAY-STATE-2 record lives: the supervisor's
+   * display-state, or a qualification run's own locked record.
+   */
+  struct lease_record_t {
+    std::function<bool(std::string_view)> write;
+    std::function<void()> clear;
+  };
+
+  const lease_record_t &runtime_lease_record() {
+    static const lease_record_t record {
+      [](std::string_view contents) { return write_root_file(runtime_display_state_path, contents); },
+      [] { clear_runtime_display_state(); },
+    };
+    return record;
+  }
+
+  std::string arrangement_state_message(const arrangement_lease_t &lease) {
     plank::session::runtime_display_state_2_t state;
     state.lease_uid = lease.uid;
     state.session_id = lease.session_id;
@@ -1030,24 +1055,34 @@ namespace {
     state.request = lease.request;
     state.outputs = lease.outputs;
     state.snapshot = lease.snapshot.assignment;
-    return write_root_file(runtime_display_state_path,
-                           plank::session::runtime_display_state_2_message(state));
+    return plank::session::runtime_display_state_2_message(state);
   }
+
+  /** What a restore achieved. */
+  struct restore_report_t {
+    bool metamode_exact {};  ///< The exact snapshot came back.
+    bool visibility_exact {};  ///< Every recorded non-desktop value came back.
+    bool fallback {};  ///< The first physical output was lit instead.
+    bool recovered {};  ///< Exact or fallback succeeded.
+    std::string restored;  ///< CurrentMetaMode after the restore.
+  };
 
   /**
    * End an arrangement lease on its X server: visibility back first, then the
    * exact snapshot, verified; else the first physical output at its native mode.
    */
-  bool restore_arrangement_lease(
+  restore_report_t restore_arrangement_lease(
     const arrangement_lease_t &lease,
     const plank::session::descriptor_t &session,
     const plank::session::environment_t &environment,
-    const std::optional<plank::display::inventory_t> &inventory
+    const std::optional<plank::display::inventory_t> &inventory,
+    const lease_record_t &record = runtime_lease_record()
   ) {
+    restore_report_t report;
     const auto account = account_for_uid(session.uid);
     if (!account) {
-      clear_runtime_display_state();
-      return false;
+      record.clear();
+      return report;
     }
     std::vector<std::string> visibility;
     for (const auto &output : lease.outputs) {
@@ -1062,50 +1097,90 @@ namespace {
       std::cerr << "Unable to restore the pre-session PLANK output visibility\n";
     }
     settle_randr(*account, environment);
-    bool exact = assign_metamode(lease.snapshot.assignment, *account, environment);
-    if (exact) {
+    if (assign_metamode(lease.snapshot.assignment, *account, environment)) {
       const auto restored = capture_physical_snapshot(*account, environment);
-      exact = restored && restored->assignment == lease.snapshot.assignment;
+      if (restored) report.restored = restored->assignment;
+      report.metamode_exact = restored && restored->assignment == lease.snapshot.assignment;
     }
-    clear_runtime_display_state();
-    if (exact) {
+    if (const auto screen = capture_randr(*account, environment)) {
+      report.visibility_exact = std::all_of(lease.outputs.begin(), lease.outputs.end(), [&](const auto &output) {
+        if (output.non_desktop_before < 0) return true;
+        const auto live = std::find_if(screen->outputs.begin(), screen->outputs.end(),
+                                       [&](const auto &candidate) { return candidate.name == output.randr; });
+        return live != screen->outputs.end() && live->non_desktop &&
+               (*live->non_desktop ? 1 : 0) == output.non_desktop_before;
+      });
+    }
+    if (!report.visibility_exact) {
+      std::cerr << "ERROR: PLANK output visibility (non-desktop) did not return to its pre-session values\n";
+    }
+    record.clear();
+    if (report.metamode_exact) {
+      report.recovered = true;
       std::clog << "Restored the exact pre-session NVIDIA MetaMode\n";
-      return true;
+      return report;
     }
     const auto fallback = inventory ? plank::display::rest_metamode(*inventory) :
                                       plank::display::safe_physical_metamode(lease.snapshot);
-    const bool recovered = !fallback.empty() && assign_metamode(fallback, *account, environment);
+    report.fallback = true;
+    report.recovered = !fallback.empty() && assign_metamode(fallback, *account, environment);
+    if (const auto restored = capture_physical_snapshot(*account, environment)) {
+      report.restored = restored->assignment;
+    }
     std::cerr << "ERROR: Exact PLANK display restoration failed; "
-              << (recovered ? "enabled the first physical output at its native mode" :
-                              "physical-output recovery also failed")
+              << (report.recovered ? "enabled the first physical output at its native mode" :
+                                     "physical-output recovery also failed")
               << '\n';
-    return recovered;
+    return report;
   }
 
+  /** A plan for a canonical arrangement, or why the host cannot present it. */
+  struct prepared_arrangement_t {
+    std::optional<plank::display::arrangement_plan_t> plan;
+    std::string reason;
+  };
+
+  /** Evaluate a canonical arrangement against the inventory and plan its MetaMode. */
+  prepared_arrangement_t prepare_arrangement(
+    std::string_view request, const plank::display::inventory_t &inventory
+  ) {
+    namespace arrangement = plank::arrangement;
+    const auto capabilities = plank::display::capabilities_from_inventory(inventory, {});
+    const auto result = arrangement::evaluate(request, capabilities);
+    if (!result.resolution) return {std::nullopt, std::string {arrangement::error_code(result.error)}};
+    prepared_arrangement_t prepared;
+    prepared.plan = plank::display::plan_arrangement(*result.resolution, inventory, prepared.reason);
+    return prepared;
+  }
+
+  /** What an apply achieved. */
+  struct apply_report_t {
+    std::string reason;  ///< Empty on success.
+    int attempts {};  ///< MetaMode attempts made.
+    std::optional<plank::display::randr_screen_t> screen;  ///< xrandr state at the last verify.
+    std::optional<restore_report_t> restore;  ///< The restore after a failure.
+  };
+
   /**
-   * Apply an arrangement lease as the session user: snapshot (first acquire
-   * only), visibility first, settle, one CurrentMetaMode, primary, verify
-   * (retry once). Any failure restores the snapshot.
-   *
-   * @return An empty string on success, else a short failure reason.
+   * Apply a planned arrangement as the session user: snapshot (first acquire
+   * only), record the lease, visibility first, settle, one CurrentMetaMode,
+   * primary, verify (retry once). Any failure restores the snapshot.
    */
-  std::string apply_arrangement_lease(
+  apply_report_t apply_arrangement_plan(
     arrangement_lease_t &lease,
+    const plank::display::arrangement_plan_t &plan,
     const plank::session::descriptor_t &session,
     const plank::session::environment_t &environment,
     const plank::display::inventory_t &inventory,
-    const arrangement_lease_t *retained
+    const arrangement_lease_t *retained,
+    const lease_record_t &record
   ) {
-    namespace arrangement = plank::arrangement;
+    apply_report_t report;
     const auto account = account_for_uid(session.uid);
-    if (!account) return "unavailable";
-    const auto capabilities = plank::display::capabilities_from_inventory(inventory, {});
-    const auto result = arrangement::evaluate(lease.request, capabilities);
-    if (!result.resolution) return std::string {arrangement::error_code(result.error)};
-    std::string reason;
-    const auto plan = plank::display::plan_arrangement(*result.resolution, inventory, reason);
-    if (!plan) return reason;
-
+    if (!account) {
+      report.reason = "unavailable";
+      return report;
+    }
     std::map<std::string, int> before;
     if (retained != nullptr) {
       lease.snapshot = retained->snapshot;
@@ -1114,14 +1189,15 @@ namespace {
       const auto snapshot = capture_physical_snapshot(*account, environment);
       if (!snapshot) {
         std::cerr << "Unable to capture the NVIDIA MetaMode before the PLANK display arrangement\n";
-        return "snapshot_failed";
+        report.reason = "snapshot_failed";
+        return report;
       }
       lease.snapshot = *snapshot;
     }
-    if (std::any_of(plan->outputs.begin(), plan->outputs.end(),
+    if (std::any_of(plan.outputs.begin(), plan.outputs.end(),
                     [&](const auto &output) { return !before.contains(output.randr); })) {
       const auto screen = capture_randr(*account, environment);
-      for (const auto &output : plan->outputs) {
+      for (const auto &output : plan.outputs) {
         if (before.contains(output.randr)) continue;
         int value = -1;
         if (screen) {
@@ -1133,7 +1209,7 @@ namespace {
       }
     }
     lease.outputs.clear();
-    for (const auto &output : plan->outputs) {
+    for (const auto &output : plan.outputs) {
       lease.outputs.push_back({
         output.randr, output.dpy, output.backing, output.mode, output.index,
         output.rect.x, output.rect.y, output.rect.width, output.rect.height,
@@ -1143,47 +1219,72 @@ namespace {
     lease.session_id = session.id;
     lease.display = environment.display;
 
+    // Record the snapshot before anything changes, so a crash at any later
+    // point leaves a record the supervisor restores from.
+    if (!record.write(arrangement_state_message(lease))) {
+      report.reason = "state_failed";
+      return report;
+    }
+    const auto failed = [&](std::string reason) {
+      report.reason = std::move(reason);
+      report.restore = restore_arrangement_lease(lease, session, environment, inventory, record);
+      return report;
+    };
     if (!run_bounded_user_command(
-          xrandr_path, plank::display::visibility_arguments(*plan, hide_unused_physical_outputs),
+          xrandr_path, plank::display::visibility_arguments(plan, hide_unused_physical_outputs),
           lease_command_timeout, *account, environment
         )) {
-      restore_arrangement_lease(lease, session, environment, inventory);
-      return "visibility_failed";
+      return failed("visibility_failed");
     }
     if (!settle_randr(*account, environment)) {
       std::cerr << "PLANK outputs did not settle within three seconds; applying the arrangement anyway\n";
     }
     bool live = false;
     for (int attempt = 0; attempt < 2 && !live; ++attempt) {
-      if (!assign_metamode(plan->metamode, *account, environment)) continue;
+      report.attempts = attempt + 1;
+      if (!assign_metamode(plan.metamode, *account, environment)) continue;
       run_bounded_user_command(
-        xrandr_path, {"--output", plan->primary, "--primary"}, lease_command_timeout, *account,
+        xrandr_path, {"--output", plan.primary, "--primary"}, lease_command_timeout, *account,
         environment
       );
       settle_randr(*account, environment);
-      const auto screen = capture_randr(*account, environment);
-      live = screen && plank::display::arrangement_live(*screen, *plan);
+      report.screen = capture_randr(*account, environment);
+      live = report.screen && plank::display::arrangement_live(*report.screen, plan);
       if (!live) std::cerr << "PLANK display arrangement did not verify (attempt " << attempt + 1 << ")\n";
     }
-    if (!live) {
-      restore_arrangement_lease(lease, session, environment, inventory);
-      return "verify_failed";
-    }
-    if (!write_arrangement_state(lease)) {
-      restore_arrangement_lease(lease, session, environment, inventory);
-      return "state_failed";
-    }
-    return {};
+    if (!live) return failed("verify_failed");
+    return report;
+  }
+
+  /**
+   * The supervisor's lease path: plan, then apply, recorded in display-state.
+   *
+   * @return An empty string on success, else a short failure reason.
+   */
+  std::string apply_arrangement_lease(
+    arrangement_lease_t &lease,
+    const plank::session::descriptor_t &session,
+    const plank::session::environment_t &environment,
+    const plank::display::inventory_t &inventory,
+    const arrangement_lease_t *retained
+  ) {
+    if (!account_for_uid(session.uid)) return "unavailable";
+    const auto prepared = prepare_arrangement(lease.request, inventory);
+    if (!prepared.plan) return prepared.reason;
+    return apply_arrangement_plan(
+      lease, *prepared.plan, session, environment, inventory, retained, runtime_lease_record()
+    ).reason;
   }
 
   /** Recover a supervisor-owned STATE-2 left by a previous supervisor on the same X server. */
   void recover_stale_arrangement(
     const plank::session::runtime_display_state_2_t &state,
     const plank::session::descriptor_t &session,
-    const plank::session::environment_t &environment
+    const plank::session::environment_t &environment,
+    const lease_record_t &record = runtime_lease_record()
   ) {
     if (state.session_id != session.id || state.display != environment.display) {
-      clear_runtime_display_state();
+      record.clear();
       std::clog << "Discarded a stale PLANK display arrangement from an X server that has ended\n";
       return;
     }
@@ -1197,8 +1298,323 @@ namespace {
     if (const auto parsed = plank::display::parse_current_metamode(":: " + state.snapshot)) {
       lease.snapshot = *parsed;
     }
-    restore_arrangement_lease(lease, session, environment, plank::display::read_inventory());
+    restore_arrangement_lease(lease, session, environment, plank::display::read_inventory(), record);
     std::clog << "Recovered a stale PLANK display arrangement\n";
+  }
+
+  // --- display qualification (root-only hardware qualification) -------------
+
+  /** Result of taking the qualification lock. */
+  struct qualification_lock_t {
+    int descriptor {-1};  ///< Locked record, or -1.
+    bool busy {};  ///< Another process holds the lock.
+    bool absent {};  ///< No record exists (only when not creating).
+  };
+
+  /**
+   * Take the exclusive lock on the qualification record. The lock dies with
+   * the process, so a record whose lock is free belongs to a dead qualifier.
+   */
+  qualification_lock_t lock_qualification_record(bool create, int attempts) {
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+      const int descriptor = open(
+        qualification_record_path.data(),
+        O_RDWR | O_CLOEXEC | O_NOFOLLOW | (create ? O_CREAT : 0), S_IRUSR | S_IWUSR
+      );
+      if (descriptor < 0) return {-1, false, errno == ENOENT};
+      if (flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
+        close(descriptor);
+        if (errno != EWOULDBLOCK) return {};
+        if (attempt + 1 < attempts) std::this_thread::sleep_for(std::chrono::milliseconds {100});
+        continue;
+      }
+      // The path must still name the locked, root-owned file (not a replaced one).
+      struct stat opened {};
+      struct stat named {};
+      if (fstat(descriptor, &opened) == 0 && lstat(qualification_record_path.data(), &named) == 0 &&
+          opened.st_dev == named.st_dev && opened.st_ino == named.st_ino &&
+          S_ISREG(opened.st_mode) && opened.st_uid == 0) {
+        return {descriptor};
+      }
+      close(descriptor);
+    }
+    return {-1, true, false};
+  }
+
+  /** The qualification record, written in place under its lock. */
+  lease_record_t qualification_record(int descriptor) {
+    return {
+      [descriptor](std::string_view contents) {
+        if (contents.empty() || ftruncate(descriptor, 0) != 0) return false;
+        std::size_t offset = 0;
+        while (offset < contents.size()) {
+          const auto written = pwrite(descriptor, contents.data() + offset, contents.size() - offset,
+                                      static_cast<off_t>(offset));
+          if (written <= 0) return false;
+          offset += static_cast<std::size_t>(written);
+        }
+        return fsync(descriptor) == 0;
+      },
+      [descriptor] {
+        if (ftruncate(descriptor, 0) != 0 || fsync(descriptor) != 0) {
+          std::cerr << "Unable to clear the PLANK display qualification record\n";
+        }
+      },
+    };
+  }
+
+  std::optional<std::string> read_descriptor(int descriptor, std::size_t maximum) {
+    std::string contents(maximum + 1, '\0');
+    const auto size = pread(descriptor, contents.data(), contents.size(), 0);
+    if (size < 0 || static_cast<std::size_t>(size) > maximum) return std::nullopt;
+    contents.resize(static_cast<std::size_t>(size));
+    return contents;
+  }
+
+  /**
+   * Restore the lease of a qualifier that died (its lock is free). The
+   * supervisor then removes the record; a new qualification run reuses it.
+   */
+  void recover_qualification_record(int descriptor, bool remove) {
+    const auto contents = read_descriptor(descriptor, 16U * 1024U);
+    if (contents && !contents->empty()) {
+      const auto state = plank::session::parse_runtime_display_state_2(*contents);
+      const auto selected = plank::session::active_seat0_graphical_session();
+      const auto environment = selected ? plank::session::discover_environment(*selected) : std::nullopt;
+      if (state && selected && environment) {
+        recover_stale_arrangement(*state, *selected, *environment, qualification_record(descriptor));
+        std::clog << "Restored the display after an interrupted PLANK display qualification\n";
+      } else {
+        std::cerr << "Discarded the record of an interrupted PLANK display qualification\n";
+      }
+    }
+    if (remove) unlink(qualification_record_path.data());
+  }
+
+  /** Supervisor loop: recover a dead qualifier's lease; report whether one is running. */
+  bool check_qualification() {
+    struct stat status {};
+    if (lstat(qualification_record_path.data(), &status) != 0) return false;
+    const auto lock = lock_qualification_record(false, 1);
+    if (lock.busy) return true;
+    if (lock.descriptor >= 0) {
+      recover_qualification_record(lock.descriptor, true);
+      close(lock.descriptor);
+    }
+    return false;
+  }
+
+  std::string startup_policy_name(plank::session::startup_layout_t layout) {
+    switch (layout) {
+      case plank::session::startup_layout_t::physical: return "physical";
+      case plank::session::startup_layout_t::hybrid: return "hybrid";
+      case plank::session::startup_layout_t::virtual_display: return "virtual";
+      case plank::session::startup_layout_t::invalid: return "invalid";
+    }
+    return "invalid";
+  }
+
+  nlohmann::json session_json(const plank::session::descriptor_t &session,
+                              const plank::session::environment_t &environment) {
+    return {
+      {"id", session.id}, {"class", session.session_class}, {"uid", session.uid},
+      {"display", environment.display},
+    };
+  }
+
+  int emit_report(nlohmann::json &report, bool json, int code) {
+    report["exit_code"] = code;
+    if (json) {
+      std::cout << report.dump(2) << '\n';
+    } else {
+      std::cout << plank::display::report_text(report);
+    }
+    std::cout.flush();
+    return code;
+  }
+
+  /** `--print-inventory`: capture and print the inventory and display_capabilities. */
+  int print_inventory(const plank::display::supervisor_options_t &options) {
+    nlohmann::json report {{"mode", "print-inventory"}};
+    if (geteuid() != 0) {
+      report["error"] = "display inventory capture must run as root";
+      return emit_report(report, options.json, plank::display::qualification_refused);
+    }
+    const auto policy = startup_policy_name(plank::session::configured_startup_layout(plank_config_path));
+    const auto selected = plank::session::active_seat0_graphical_session();
+    const auto environment = selected ? plank::session::discover_environment(*selected) : std::nullopt;
+    const auto account = selected ? account_for_uid(selected->uid) : std::nullopt;
+    if (!selected || !environment || !account) {
+      report["error"] = "no active local seat0 X11 session (greeter or user) with a usable X environment";
+      return emit_report(report, options.json, plank::display::qualification_refused);
+    }
+    report["session"] = session_json(*selected, *environment);
+    const auto inventory = capture_inventory(
+      *account, *environment, policy == "invalid" ? "physical" : policy
+    );
+    if (!inventory) {
+      report["error"] = "unable to capture the display inventory (nvidia-settings, xrandr, sysfs)";
+      return emit_report(report, options.json, plank::display::qualification_refused);
+    }
+    report["startup_policy"] = policy;
+    report["inventory"] = plank::display::inventory_json(*inventory);
+    report["display_capabilities"] = plank::arrangement::capabilities_json(
+      plank::display::capabilities_from_inventory(*inventory, {})
+    );
+    report["display_capabilities_note"] =
+      "encoding_limits come from the media worker's encoder probe and are empty here";
+    const auto cached = plank::display::read_inventory();
+    report["cache"] = {
+      {"present", cached.has_value()},
+      {"fingerprint_matches", cached && cached->fingerprint == inventory->fingerprint},
+    };
+    return emit_report(report, options.json, plank::display::qualification_passed);
+  }
+
+  /**
+   * `--qualify-arrangement`: apply one arrangement with the lease transaction,
+   * hold it, restore it, and report every step. Changes nothing unless all
+   * preconditions hold; exits 0 only when both verifications pass.
+   */
+  int qualify_arrangement(const plank::display::supervisor_options_t &options) {
+    nlohmann::json report {{"mode", "qualify-arrangement"}, {"request", options.request}};
+    const auto refuse = [&](std::string message, int code = plank::display::qualification_refused) {
+      report["error"] = std::move(message);
+      report["success"] = false;
+      return emit_report(report, options.json, code);
+    };
+    // Ctrl-C or SIGTERM ends the hold early and still restores the display.
+    sigset_t signals;
+    sigemptyset(&signals);
+    sigaddset(&signals, SIGINT);
+    sigaddset(&signals, SIGTERM);
+    sigaddset(&signals, SIGHUP);
+    if (sigprocmask(SIG_BLOCK, &signals, nullptr) != 0) return refuse("unable to block signals");
+
+    const bool root = geteuid() == 0;
+    const auto policy = startup_policy_name(plank::session::configured_startup_layout(plank_config_path));
+    report["startup_policy"] = policy;
+    qualification_lock_t lock;
+    if (root) lock = lock_qualification_record(true, 10);
+    struct stat status {};
+    const auto refusal = plank::display::qualification_refusal({
+      root, policy, lstat(runtime_display_state_path.data(), &status) == 0,
+      plank::session::read_display_transition(runtime_display_transition_path),
+      static_cast<std::int64_t>(std::time(nullptr)), lock.busy,
+    });
+    if (!refusal.empty()) {
+      if (lock.descriptor >= 0) {
+        // Leave a dead qualifier's record to the supervisor; drop an empty one.
+        const auto contents = read_descriptor(lock.descriptor, 16U * 1024U);
+        if (contents && contents->empty()) unlink(qualification_record_path.data());
+        close(lock.descriptor);
+      }
+      return refuse(refusal);
+    }
+    if (lock.descriptor < 0) return refuse("unable to lock " + std::string {qualification_record_path});
+    const int descriptor = lock.descriptor;
+    const auto release = [&] {
+      unlink(qualification_record_path.data());
+      close(descriptor);
+    };
+    // A qualifier that died mid-run left its record: restore that first.
+    recover_qualification_record(descriptor, false);
+    if (ftruncate(descriptor, 0) != 0) {
+      release();
+      return refuse("unable to reset the qualification record");
+    }
+
+    const auto selected = plank::session::active_seat0_graphical_session();
+    const auto environment = selected ? plank::session::discover_environment(*selected) : std::nullopt;
+    const auto account = selected ? account_for_uid(selected->uid) : std::nullopt;
+    if (!selected || !environment || !account || account->uid == 0) {
+      release();
+      return refuse("no active local seat0 X11 session (greeter or user) with a usable X environment");
+    }
+    report["session"] = session_json(*selected, *environment);
+    const auto inventory = capture_inventory(*account, *environment, policy);
+    if (!inventory) {
+      release();
+      return refuse("unable to capture the display inventory (nvidia-settings, xrandr, sysfs)");
+    }
+    report["inventory"] = plank::display::inventory_json(*inventory);
+    report["display_capabilities"] = plank::arrangement::capabilities_json(
+      plank::display::capabilities_from_inventory(*inventory, {})
+    );
+    const auto prepared = prepare_arrangement(options.request, *inventory);
+    if (!prepared.plan) {
+      release();
+      return refuse("the workstation cannot present this arrangement: " + prepared.reason,
+                    plank::display::qualification_rejected);
+    }
+    report["plan"] = plank::display::plan_json(
+      *prepared.plan, plank::display::visibility_arguments(*prepared.plan, hide_unused_physical_outputs)
+    );
+
+    arrangement_lease_t lease;
+    lease.uid = selected->uid;
+    lease.request = options.request;
+    const auto record = qualification_record(descriptor);
+    const auto applied = apply_arrangement_plan(
+      lease, *prepared.plan, *selected, *environment, *inventory, nullptr, record
+    );
+    report["apply"] = {
+      {"result", applied.reason.empty() ? std::string {"ok"} : applied.reason},
+      {"attempts", applied.attempts},
+    };
+    if (applied.screen) report["apply"]["screen"] = plank::display::screen_json(*applied.screen);
+    const auto restore_json = [](const restore_report_t &restore) {
+      return nlohmann::json {
+        {"metamode_exact", restore.metamode_exact}, {"visibility_exact", restore.visibility_exact},
+        {"fallback", restore.fallback}, {"recovered", restore.recovered}, {"restored", restore.restored},
+      };
+    };
+    report["snapshot"] = lease.snapshot.assignment;
+    if (!applied.reason.empty()) {
+      if (applied.restore) report["restore"] = restore_json(*applied.restore);
+      report["success"] = false;
+      release();
+      return emit_report(report, options.json, plank::display::qualification_failed);
+    }
+
+    std::clog << "PLANK display qualification: arrangement applied; holding for "
+              << options.hold_seconds << " s\n";
+    const auto start = std::chrono::steady_clock::now();
+    const auto hold_end = start + std::chrono::seconds {options.hold_seconds};
+    while (std::chrono::steady_clock::now() < hold_end) {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        hold_end - std::chrono::steady_clock::now()
+      );
+      const timespec timeout {
+        static_cast<time_t>(remaining.count() / 1000), static_cast<long>((remaining.count() % 1000) * 1000000)
+      };
+      siginfo_t information {};
+      const int received = sigtimedwait(&signals, &information, &timeout);
+      if (received > 0) {
+        report["interrupted"] = received == SIGINT ? "SIGINT" : received == SIGTERM ? "SIGTERM" : "SIGHUP";
+        break;
+      }
+      if (received < 0 && errno != EINTR && errno != EAGAIN) break;
+    }
+    report["hold_seconds"] = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+      std::chrono::steady_clock::now() - start
+    ).count());
+
+    const auto current = plank::session::active_seat0_graphical_session();
+    if (!current || current->id != selected->id) {
+      record.clear();
+      report["restore"] = {{"skipped", "the leased X server ended during the hold"}};
+      report["success"] = false;
+      release();
+      return emit_report(report, options.json, plank::display::qualification_failed);
+    }
+    const auto restored = restore_arrangement_lease(lease, *selected, *environment, inventory, record);
+    report["restore"] = restore_json(restored);
+    const bool success = restored.metamode_exact && restored.visibility_exact;
+    report["success"] = success;
+    release();
+    return emit_report(report, options.json,
+                       success ? plank::display::qualification_passed : plank::display::qualification_failed);
   }
 
   std::string legacy_arrangement(const plank::session::display_request_t &request) {
@@ -1207,21 +1623,26 @@ namespace {
   }
 
   void usage(const char *program) {
-    std::cerr << "usage: " << program << " [--worker ABSOLUTE_PATH]\n";
+    std::cerr << plank::display::supervisor_usage(program);
   }
 }  // namespace
 
 int main(int argc, char **argv) {
-  std::filesystem::path worker_path {default_worker};
-  for (int index = 1; index < argc; ++index) {
-    const std::string_view argument {argv[index]};
-    if (argument == "--worker" && index + 1 < argc) {
-      worker_path = argv[++index];
-    } else {
-      usage(argv[0]);
-      return 2;
-    }
+  std::vector<std::string_view> arguments;
+  for (int index = 1; index < argc; ++index) arguments.emplace_back(argv[index]);
+  const auto parsed = plank::display::parse_supervisor_options(arguments);
+  if (!parsed.options) {
+    std::cerr << parsed.error << '\n';
+    usage(argv[0]);
+    return 2;
   }
+  if (parsed.options->mode == plank::display::supervisor_options_t::run_mode_t::qualify) {
+    return qualify_arrangement(*parsed.options);
+  }
+  if (parsed.options->mode == plank::display::supervisor_options_t::run_mode_t::print_inventory) {
+    return print_inventory(*parsed.options);
+  }
+  std::filesystem::path worker_path {parsed.options->worker};
   if (geteuid() != 0) {
     std::cerr << "plank-host-supervisor must run as root\n";
     return 3;
@@ -1289,7 +1710,11 @@ int main(int argc, char **argv) {
   std::string pending_session;
   auto next_launch = std::chrono::steady_clock::now();
   bool stopping = false;
+  bool qualification_live = false;
   while (!stopping) {
+    // A qualification run owns the display; one that died is restored here.
+    qualification_live = arrangement_startup && check_qualification();
+
     if (physical_display_lease && !physical_display_lease->active &&
         std::chrono::steady_clock::now() >= physical_display_lease->deadline) {
       const auto selected = plank::session::active_seat0_graphical_session();
@@ -1332,6 +1757,9 @@ int main(int argc, char **argv) {
         if (!canonical.empty() && arrangement_startup) {
           write_transition("failed", "unavailable", canonical, request_uid);
         }
+      } else if (qualification_live) {
+        std::cerr << "Refusing PLANK display transition during a display qualification run\n";
+        if (!canonical.empty()) write_transition("failed", "busy", canonical, request_uid);
       } else if (engine && arrangement_startup) {
         const auto environment = plank::session::discover_environment(*selected);
         std::string reason;
@@ -1531,7 +1959,7 @@ int main(int argc, char **argv) {
             hide_virtual_heads(*inventory, *selected, *account, *environment);
           }
           if (hybrid_startup && inventory && selected->session_class == "greeter" &&
-              !arrangement_lease && !physical_display_lease) {
+              !arrangement_lease && !physical_display_lease && !qualification_live) {
             const auto overlay = read_overlay();
             const auto facts = overlay ? plank::display::parse_overlay_facts(*overlay) : std::nullopt;
             if ((!facts || facts->fingerprint != inventory->fingerprint) &&

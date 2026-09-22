@@ -762,7 +762,13 @@ namespace nvhttp {
       if (auto state = plank::session::read_runtime_display_state_2(runtime_display_state)) {
         result.temporary_physical_lease = true;
         result.lease_uid = state->lease_uid;
-        if (state->origin == "legacy"sv) {
+        // The supervisor records a lease before applying it; while that
+        // transition runs the legacy view is not live yet.
+        const auto transition = plank::session::read_display_transition(runtime_display_transition);
+        const bool applying = transition && transition->state == "pending"sv &&
+          transition->request == state->request &&
+          plank::session::transition_current(*transition, static_cast<std::int64_t>(std::time(nullptr)));
+        if (state->origin == "legacy"sv && !applying) {
           // A legacy single/dual request served by the arrangement engine
           // keeps the exact legacy view its client binds to.
           result.kind = state->layout;

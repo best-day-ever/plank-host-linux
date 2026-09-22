@@ -153,6 +153,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/session/display_inventory.h"
         "${CMAKE_SOURCE_DIR}/src/session/display_metamode.cpp"
         "${CMAKE_SOURCE_DIR}/src/session/display_metamode.h"
+        "${CMAKE_SOURCE_DIR}/src/session/display_qualify.cpp"
+        "${CMAKE_SOURCE_DIR}/src/session/display_qualify.h"
         "${CMAKE_SOURCE_DIR}/src/session/greeter_signin.cpp"
         "${CMAKE_SOURCE_DIR}/src/session/greeter_signin.h"
         "${CMAKE_SOURCE_DIR}/src/session/session_context.cpp"
