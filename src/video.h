@@ -760,6 +760,9 @@ namespace video {
   bool nvenc_direct_supports_h264_444_8bit();
   bool nvenc_direct_supports_hevc_444_8bit();
   bool nvenc_direct_supports_hevc_444_10bit();
+  /** Exact NVENC 4:2:0 BT.709 limited-range modes, probed with their own SPS/VUI check. */
+  bool nvenc_direct_supports_h264_420_8bit();
+  bool nvenc_direct_supports_hevc_420_10bit();
 
   // Several NTSC standard refresh rates are hardcoded here, because their
   // true rate requires a denominator of 1001. ffmpeg's av_d2q() would assume it could

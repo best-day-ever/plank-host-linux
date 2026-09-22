@@ -11,6 +11,10 @@ extern "C" {
 #include <libavutil/pixdesc.h>
 }
 
+// standard includes
+#include <climits>
+#include <memory>
+
 // local includes
 #include "cbs.h"
 #include "logging.h"
@@ -322,5 +326,57 @@ namespace cbs {
            vui.colour_primaries == AVCOL_PRI_BT709 &&
            vui.transfer_characteristics == AVCOL_TRC_IEC61966_2_1 &&
            vui.matrix_coefficients == AVCOL_SPC_RGB;
+  }
+
+  bool validate_nvenc_420(const std::uint8_t *data, std::size_t size, int codec_id) {
+    if (!data || size == 0 || size > static_cast<std::size_t>(INT_MAX) ||
+        (codec_id != AV_CODEC_ID_H264 && codec_id != AV_CODEC_ID_H265)) {
+      return false;
+    }
+
+    cbs::ctx_t ctx;
+    if (ff_cbs_init(&ctx, static_cast<AVCodecID>(codec_id), nullptr)) {
+      return false;
+    }
+
+    // Unreferenced packet: the reader copies the bytes into the fragment.
+    const auto free_packet = [](AVPacket *p) {
+      av_packet_free(&p);
+    };
+    std::unique_ptr<AVPacket, decltype(free_packet)> packet {av_packet_alloc(), free_packet};
+    if (!packet) {
+      return false;
+    }
+    packet->data = const_cast<std::uint8_t *>(data);
+    packet->size = static_cast<int>(size);
+
+    cbs::frag_t frag;
+    if (ff_cbs_read_packet(ctx.get(), &frag, packet.get()) < 0) {
+      return false;
+    }
+
+    const auto limited_bt709_srgb = [](const auto &vui) {
+      return vui.video_signal_type_present_flag && !vui.video_full_range_flag &&
+             vui.colour_description_present_flag &&
+             vui.colour_primaries == AVCOL_PRI_BT709 &&
+             vui.transfer_characteristics == AVCOL_TRC_IEC61966_2_1 &&
+             vui.matrix_coefficients == AVCOL_SPC_BT709;
+    };
+
+    if (codec_id == AV_CODEC_ID_H264) {
+      const auto *h264 = reinterpret_cast<const CodedBitstreamH264Context *>(ctx->priv_data);
+      const auto *sps = h264 ? h264->active_sps : nullptr;
+      return sps && sps->profile_idc == AV_PROFILE_H264_HIGH &&
+             sps->chroma_format_idc == 1 &&
+             sps->bit_depth_luma_minus8 == 0 && sps->bit_depth_chroma_minus8 == 0 &&
+             sps->vui_parameters_present_flag && limited_bt709_srgb(sps->vui);
+    }
+
+    const auto *h265 = reinterpret_cast<const CodedBitstreamH265Context *>(ctx->priv_data);
+    const auto *sps = h265 ? h265->active_sps : nullptr;
+    return sps && sps->profile_tier_level.general_profile_idc == AV_PROFILE_HEVC_MAIN_10 &&
+           sps->chroma_format_idc == 1 &&
+           sps->bit_depth_luma_minus8 == 2 && sps->bit_depth_chroma_minus8 == 2 &&
+           sps->vui_parameters_present_flag && limited_bt709_srgb(sps->vui);
   }
 }  // namespace cbs

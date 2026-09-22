@@ -56,6 +56,8 @@ namespace cuda {
   #if defined(SUNSHINE_TESTS)
   bool test_identity_gbr_8bit_conversion();
   bool test_identity_gbr_10bit_conversion();
+  bool test_bt709_limited_nv12_conversion();
+  bool test_bt709_limited_p010_conversion();
   #endif
 }  // namespace cuda
 

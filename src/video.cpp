@@ -42,6 +42,7 @@ extern "C" {
 #include "input.h"
 #include "logging.h"
 #include "nvenc/nvenc_encoder.h"
+#include "plank_topology.h"
 #include "platform/common.h"
 #include "sync.h"
 #include "video.h"
@@ -1688,6 +1689,8 @@ namespace video {
   bool last_encoder_probe_supported_h264_10bit_422 = false;  ///< H.264 10-bit 4:2:2 support discovered for the selected encoder.
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
   static bool nvenc_direct_qualified = false;
+  static bool nvenc_direct_h264_420_8bit = false;
+  static bool nvenc_direct_hevc_420_10bit = false;
 #endif
 
   bool nvenc_direct_supports_h264_444_8bit() {
@@ -1717,12 +1720,32 @@ namespace video {
 #endif
   }
 
+  bool nvenc_direct_supports_h264_420_8bit() {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    return nvenc_direct_qualified && nvenc_direct.h264[encoder_t::PASSED] &&
+           nvenc_direct_h264_420_8bit;
+#else
+    return false;
+#endif
+  }
+
+  bool nvenc_direct_supports_hevc_420_10bit() {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    return nvenc_direct_qualified && nvenc_direct.hevc[encoder_t::PASSED] &&
+           nvenc_direct_hevc_420_10bit;
+#else
+    return false;
+#endif
+  }
+
   bool encoder_backend_available(std::string_view backend) {
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
     if (backend == "nvenc-direct"sv) {
       return nvenc_direct_supports_h264_444_8bit() ||
              nvenc_direct_supports_hevc_444_8bit() ||
-             nvenc_direct_supports_hevc_444_10bit();
+             nvenc_direct_supports_hevc_444_10bit() ||
+             nvenc_direct_supports_h264_420_8bit() ||
+             nvenc_direct_supports_hevc_420_10bit();
     }
     if (backend == "software-cuda"sv) {
       return software_cuda.h264[encoder_t::PASSED] &&
@@ -1755,6 +1778,12 @@ namespace video {
     }
     if (mode == "hevc-10-444-nvenc"sv) {
       return nvenc_direct_supports_hevc_444_10bit();
+    }
+    if (mode == "h264-8-420-nvenc"sv) {
+      return nvenc_direct_supports_h264_420_8bit();
+    }
+    if (mode == "hevc-10-420-nvenc"sv) {
+      return nvenc_direct_supports_hevc_420_10bit();
     }
 #else
     (void) mode;
@@ -3648,6 +3677,18 @@ namespace video {
       return -1;
     }
 
+    // PLANK NVENC 4:2:0 modes are advertised only when their own probe IDR
+    // carries the exact profile, depth and limited-range BT.709 metadata.
+    static_assert(plank::topology::nvenc_420_encoder_csc_mode == (COLORSPACE_REC_709 << 1));
+    if (encoder.name == "nvenc-direct"sv && config.videoFormat <= 1 &&
+        config.chromaSamplingType == 0 &&
+        config.encoderCscMode == plank::topology::nvenc_420_encoder_csc_mode &&
+        !cbs::validate_nvenc_420(packet->data(), packet->data_size(),
+                                 config.videoFormat ? AV_CODEC_ID_H265 : AV_CODEC_ID_H264)) {
+      BOOST_LOG(error) << "NVENC 4:2:0 probe did not produce the exact PLANK profile, depth and BT.709 limited-range VUI"sv;
+      return -1;
+    }
+
     int flag = 0;
 
     // This check only applies for H.264 and HEVC
@@ -3911,6 +3952,31 @@ namespace video {
       test_yuv444(encoder.av1, 2);
       test_yuv420_hdr(encoder.av1, 2);
       test_yuv444_hdr(encoder.av1, 2);
+
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+      // PLANK NVENC 4:2:0 (H.264 High 8-bit, HEVC Main10): each exact tuple
+      // gets its own encode, SPS/VUI included, before it is advertised.
+      const auto test_nvenc_420 = [&](const auto &flag_map, int video_format, bool ten_bit) {
+        if (!flag_map[encoder_t::PASSED]) {
+          return false;
+        }
+        const config_t config = {
+          "", 1920, 1080, 60, 6000, 1000, 1, 0,
+          plank::topology::nvenc_420_encoder_csc_mode, video_format, ten_bit ? 1 : 0, 0
+        };
+        reset_display(disp, encoder.platform_formats->dev_type, output_name, config);
+        if (!disp) {
+          return false;
+        }
+        const auto encoder_codec_name = encoder.codec_from_config(config).name;
+        return disp->is_codec_supported(encoder_codec_name, config) &&
+               validate_config(disp, encoder, config) >= 0;
+      };
+      if (&encoder == &nvenc_direct) {
+        nvenc_direct_h264_420_8bit = test_nvenc_420(encoder.h264, 0, false);
+        nvenc_direct_hevc_420_10bit = test_nvenc_420(encoder.hevc, 1, true);
+      }
+#endif
     }
 
     encoder.h264[encoder_t::VUI_PARAMETERS] = encoder.h264[encoder_t::VUI_PARAMETERS] && !config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE];
@@ -4065,7 +4131,9 @@ namespace video {
     BOOST_LOG(info) << "PLANK nvenc-direct modes: h264-444-8="sv
                     << nvenc_direct_supports_h264_444_8bit()
                     << " hevc-444-8="sv << nvenc_direct_supports_hevc_444_8bit()
-                    << " hevc-444-10="sv << nvenc_direct_supports_hevc_444_10bit();
+                    << " hevc-444-10="sv << nvenc_direct_supports_hevc_444_10bit()
+                    << " h264-420-8="sv << nvenc_direct_supports_h264_420_8bit()
+                    << " hevc-420-10="sv << nvenc_direct_supports_hevc_420_10bit();
 #endif
 
     return 0;

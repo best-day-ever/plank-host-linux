@@ -32,6 +32,7 @@ namespace plank::topology {
   constexpr std::uint32_t feature_worker_instance = 0x40000;
   // 0x80000-0x200000 are the macOS host's fixed-capture preview bits.
   constexpr std::uint32_t feature_desktop_sign_out = 0x400000;
+  constexpr std::uint32_t feature_nvfbc_nvenc_420 = 0x2000000;
   constexpr std::uint32_t feature_flags =
     feature_output_topology |
     feature_selected_output |
@@ -52,7 +53,8 @@ namespace plank::topology {
     feature_desktop_handoff_notice |
     feature_authenticated_desktop_stage |
     feature_worker_instance |
-    feature_desktop_sign_out;
+    feature_desktop_sign_out |
+    feature_nvfbc_nvenc_420;
 
   constexpr bool valid_quic_udp_payload_mtu(std::uint32_t mtu) {
     return mtu >= 1200 && mtu <= 65527;
@@ -105,6 +107,17 @@ namespace plank::topology {
     return size.width > 0 && size.height > 0;
   }
 
+  /**
+   * @brief NVENC 4:2:0 modes: BT.709 matrix, limited range, BT.709 primaries,
+   * sRGB transfer, from the 8-bit NvFBC source only (feature 0x2000000).
+   */
+  constexpr int nvenc_420_encoder_csc_mode = 2;  ///< (COLORSPACE_REC_709 << 1), limited range.
+
+  constexpr bool nvenc_420_mode(std::string_view encoding_mode) {
+    return encoding_mode == "h264-8-420-nvenc" ||
+           encoding_mode == "hevc-10-420-nvenc";
+  }
+
   constexpr bool valid_encoding_tuple(
     std::string_view capture_source,
     std::string_view encoder_backend,
@@ -124,7 +137,8 @@ namespace plank::topology {
       if (capture_source == "nvfbc") {
         return encoding_mode == "h264-8-444-nvenc" ||
                encoding_mode == "hevc-8-444-nvenc" ||
-               encoding_mode == "hevc-10-444-nvenc";
+               encoding_mode == "hevc-10-444-nvenc" ||
+               nvenc_420_mode(encoding_mode);
       }
       return capture_source == "x11-native10" &&
              encoding_mode == "hevc-10-444-nvenc";

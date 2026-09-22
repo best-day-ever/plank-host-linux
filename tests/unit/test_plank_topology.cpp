@@ -10,8 +10,9 @@ namespace topology = plank::topology;
 
 TEST(PlankTopology, PublishesVersionThirteenFeatureContract) {
   EXPECT_EQ(topology::protocol_version, 13U);
-  EXPECT_EQ(topology::feature_flags, 0x47FFFFU);
+  EXPECT_EQ(topology::feature_flags, 0x247FFFFU);
   EXPECT_NE(topology::feature_flags & topology::feature_desktop_sign_out, 0U);
+  EXPECT_EQ(topology::feature_nvfbc_nvenc_420, 0x2000000U);
   EXPECT_NE(topology::feature_flags & topology::feature_nvfbc_hevc10_nvenc, 0U);
   EXPECT_NE(topology::feature_flags & topology::feature_fixed_transport_mtu, 0U);
   EXPECT_NE(topology::feature_flags & topology::feature_session_takeover, 0U);
@@ -73,6 +74,35 @@ TEST(PlankTopology, AcceptsOnlyExactEncodingTuples) {
   ));
   EXPECT_FALSE(topology::valid_encoding_tuple(
     "nvfbc", "ffmpeg-nvenc", "h264-8-444-nvenc"
+  ));
+}
+
+TEST(PlankTopology, AcceptsNvenc420OnlyFromNvfbcDirectNvenc) {
+  EXPECT_TRUE(topology::nvenc_420_mode("h264-8-420-nvenc"));
+  EXPECT_TRUE(topology::nvenc_420_mode("hevc-10-420-nvenc"));
+  EXPECT_FALSE(topology::nvenc_420_mode("hevc-8-420-nvenc"));
+  EXPECT_FALSE(topology::nvenc_420_mode("h264-10-420-nvenc"));
+  EXPECT_FALSE(topology::nvenc_420_mode("hevc-10-420-videotoolbox"));
+  EXPECT_FALSE(topology::nvenc_420_mode("hevc-10-444-nvenc"));
+  EXPECT_EQ(topology::nvenc_420_encoder_csc_mode, 2);
+
+  EXPECT_TRUE(topology::valid_encoding_tuple(
+    "nvfbc", "nvenc-direct", "h264-8-420-nvenc"
+  ));
+  EXPECT_TRUE(topology::valid_encoding_tuple(
+    "nvfbc", "nvenc-direct", "hevc-10-420-nvenc"
+  ));
+  EXPECT_FALSE(topology::valid_encoding_tuple(
+    "x11-native10", "nvenc-direct", "hevc-10-420-nvenc"
+  ));
+  EXPECT_FALSE(topology::valid_encoding_tuple(
+    "x11-native10", "nvenc-direct", "h264-8-420-nvenc"
+  ));
+  EXPECT_FALSE(topology::valid_encoding_tuple(
+    "nvfbc", "software-cuda", "h264-8-420-nvenc"
+  ));
+  EXPECT_FALSE(topology::valid_encoding_tuple(
+    "nvfbc", "nvenc-direct", "hevc-8-420-nvenc"
   ));
 }
 
