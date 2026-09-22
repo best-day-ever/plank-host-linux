@@ -118,6 +118,29 @@ namespace plank::topology {
     return startup_layout == "physical" || layout != "physical";
   }
 
+  /**
+   * @brief Number of outputs a legacy host layout presents.
+   * @return 1 for `single`, 2 for `dual-horizontal`, 0 otherwise.
+   */
+  constexpr std::size_t layout_output_count(std::string_view layout) {
+    if (layout == "single") return 1;
+    if (layout == "dual-horizontal") return 2;
+    return 0;
+  }
+
+  /**
+   * @brief Whether a physical-startup host can present a legacy layout.
+   *
+   * A temporary physical lease reuses one lit scanout per requested output,
+   * so a `dual-horizontal` request needs two. Answering an impossible request
+   * with 425 would leave the client waiting for a topology that never comes.
+   */
+  constexpr bool physical_lease_feasible(std::string_view layout, std::size_t physical_outputs) {
+    if (layout == "physical") return physical_outputs > 0;
+    const auto required = layout_output_count(layout);
+    return required > 0 && physical_outputs >= required;
+  }
+
   constexpr bool valid_virtual_mode(std::string_view mode) {
     const auto size = virtual_mode_size(mode);
     return size.width > 0 && size.height > 0;

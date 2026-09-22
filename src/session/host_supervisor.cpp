@@ -2,6 +2,7 @@
  * @file src/session/host_supervisor.cpp
  * @brief Boot-time PLANK graphical-session worker supervisor.
  */
+#include "display_metamode.h"
 #include "session_context.h"
 #include "worker_control.h"
 #include "../plank_topology.h"
@@ -9,7 +10,6 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
 #include <chrono>
 #include <csignal>
 #include <cstring>
@@ -19,7 +19,6 @@
 #include <iostream>
 #include <memory>
 #include <optional>
-#include <regex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -72,18 +71,7 @@ namespace {
     bool greeter {false};
   };
 
-  struct physical_output_t {
-    std::string name;
-    std::string mode;
-    int native_width {};
-    int native_height {};
-    int x {};
-  };
-
-  struct physical_snapshot_t {
-    std::string assignment;
-    std::vector<physical_output_t> outputs;
-  };
+  using plank::display::physical_snapshot_t;
 
   struct physical_display_lease_t {
     uid_t uid {};
@@ -572,113 +560,6 @@ namespace {
     );
   }
 
-  std::string_view trim_view(std::string_view value) {
-    constexpr std::string_view whitespace = " \t\r\n";
-    const auto first = value.find_first_not_of(whitespace);
-    if (first == std::string_view::npos) return {};
-    const auto last = value.find_last_not_of(whitespace);
-    return value.substr(first, last - first + 1);
-  }
-
-  std::optional<int> parse_positive_int(std::string_view value) {
-    int parsed {};
-    const auto result = std::from_chars(
-      value.data(), value.data() + value.size(), parsed
-    );
-    if (value.empty() || result.ec != std::errc {} ||
-        result.ptr != value.data() + value.size() || parsed <= 0) {
-      return std::nullopt;
-    }
-    return parsed;
-  }
-
-  std::optional<physical_snapshot_t> parse_current_metamode(
-    std::string_view response
-  ) {
-    constexpr std::size_t maximum_assignment_size = 32U * 1024U;
-    const auto separator = response.find("::");
-    if (separator == std::string_view::npos) return std::nullopt;
-    const auto assignment_view = trim_view(response.substr(separator + 2));
-    if (assignment_view.empty() || assignment_view.size() > maximum_assignment_size) {
-      return std::nullopt;
-    }
-    for (const unsigned char character : assignment_view) {
-      if (character < 0x20 || character > 0x7e) return std::nullopt;
-    }
-
-    std::vector<std::string_view> clauses;
-    std::size_t start = 0;
-    int brace_depth = 0;
-    for (std::size_t index = 0; index <= assignment_view.size(); ++index) {
-      const char character = index < assignment_view.size() ? assignment_view[index] : ',';
-      if (character == '{') ++brace_depth;
-      else if (character == '}') --brace_depth;
-      if (brace_depth < 0) return std::nullopt;
-      if (character == ',' && brace_depth == 0) {
-        clauses.push_back(trim_view(assignment_view.substr(start, index - start)));
-        start = index + 1;
-      }
-    }
-    if (brace_depth != 0 || clauses.empty()) return std::nullopt;
-
-    static const std::regex output_name {R"(^[A-Za-z0-9_-]+$)"};
-    static const std::regex viewport_out {
-      R"(ViewPortOut=([0-9]+)x([0-9]+)\+[0-9]+\+[0-9]+)"
-    };
-    static const std::regex logical_position {
-      R"(@[0-9]+x[0-9]+ \+([0-9]+)\+[0-9]+)"
-    };
-    physical_snapshot_t snapshot;
-    snapshot.assignment = std::string {assignment_view};
-    for (const auto clause : clauses) {
-      const auto colon = clause.find(':');
-      if (colon == std::string_view::npos) return std::nullopt;
-      const std::string name {trim_view(clause.substr(0, colon))};
-      const auto body = trim_view(clause.substr(colon + 1));
-      if (!std::regex_match(name, output_name)) return std::nullopt;
-      if (body == "NULL") continue;
-      const auto mode_end = body.find_first_of(" \t");
-      if (mode_end == std::string_view::npos) return std::nullopt;
-      const std::string mode {body.substr(0, mode_end)};
-      if (!std::regex_match(mode, output_name)) return std::nullopt;
-      std::match_results<std::string_view::const_iterator> viewport_match;
-      std::match_results<std::string_view::const_iterator> position_match;
-      if (!std::regex_search(body.begin(), body.end(), viewport_match, viewport_out) ||
-          !std::regex_search(body.begin(), body.end(), position_match, logical_position)) {
-        return std::nullopt;
-      }
-      const auto width = parse_positive_int(
-        std::string_view {viewport_match[1].first, viewport_match[1].second}
-      );
-      const auto height = parse_positive_int(
-        std::string_view {viewport_match[2].first, viewport_match[2].second}
-      );
-      const auto x = parse_positive_int(
-        std::string_view {position_match[1].first, position_match[1].second}
-      );
-      // The leftmost output legitimately begins at zero.
-      int parsed_x = 0;
-      const auto x_view = std::string_view {
-        position_match[1].first, position_match[1].second
-      };
-      const auto x_result = std::from_chars(
-        x_view.data(), x_view.data() + x_view.size(), parsed_x
-      );
-      if (!width || !height || x_result.ec != std::errc {} ||
-          x_result.ptr != x_view.data() + x_view.size() || parsed_x < 0) {
-        return std::nullopt;
-      }
-      (void) x;
-      snapshot.outputs.push_back({name, mode, *width, *height, parsed_x});
-    }
-    if (snapshot.outputs.empty()) return std::nullopt;
-    std::sort(snapshot.outputs.begin(), snapshot.outputs.end(), [](const auto &left,
-                                                                  const auto &right) {
-      return std::tie(left.x, left.name) < std::tie(right.x, right.name);
-    });
-    return snapshot;
-  }
-
   std::optional<physical_snapshot_t> capture_physical_snapshot(
     const account_t &account,
     const plank::session::environment_t &environment
@@ -687,7 +568,7 @@ namespace {
       nvidia_settings_path, {"--query", "CurrentMetaMode", "--terse"},
       std::chrono::seconds {10}, account, environment
     );
-    return response ? parse_current_metamode(*response) : std::nullopt;
+    return response ? plank::display::parse_current_metamode(*response) : std::nullopt;
   }
 
   bool assign_metamode(
@@ -700,44 +581,6 @@ namespace {
       {"--assign", "CurrentMetaMode=" + std::string {assignment}},
       std::chrono::seconds {10}, account, environment
     );
-  }
-
-  std::optional<std::string> temporary_metamode(
-    const physical_snapshot_t &snapshot,
-    const plank::session::display_request_t &request
-  ) {
-    const std::size_t required_outputs =
-      request.layout == "dual-horizontal" ? 2U : 1U;
-    if (snapshot.outputs.size() < required_outputs) return std::nullopt;
-    const std::array<std::string_view, 2> modes {request.mode_1, request.mode_2};
-    std::string assignment;
-    int x = 0;
-    for (std::size_t index = 0; index < required_outputs; ++index) {
-      const auto requested = plank::topology::virtual_mode_size(modes[index]);
-      const auto &physical = snapshot.outputs[index];
-      if (requested.width <= 0 || requested.height <= 0) return std::nullopt;
-      if (!assignment.empty()) assignment += ", ";
-      assignment += physical.name + ": " + physical.mode + " @" +
-        std::to_string(requested.width) + "x" + std::to_string(requested.height) +
-        " +" + std::to_string(x) + "+0 {ViewPortIn=" +
-        std::to_string(requested.width) + "x" + std::to_string(requested.height) +
-        ", ViewPortOut=" + std::to_string(physical.native_width) + "x" +
-        std::to_string(physical.native_height) + "+0+0}";
-      x += requested.width;
-    }
-    return assignment;
-  }
-
-  std::string safe_physical_metamode(const physical_snapshot_t &snapshot) {
-    if (snapshot.outputs.empty()) return {};
-    const auto &output = snapshot.outputs.front();
-    return output.name + ": " + output.mode + " @" +
-      std::to_string(output.native_width) + "x" +
-      std::to_string(output.native_height) + " +0+0 {ViewPortIn=" +
-      std::to_string(output.native_width) + "x" +
-      std::to_string(output.native_height) + ", ViewPortOut=" +
-      std::to_string(output.native_width) + "x" +
-      std::to_string(output.native_height) + "+0+0}";
   }
 
   bool write_runtime_display_state(
@@ -778,20 +621,29 @@ namespace {
     }
   }
 
+  /**
+   * Apply a temporary physical-display lease. `retained` is the snapshot of an
+   * existing lease on the same X server: a second acquire must restore the
+   * original layout, never the first lease's temporary MetaMode.
+   */
   bool apply_physical_lease(
     physical_display_lease_t &lease,
     const plank::session::descriptor_t &session,
-    const plank::session::environment_t &environment
+    const plank::session::environment_t &environment,
+    const physical_snapshot_t *retained = nullptr
   ) {
     const auto account = account_for_uid(session.uid);
     if (!account) return false;
-    const auto snapshot = capture_physical_snapshot(*account, environment);
-    if (!snapshot) {
+    const auto captured = retained != nullptr ? std::nullopt :
+      capture_physical_snapshot(*account, environment);
+    if (retained == nullptr && !captured) {
       std::cerr << "Unable to capture the physical NVIDIA MetaMode before the PLANK session\n";
       return false;
     }
-    const auto temporary = temporary_metamode(*snapshot, lease.request);
-    if (!temporary || !assign_metamode(*temporary, *account, environment)) {
+    const auto plan = plank::display::plan_physical_lease(
+      retained, captured, lease.request.layout, lease.request.mode_1, lease.request.mode_2
+    );
+    if (!plan || !assign_metamode(plan->temporary, *account, environment)) {
       std::cerr << "Unable to apply the temporary PLANK physical-display layout\n";
       return false;
     }
@@ -799,12 +651,12 @@ namespace {
           lease.request.layout, lease.request.mode_1, lease.request.mode_2,
           lease.uid
         })) {
-      assign_metamode(snapshot->assignment, *account, environment);
+      assign_metamode(plan->snapshot.assignment, *account, environment);
       std::cerr << "Unable to publish the temporary PLANK display state; restored the physical layout\n";
       return false;
     }
     lease.session_id = session.id;
-    lease.snapshot = *snapshot;
+    lease.snapshot = plan->snapshot;
     return true;
   }
 
@@ -820,7 +672,7 @@ namespace {
       std::clog << "Restored the exact pre-session physical NVIDIA MetaMode\n";
       return true;
     }
-    const auto fallback = safe_physical_metamode(lease.snapshot);
+    const auto fallback = plank::display::safe_physical_metamode(lease.snapshot);
     const bool recovered = !fallback.empty() &&
       assign_metamode(fallback, *account, environment);
     clear_runtime_display_state();
@@ -1041,7 +893,12 @@ int main(int argc, char **argv) {
         } else if (physical_display_lease &&
                    physical_display_lease->uid != lease.uid) {
           std::cerr << "Refusing to replace a temporary display lease owned by another account\n";
-        } else if (apply_physical_lease(lease, *selected, *environment)) {
+        } else if (apply_physical_lease(
+                     lease, *selected, *environment,
+                     physical_display_lease &&
+                         physical_display_lease->session_id == selected->id ?
+                       &physical_display_lease->snapshot : nullptr
+                   )) {
           physical_display_lease = std::move(lease);
           std::clog << "Temporary PLANK physical-display lease acquired for UID "
                     << physical_display_lease->uid << '\n';
@@ -1117,7 +974,7 @@ int main(int argc, char **argv) {
         if (recover_stale_runtime_state) {
           const auto stale_snapshot = capture_physical_snapshot(*account, *environment);
           const auto fallback = stale_snapshot ?
-            safe_physical_metamode(*stale_snapshot) : std::string {};
+            plank::display::safe_physical_metamode(*stale_snapshot) : std::string {};
           if (!fallback.empty() && assign_metamode(fallback, *account, *environment)) {
             std::cerr << "Recovered a stale temporary PLANK layout with one safe native physical output\n";
           } else {

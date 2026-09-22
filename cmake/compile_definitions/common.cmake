@@ -148,6 +148,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/auth/pam_client.h"
         "${CMAKE_SOURCE_DIR}/src/auth/web_auth.cpp"
         "${CMAKE_SOURCE_DIR}/src/auth/web_auth.h"
+        "${CMAKE_SOURCE_DIR}/src/session/display_metamode.cpp"
+        "${CMAKE_SOURCE_DIR}/src/session/display_metamode.h"
         "${CMAKE_SOURCE_DIR}/src/session/greeter_signin.cpp"
         "${CMAKE_SOURCE_DIR}/src/session/greeter_signin.h"
         "${CMAKE_SOURCE_DIR}/src/session/session_context.cpp"

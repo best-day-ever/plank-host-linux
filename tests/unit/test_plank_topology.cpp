@@ -195,3 +195,21 @@ TEST(PlankTopology, RejectsInvalidAndUnhealthyLayouts) {
               "single", "1920x1080", "", 1),
             topology::layout_error::invalid_request);
 }
+
+TEST(PlankTopology, RefusesPhysicalLeasesWithTooFewScanouts) {
+  EXPECT_EQ(topology::layout_output_count("single"), 1U);
+  EXPECT_EQ(topology::layout_output_count("dual-horizontal"), 2U);
+  EXPECT_EQ(topology::layout_output_count("physical"), 0U);
+  EXPECT_EQ(topology::layout_output_count("dual-vertical"), 0U);
+
+  // A one-panel laptop host still advertises dual-horizontal (the deployed
+  // 1.0.129 client requires the exact allowed-kinds list), so the binding
+  // must answer 409 instead of starting a transition that cannot succeed.
+  EXPECT_TRUE(topology::physical_lease_feasible("single", 1));
+  EXPECT_FALSE(topology::physical_lease_feasible("dual-horizontal", 1));
+  EXPECT_TRUE(topology::physical_lease_feasible("dual-horizontal", 2));
+  EXPECT_TRUE(topology::physical_lease_feasible("physical", 1));
+  EXPECT_FALSE(topology::physical_lease_feasible("physical", 0));
+  EXPECT_FALSE(topology::physical_lease_feasible("single", 0));
+  EXPECT_FALSE(topology::physical_lease_feasible("dual-vertical", 4));
+}
