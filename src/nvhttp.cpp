@@ -885,6 +885,22 @@ namespace nvhttp {
       tree.put("root.<xmlattr>.status_message", "Invalid PLANK host-layout binding");
       return false;
     }
+    if (validation == plank::topology::layout_error::mismatch &&
+        live_layout.startup_kind == "physical" && !live_layout.temporary_physical_lease &&
+        !plank::topology::physical_lease_feasible(session.host_layout, outputs.size())) {
+      // A physical host leases its lit scanouts. Without enough of them the
+      // supervisor cannot apply the layout, so refuse it now instead of
+      // answering 425 for a transition that would never arrive.
+      BOOST_LOG(warning) << "Refusing PLANK host layout "sv << session.host_layout << ": "sv
+                         << outputs.size() << " physical display(s) connected"sv;
+      tree.put("root.<xmlattr>.status_code", 409);
+      tree.put("root.<xmlattr>.status_message", std::format(
+        "This workstation has {} connected display(s); the {} layout needs {}",
+        outputs.size(), session.host_layout,
+        plank::topology::layout_output_count(session.host_layout)
+      ));
+      return false;
+    }
     if (validation == plank::topology::layout_error::mismatch) {
       const auto transition = plank::session::request_display_transition({
         plank::session::display_request_t::action_t::acquire,
