@@ -1064,6 +1064,12 @@ namespace nvhttp {
                           "Packed capture needs the NvFBC capture source");
       return false;
     }
+    if (capture.plan->packed &&
+        (session.width != capture.plan->width || session.height != capture.plan->height)) {
+      arrangement_refusal(tree, 400, arrangement::error_code(arrangement::error_t::canvas_too_large),
+                          "A packed capture must stream at its packed frame size");
+      return false;
+    }
     if (preflight_only) return true;
     remember_arrangement_mode(session.display_arrangement, session.encoding_mode);
     session.arrangement_capture = capture.plan;
