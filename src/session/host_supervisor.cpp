@@ -1374,6 +1374,10 @@ int main(int argc, char **argv) {
           }
           reason = apply_arrangement_lease(lease, *selected, *environment, *inventory, retained);
           if (reason.empty()) {
+            if (!lease.active) {
+              // Applying can take several seconds; the setup deadline starts now.
+              lease.deadline = std::chrono::steady_clock::now() + std::chrono::seconds {45};
+            }
             arrangement_lease = std::move(lease);
             clear_transition();
             std::clog << "PLANK display arrangement applied for UID " << request_uid << ": "
