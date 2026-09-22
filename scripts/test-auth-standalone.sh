@@ -37,6 +37,10 @@ wait
 build plank-pam-broker \
   "$source_dir/src/auth/pam_broker.cpp" "$source_dir/src/auth/gssapi_acceptor.cpp" \
   -lpam -lgssapi_krb5 -lkrb5 -lcrypto
+build pam_plank_handoff.so -shared -fPIC \
+  "$source_dir/src/auth/pam_plank_handoff.cpp" -lpam
+build plank-probe-handoff \
+  "$source_dir/tools/plank_probe_handoff.cpp" -lpam
 build plank-probe-gssapi \
   "$source_dir/tools/plank_probe_gssapi.cpp" "$source_dir/src/auth/gssapi_acceptor.cpp" \
   -lgssapi_krb5 -lkrb5 -lcrypto
@@ -48,9 +52,11 @@ build test-auth -DSUNSHINE_TESTS -I"$gtest/include" \
   "$source_dir/tests/unit/test_pam_broker_protocol.cpp" \
   "$source_dir/tests/unit/test_pam_broker_policy.cpp" \
   "$source_dir/tests/unit/test_web_auth.cpp" \
+  "$source_dir/tests/unit/test_desktop_handoff_pass.cpp" \
   "$source_dir/src/auth/pam_client.cpp" \
   "$source_dir/src/auth/web_auth.cpp" \
   "$source_dir/src/session/session_context.cpp" \
+  "$source_dir/src/session/greeter_signin.cpp" \
   "$build_dir/gtest-all.o" "$build_dir/gtest_main.o" \
   -lcrypto -lsystemd
 "$build_dir/test-auth"

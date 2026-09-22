@@ -141,12 +141,15 @@ endif()
 list(APPEND PLATFORM_TARGET_FILES ${NVENC_SOURCES})
 
 set(SUNSHINE_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/auth/desktop_handoff_pass.h"
         "${CMAKE_SOURCE_DIR}/src/auth/gssapi_admission.h"
         "${CMAKE_SOURCE_DIR}/src/auth/pam_broker_protocol.h"
         "${CMAKE_SOURCE_DIR}/src/auth/pam_client.cpp"
         "${CMAKE_SOURCE_DIR}/src/auth/pam_client.h"
         "${CMAKE_SOURCE_DIR}/src/auth/web_auth.cpp"
         "${CMAKE_SOURCE_DIR}/src/auth/web_auth.h"
+        "${CMAKE_SOURCE_DIR}/src/session/greeter_signin.cpp"
+        "${CMAKE_SOURCE_DIR}/src/session/greeter_signin.h"
         "${CMAKE_SOURCE_DIR}/src/session/session_context.cpp"
         "${CMAKE_SOURCE_DIR}/src/session/session_context.h"
         "${CMAKE_SOURCE_DIR}/third-party/moonlight-common-c/src/Input.h"

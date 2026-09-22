@@ -155,6 +155,27 @@ namespace plank::session {
   lock_status lock_attached_user_session();
 
   /**
+   * Unlock the attached user session for its owner after a fresh PLANK login.
+   *
+   * Applies only to the supervisor-attested active seat0 `user` session owned
+   * by `account_uid`, and cancels a pending lock_on_disconnect request. Uses
+   * org.freedesktop.login1.Manager.UnlockSession, falling back to
+   * `loginctl unlock-session <id>`. Returns true when logind accepted it.
+   */
+  bool unlock_attached_user_session(uid_t account_uid);
+
+  /** Owner of the attested active seat0 user desktop, or no value at the greeter. */
+  std::optional<uid_t> attached_desktop_owner();
+
+  /**
+   * End the attested active seat0 user desktop through logind TerminateSession.
+   *
+   * Refuses unless that desktop is still owned by `owner_uid`. The display
+   * manager then returns to the greeter and the supervisor replaces the worker.
+   */
+  bool terminate_attached_user_session(uid_t owner_uid);
+
+  /**
    * Lock the attached user session after a grace period unless streaming resumed.
    *
    * A later call supersedes any pending request. The lock is skipped when
