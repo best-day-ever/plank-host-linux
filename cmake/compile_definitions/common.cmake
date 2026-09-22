@@ -193,6 +193,7 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/plank_arrangement.h"
         "${CMAKE_SOURCE_DIR}/src/plank_arrangement_json.h"
         "${CMAKE_SOURCE_DIR}/src/plank_topology.h"
+        "${CMAKE_SOURCE_DIR}/src/plank_topology_json.h"
         "${CMAKE_SOURCE_DIR}/src/video.cpp"
         "${CMAKE_SOURCE_DIR}/src/video.h"
         "${CMAKE_SOURCE_DIR}/src/video_colorspace.cpp"

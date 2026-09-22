@@ -1,0 +1,129 @@
+{
+  "schema_version": 13,
+  "feature_flags": 247988223,
+  "generation": "x11:hybrid-macbook-and-uhd",
+  "layout": {
+    "kind": "physical",
+    "virtual": false,
+    "virtual_modes": [],
+    "output_count": 2,
+    "startup_kind": "physical",
+    "allowed_kinds": [
+      "physical",
+      "single",
+      "dual-horizontal"
+    ],
+    "startup_policy": "hybrid",
+    "arrangement": {
+      "request": "1:3024x1890+0+270:auto,3840x2160+3024+0:auto",
+      "transition": {
+        "state": "applied",
+        "reason": ""
+      }
+    }
+  },
+  "desktop": {
+    "x": 0,
+    "y": 0,
+    "width": 6864,
+    "height": 2160
+  },
+  "outputs": [
+    {
+      "id": "x11:DP-0",
+      "name": "DP-0",
+      "x": 0,
+      "y": 270,
+      "width": 3024,
+      "height": 1890,
+      "rotation": 0,
+      "refresh_millihz": 60000,
+      "primary": true,
+      "virtual": false,
+      "configured_mode": "",
+      "backing": "virtual",
+      "arrangement_index": 0,
+      "source_rect": {
+        "x": 0,
+        "y": 270,
+        "width": 3024,
+        "height": 1890
+      }
+    },
+    {
+      "id": "x11:HDMI-0",
+      "name": "HDMI-0",
+      "x": 3024,
+      "y": 0,
+      "width": 3840,
+      "height": 2160,
+      "rotation": 0,
+      "refresh_millihz": 60000,
+      "primary": false,
+      "virtual": false,
+      "configured_mode": "",
+      "backing": "physical",
+      "arrangement_index": 1,
+      "source_rect": {
+        "x": 3024,
+        "y": 0,
+        "width": 3840,
+        "height": 2160
+      }
+    }
+  ],
+  "display_capabilities": {
+    "version": 1,
+    "fingerprint": "fleet-hybrid-v1",
+    "max_outputs": 4,
+    "virtual_heads": 3,
+    "max_canvas": {
+      "width": 8192,
+      "height": 8192
+    },
+    "packed_capture": false,
+    "output_limits": {
+      "min_width": 640,
+      "min_height": 480,
+      "max_width": 8192,
+      "max_height": 8192,
+      "max_pixels": 33177600
+    },
+    "refresh_millihz": [
+      60000
+    ],
+    "physical_outputs": [
+      {
+        "id": "x11:HDMI-0",
+        "name": "HDMI-0",
+        "display_name": "MEC-O-3-H",
+        "edid_sha256": "0d7da54a596598e1b3611d1c138880021ff7ca1e827309a7658dbe7b4b6b1dd5",
+        "preferred": "3840x2160",
+        "modes": [
+          "4096x2160",
+          "3840x2160",
+          "1920x1080",
+          "1280x1024",
+          "1280x720",
+          "1024x768",
+          "720x480",
+          "640x480"
+        ]
+      }
+    ],
+    "encoding_limits": {
+      "hevc-10-444-nvenc": {
+        "width": 8192,
+        "height": 8192,
+        "qualified_width": 7680,
+        "qualified_height": 4320
+      },
+      "h264-8-444-nvenc": {
+        "width": 4096,
+        "height": 4096,
+        "qualified_width": 4096,
+        "qualified_height": 2160
+      }
+    }
+  }
+}
