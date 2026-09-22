@@ -287,6 +287,7 @@ namespace config {
     bool mdns_discovery;  ///< Advertise this PLANK host with mDNS.
     std::string startup_layout;  ///< PLANK physical or virtual display policy applied before the display manager starts.
     bool lock_on_disconnect;  ///< Lock the captured user desktop when the last authenticated stream ends.
+    std::string file_clipboard;  ///< Maximum file clipboard direction policy; off by default.
     bool desktop_handoff;  ///< Sign PLANK logins into GDM, unlock the owner's desktop, offer sign-out of an idle owner.
   };
 

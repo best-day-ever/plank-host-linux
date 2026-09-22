@@ -112,7 +112,13 @@ namespace nvhttp {
     plank::topology::feature_fixed_transport_mtu;
   constexpr auto plank_feature_session_takeover =
     plank::topology::feature_session_takeover;
-  constexpr auto plank_topology_features = plank::topology::feature_flags;
+  std::uint32_t plank_topology_features() {
+    auto features = plank::topology::feature_flags;
+    if (config::sunshine.file_clipboard != "off"sv) {
+      features |= plank::topology::feature_platform_file_clipboard;
+    }
+    return features;
+  }
 
 #ifdef PLANK_TRANSPORT
   std::string plank_transport_last_error(PlankTransportNativeEndpoint *endpoint) {
@@ -191,6 +197,12 @@ namespace nvhttp {
     // request after this listener starts. Media does not begin until that
     // request updates the shared encoder/transport rate policy.
     endpoint_config.initial_video_bitrate_kbps = 0;
+    endpoint_config.file_clipboard_enabled =
+      (session.plank_feature_flags &
+       (plank::topology::feature_clipboard_sync |
+        plank::topology::feature_file_clipboard)) ==
+      (plank::topology::feature_clipboard_sync |
+       plank::topology::feature_file_clipboard);
     endpoint_config.bind_address = bind_address.c_str();
     endpoint_config.certificate_path = config::nvhttp.cert.c_str();
     endpoint_config.private_key_path = config::nvhttp.pkey.c_str();
@@ -225,6 +237,9 @@ namespace nvhttp {
     tree.put("root.PlankTransportCertificateSha256", *fingerprint);
     tree.put("root.PlankTransportToken", token);
     tree.put("root.PlankQuicUdpPayloadMtu", session.quic_udp_payload_mtu);
+    tree.put("root.PlankFileClipboardMode",
+             endpoint_config.file_clipboard_enabled ?
+               session.file_clipboard_mode : "off");
     OPENSSL_cleanse(token.data(), token.size());
     BOOST_LOG(info) << "Experimental plank_transport listener started on UDP port "sv << port
                     << " (idle timeout "sv << idle_ms << " ms, fixed QUIC UDP payload "sv
@@ -761,7 +776,7 @@ namespace nvhttp {
     allowed_layouts.push_back("dual-horizontal");
     nlohmann::json body {
       {"schema_version", plank_topology_version},
-      {"feature_flags", plank_topology_features},
+      {"feature_flags", plank_topology_features()},
       {"layout", {
         {"kind", live_layout.kind},
         {"virtual", live_layout.virtual_layout},
@@ -1233,7 +1248,13 @@ namespace nvhttp {
     launch_session->plank_protocol_version =
       static_cast<std::uint32_t>(util::from_view(get_arg(args, "plankProtocolVersion", "0")));
     launch_session->plank_feature_flags =
-      static_cast<std::uint32_t>(util::from_view(get_arg(args, "plankFeatureFlags", "0")));
+      static_cast<std::uint32_t>(util::from_view(get_arg(args, "plankFeatureFlags", "0"))) &
+      plank_topology_features();
+    const auto file_features = plank::topology::feature_clipboard_sync |
+                               plank::topology::feature_file_clipboard;
+    launch_session->file_clipboard_mode =
+      (launch_session->plank_feature_flags & file_features) == file_features ?
+        config::sunshine.file_clipboard : "off";
 
     return launch_session;
   }
@@ -1408,7 +1429,9 @@ namespace nvhttp {
     tree.put("root.PlankHostVersion", PROJECT_VERSION);
     tree.put("root.PlankWorkerInstance", worker_instance_id());
     tree.put("root.PlankTopologyVersion", plank_topology_version);
-    tree.put("root.PlankFeatureFlags", plank_topology_features);
+    tree.put("root.PlankFeatureFlags",
+             authorization_status ? plank_topology_features() :
+                                    plank::topology::feature_flags);
     tree.put("root.PlankCaptureSources", "nvfbc,x11-native10");
     tree.put("root.PlankEncoderBackends", "software-cuda,nvenc-direct");
     tree.put("root.PlankEncodingModes", get_plank_encoding_modes());

@@ -32,6 +32,15 @@ namespace plank::topology {
   constexpr std::uint32_t feature_worker_instance = 0x40000;
   // 0x80000-0x200000 are the macOS host's fixed-capture preview bits.
   constexpr std::uint32_t feature_desktop_sign_out = 0x400000;
+  constexpr std::uint32_t feature_clipboard_sync = 0x800000;
+  constexpr std::uint32_t feature_file_clipboard = 0x1000000;
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
+  constexpr std::uint32_t feature_platform_clipboard_sync = feature_clipboard_sync;
+  constexpr std::uint32_t feature_platform_file_clipboard = feature_file_clipboard;
+#else
+  constexpr std::uint32_t feature_platform_clipboard_sync = 0;
+  constexpr std::uint32_t feature_platform_file_clipboard = 0;
+#endif
   constexpr std::uint32_t feature_flags =
     feature_output_topology |
     feature_selected_output |
@@ -52,7 +61,8 @@ namespace plank::topology {
     feature_desktop_handoff_notice |
     feature_authenticated_desktop_stage |
     feature_worker_instance |
-    feature_desktop_sign_out;
+    feature_desktop_sign_out |
+    feature_platform_clipboard_sync;
 
   constexpr bool valid_quic_udp_payload_mtu(std::uint32_t mtu) {
     return mtu >= 1200 && mtu <= 65527;
