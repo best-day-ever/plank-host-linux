@@ -432,6 +432,7 @@ namespace session_stream {
     result.response = {
       {"video_format", *negotiated_video_format},
       {"host_feature_flags", host_feature_flags},
+      {"file_clipboard_mode", launch_session->file_clipboard_mode},
       {"reference_frame_invalidation",
        video::last_encoder_probe_supported_ref_frames_invalidation ? 1 : 0},
       {"audio", {

@@ -862,6 +862,7 @@ namespace config {
     false,  // PLANK mDNS advertisement
     "physical",  // PLANK startup display policy
     false,  // PLANK lock the captured desktop after the last stream
+    "off",  // PLANK file clipboard policy
     false,  // PLANK greeter sign-in, owner unlock and idle-owner sign-out
   };
 
@@ -1591,6 +1592,9 @@ namespace config {
 
     bool_f(vars, "mdns_discovery", sunshine.mdns_discovery);
     string_restricted_f(vars, "startup_layout", sunshine.startup_layout, {"physical"sv, "virtual"sv});
+    string_restricted_f(vars, "file_clipboard", sunshine.file_clipboard,
+                        {"off"sv, "client-to-host"sv, "host-to-client"sv,
+                         "bidirectional"sv});
 
     int port = sunshine.port;
     int_between_f(vars, "port"s, port, {1024 - nvhttp::PORT_HTTPS, 65535});

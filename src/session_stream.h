@@ -41,6 +41,7 @@ namespace session_stream {
     bool span_desktop {};  ///< Whether the complete virtual desktop is captured for this session.
     std::uint32_t plank_protocol_version {};  ///< Selected PLANK extension version.
     std::uint32_t plank_feature_flags {};  ///< Client-supported PLANK feature bits.
+    std::string file_clipboard_mode {"off"};  ///< Immutable effective file clipboard direction policy.
     bool plank_display_lease {};  ///< Whether this stream owns a temporary physical-display layout.
     uid_t plank_display_lease_uid {};  ///< PAM account that owns the temporary display lease.
 

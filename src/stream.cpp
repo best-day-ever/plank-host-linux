@@ -6,8 +6,12 @@
 // standard includes
 #include <array>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <limits>
+#include <mutex>
+#include <optional>
+#include <utility>
 
 // lib includes
 extern "C" {
@@ -18,6 +22,7 @@ extern "C" {
 
 // local includes
 #include "config.h"
+#include "clipboard_protocol.h"
 #include "display_device.h"
 #include "globals.h"
 #include "input.h"
@@ -29,6 +34,7 @@ extern "C" {
 #include "session/session_context.h"
 #include "stream.h"
 #include "plank_bitrate.h"
+#include "plank_topology.h"
 #include "sync.h"
 #include "thread_safe.h"
 #include "utility.h"
@@ -43,6 +49,8 @@ extern "C" {
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
   #include "platform/linux/graphics.h"
   #include "platform/linux/x11grab.h"
+  #include "platform/linux/x11_clipboard.h"
+  #include "file_clipboard.h"
 #endif
 
 #ifdef PLANK_TRANSPORT
@@ -52,6 +60,16 @@ constexpr int PLANK_TRANSPORT_CONTROL_DRAIN_LIMIT = 16;
 using namespace std::literals;
 
 namespace stream {
+
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11) && defined(PLANK_TRANSPORT)
+  struct file_clipboard_publish_t {
+    std::vector<std::string> uris;
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool complete = false;
+    bool success = false;
+  };
+#endif
 
   static inline void while_starting_do_nothing(std::atomic<session::state_e> &state) {
     while (state.load(std::memory_order_acquire) == session::state_e::STARTING) {
@@ -83,7 +101,23 @@ namespace stream {
     std::jthread audioThread;  ///< Audio thread.
     std::jthread videoThread;  ///< Video thread.
     std::jthread cursorThread;  ///< XFixes cursor-shape monitor for local-cursor clients.
+    std::jthread clipboardThread;  ///< X11 CLIPBOARD monitor for clipboard-sync clients.
+    std::jthread fileClipboardThread;  ///< Pull-driven file clipboard receiver.
     std::jthread inputThread;  ///< Native KyProto input receiver for PLANK sessions.
+    std::uint32_t plank_feature_flags {};  ///< Client-supported PLANK feature bits for this session.
+    std::string file_clipboard_mode {"off"};  ///< Immutable negotiated direction policy.
+    clipboard::receiver_t client_clipboard_receiver;
+    std::uint64_t outbound_clipboard_generation = 0;
+    clipboard::inbox_t client_clipboard_inbox;
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
+    std::shared_ptr<platf::x11::clipboard_t> clipboard;  ///< Shared X11 clipboard bridge for this session.
+#ifdef PLANK_TRANSPORT
+    std::mutex file_clipboard_publish_mutex;
+    std::shared_ptr<file_clipboard_publish_t> file_clipboard_publish;
+    std::mutex file_clipboard_source_mutex;
+    std::optional<std::vector<std::string>> file_clipboard_source;
+#endif
+#endif
 
     safe::shared_t<broadcast_ctx_t>::ptr_t broadcast_ref;  ///< Shared broadcast context retained while the session is active.
 
@@ -101,6 +135,9 @@ namespace stream {
       raw_hid::feedback_queue_t raw_hid_feedback_queue;
       safe::mail_raw_t::queue_t<std::vector<std::vector<std::uint8_t>>> cursor_shape_queue;
       safe::mail_raw_t::event_t<PLANK_CURSOR_POSITION_WIRE_MESSAGE> cursor_position_event;
+      safe::mail_raw_t::event_t<std::vector<std::vector<std::uint8_t>>> clipboard_offer_queue; ///< Latest local offer only.
+      std::vector<std::vector<std::uint8_t>> clipboard_pending; ///< Control-thread-owned in-flight offer.
+      std::size_t clipboard_next = 0; ///< First chunk not yet accepted by transport.
     } control;  ///< Native Host-to-Client event queues.
 
     std::string input_session_id;  ///< Internal desktop key retaining input devices across resume.
@@ -185,7 +222,7 @@ namespace stream {
     );
     return plank_transport_native_data_send(
       endpoint, packet.data(), packet_size
-    ) == PLANK_TRANSPORT_OK ? 0 : -1;
+    );
   }
 
   int send_host_termination(session_t *session, const std::uint32_t reason) {
@@ -307,10 +344,120 @@ namespace stream {
 #endif
   }
 
+  bool clipboard_sync_enabled(const session_t *session) {
+    return session != nullptr &&
+      (session->plank_feature_flags & plank::topology::feature_clipboard_sync) != 0;
+  }
+
+  bool clipboard_backend_available(const session_t *session) {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
+    return session != nullptr && session->clipboard != nullptr;
+#else
+    (void) session;
+    return false;
+#endif
+  }
+
   template<typename T>
   void write_cursor_little(T &destination, T value) {
     value = util::endian::little(value);
     std::memcpy(&destination, &value, sizeof(value));
+  }
+
+  int send_clipboard_offer_control(session_t *session, const std::vector<std::uint8_t> &frame) {
+    if (frame.size() < sizeof(PLANK_CLIPBOARD_WIRE_HEADER) ||
+        frame.size() > sizeof(PLANK_CLIPBOARD_WIRE_HEADER) + PLANK_CLIPBOARD_MAX_EVENT_CHUNK_SIZE) {
+      return -1;
+    }
+#ifdef PLANK_TRANSPORT
+    if (!session->plank_transport_endpoint) {
+      return -1;
+    }
+    return send_plank_transport_event(
+      session, PLANK_TRANSPORT_EVENT_CLIPBOARD_OFFER, frame.data(), frame.size()
+    );
+#else
+    (void) session;
+    return -1;
+#endif
+  }
+
+  bool queue_clipboard_offer(session_t *session, const std::string &text) {
+    if (text.empty() || text.size() > PLANK_CLIPBOARD_MAX_TEXT_SIZE ||
+        !clipboard::valid_utf8(
+          reinterpret_cast<const std::uint8_t *>(text.data()), text.size())) {
+      return false;
+    }
+    const auto total_size = static_cast<std::uint32_t>(text.size());
+    const auto generation = ++session->outbound_clipboard_generation;
+    std::vector<std::vector<std::uint8_t>> frames;
+    for (std::uint32_t offset = 0; offset < total_size;) {
+      const auto chunk_size = std::min<std::uint32_t>(
+        PLANK_CLIPBOARD_MAX_EVENT_CHUNK_SIZE, total_size - offset
+      );
+      std::vector<std::uint8_t> frame(sizeof(PLANK_CLIPBOARD_WIRE_HEADER) + chunk_size);
+      PLANK_CLIPBOARD_WIRE_HEADER header {};
+      write_cursor_little(header.magic, static_cast<std::uint32_t>(PLANK_CLIPBOARD_WIRE_MAGIC));
+      write_cursor_little(header.version, static_cast<std::uint16_t>(PLANK_CLIPBOARD_WIRE_VERSION));
+      header.reserved = 0;
+      std::uint32_t flags = 0;
+      if (offset == 0) {
+        flags |= PLANK_CLIPBOARD_FLAG_FIRST_CHUNK;
+      }
+      if (offset + chunk_size == total_size) {
+        flags |= PLANK_CLIPBOARD_FLAG_LAST_CHUNK;
+      }
+      write_cursor_little(header.flags, flags);
+      write_cursor_little(header.generation, generation);
+      write_cursor_little(header.totalSize, total_size);
+      write_cursor_little(header.chunkOffset, offset);
+      write_cursor_little(header.chunkSize, chunk_size);
+      std::memcpy(frame.data(), &header, sizeof(header));
+      std::memcpy(frame.data() + sizeof(header), text.data() + offset, chunk_size);
+      frames.push_back(std::move(frame));
+      offset += chunk_size;
+    }
+    session->control.clipboard_offer_queue->raise(std::move(frames));
+    BOOST_LOG(info) << "Queued PLANK clipboard offer generation "sv << generation
+                    << " ("sv << text.size() << " bytes)"sv;
+    return true;
+  }
+
+  bool queue_client_clipboard_offer(session_t *session,
+                                    std::vector<std::uint8_t> text) {
+    if (!clipboard::valid_utf8(text.data(), text.size())) {
+      return false;
+    }
+    const auto text_size = text.size();
+    session->client_clipboard_inbox.store(std::move(text));
+    BOOST_LOG(info) << "Queued PLANK clipboard offer from client ("sv
+                    << text_size << " bytes)"sv;
+    return true;
+  }
+
+  bool handle_client_clipboard_offer(session_t *session,
+                                     const std::uint8_t *payload,
+                                     std::size_t payload_size) {
+    if (!clipboard_sync_enabled(session) || !clipboard_backend_available(session) ||
+        payload == nullptr ||
+        payload_size < sizeof(PLANK_CLIPBOARD_WIRE_HEADER) ||
+        payload_size > sizeof(PLANK_CLIPBOARD_WIRE_HEADER) + PLANK_CLIPBOARD_MAX_INPUT_CHUNK_SIZE) {
+      return false;
+    }
+
+    auto result = session->client_clipboard_receiver.append(
+      payload, payload_size, PLANK_CLIPBOARD_MAX_INPUT_CHUNK_SIZE
+    );
+    switch (result.status) {
+      case clipboard::receive_status_e::ignored:
+      case clipboard::receive_status_e::incomplete:
+        return true;
+      case clipboard::receive_status_e::complete:
+        return queue_client_clipboard_offer(session, std::move(result.text));
+      case clipboard::receive_status_e::rejected:
+        return false;
+    }
+    return false;
   }
 
   bool queue_cursor_shape(session_t *session, egl::cursor_t &image,
@@ -483,6 +630,108 @@ namespace stream {
 #else
     BOOST_LOG(error) << "PLANK local cursor transport requires the Linux X11 host backend"sv;
     session::stop(*session);
+#endif
+  }
+
+  void localClipboardThread(std::stop_token stop_token, session_t *session) {
+    platf::set_thread_name("sc::clipboard");
+
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
+    if (!clipboard_sync_enabled(session) || !session->clipboard) {
+      return;
+    }
+
+    BOOST_LOG(info) << "PLANK clipboard sync watching X11 CLIPBOARD"sv;
+    while (!stop_token.stop_requested()) {
+#ifdef PLANK_TRANSPORT
+      std::shared_ptr<file_clipboard_publish_t> file_publish;
+      {
+        std::lock_guard<std::mutex> lock(session->file_clipboard_publish_mutex);
+        file_publish = std::exchange(session->file_clipboard_publish, nullptr);
+      }
+      if (file_publish) {
+        const bool success = session->clipboard->set_files(file_publish->uris);
+        {
+          std::lock_guard<std::mutex> lock(file_publish->mutex);
+          file_publish->success = success;
+          file_publish->complete = true;
+        }
+        file_publish->changed.notify_all();
+        if (!success) {
+          BOOST_LOG(error) << "Unable to publish a PLANK file clipboard to X11"sv;
+        }
+      }
+#endif
+      if (auto pending = session->client_clipboard_inbox.take()) {
+        if (!session->clipboard->set_text(*pending)) {
+          BOOST_LOG(error) << "Unable to apply a PLANK clipboard offer to X11"sv;
+          session::stop(*session);
+          return;
+        }
+        BOOST_LOG(info) << "Applied PLANK clipboard offer from client ("sv
+                        << pending->size() << " bytes)"sv;
+      }
+      platf::x11::clipboard_content_t content;
+      if (session->clipboard->poll_change(content)) {
+        if (content.kind == platf::x11::clipboard_content_t::kind_e::text &&
+            !queue_clipboard_offer(session, content.text)) {
+          BOOST_LOG(warning) << "Unable to queue a PLANK clipboard offer"sv;
+        }
+#ifdef PLANK_TRANSPORT
+        if (content.kind == platf::x11::clipboard_content_t::kind_e::files &&
+            file_clipboard::host_to_client_allowed(session->file_clipboard_mode)) {
+          std::lock_guard<std::mutex> lock(session->file_clipboard_source_mutex);
+          session->file_clipboard_source = std::move(content.file_uris);
+        }
+#endif
+      }
+      if (!session->clipboard->wait_for_activity()) {
+        BOOST_LOG(error) << "Lost the X11 clipboard connection"sv;
+        session::stop(*session);
+        return;
+      }
+    }
+#else
+    (void) session;
+#endif
+  }
+
+  void localFileClipboardThread(std::stop_token stop_token, session_t *session) {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11) && defined(PLANK_TRANSPORT)
+    platf::set_thread_name("sc::fileClipboard");
+    if (!session->plank_transport_endpoint || !session->clipboard) return;
+    auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(
+      session->plank_transport_endpoint.get()
+    );
+    file_clipboard::worker(
+      stop_token, endpoint,
+      [session, stop_token](const std::vector<std::string> &uris) {
+        auto request = std::make_shared<file_clipboard_publish_t>();
+        request->uris = uris;
+        {
+          std::lock_guard<std::mutex> lock(session->file_clipboard_publish_mutex);
+          if (session->file_clipboard_publish) return false;
+          session->file_clipboard_publish = request;
+        }
+        while (!stop_token.stop_requested()) {
+          std::unique_lock<std::mutex> lock(request->mutex);
+          if (request->changed.wait_for(lock, 100ms, [&request] {
+                return request->complete;
+              })) return request->success;
+        }
+        return false;
+      },
+      [session]() -> std::optional<std::vector<std::string>> {
+        std::lock_guard<std::mutex> lock(session->file_clipboard_source_mutex);
+        auto result = std::move(session->file_clipboard_source);
+        session->file_clipboard_source.reset();
+        return result;
+      },
+      session->file_clipboard_mode
+    );
+#else
+    (void) stop_token;
+    (void) session;
 #endif
   }
 
@@ -662,6 +911,18 @@ namespace stream {
             session->cursorThread = std::jthread(localCursorThread, session);
           }
 
+          if (clipboard_sync_enabled(session) && !session->clipboardThread.joinable()) {
+            session->clipboardThread = std::jthread(localClipboardThread, session);
+          }
+
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11) && defined(PLANK_TRANSPORT)
+          if ((file_clipboard::client_to_host_allowed(session->file_clipboard_mode) ||
+               file_clipboard::host_to_client_allowed(session->file_clipboard_mode)) &&
+              !session->fileClipboardThread.joinable()) {
+            session->fileClipboardThread = std::jthread(localFileClipboardThread, session);
+          }
+#endif
+
           auto &hdr_queue = session->control.hdr_queue;
           while (hdr_queue->peek()) {
             send_hdr_mode(session, hdr_queue->pop());
@@ -689,6 +950,27 @@ namespace stream {
             if (send_cursor_position_control(session, *position)) {
               BOOST_LOG(debug) << "Unable to send a PLANK cursor position sample"sv;
             }
+          }
+
+          auto &control = session->control;
+          if (auto frames = control.clipboard_offer_queue->try_pop()) {
+            control.clipboard_pending = std::move(*frames);
+            control.clipboard_next = 0;
+          }
+          // Bounded fair drain. Queue pressure is not a disconnected peer;
+          // retain precisely the unsent chunk instead of restarting a copy.
+          for (unsigned count = 0; count < 2 && control.clipboard_next < control.clipboard_pending.size(); ++count) {
+            const auto result = send_clipboard_offer_control(session, control.clipboard_pending[control.clipboard_next]);
+            if (result == PLANK_TRANSPORT_TIMEOUT) break;
+            if (result != PLANK_TRANSPORT_OK) {
+              BOOST_LOG(warning) << "Unable to send a PLANK clipboard offer chunk"sv;
+              session::stop(*session);
+              break;
+            }
+            ++control.clipboard_next;
+          }
+          if (control.clipboard_next == control.clipboard_pending.size()) {
+            control.clipboard_pending.clear(); control.clipboard_next = 0;
           }
 
           ++pos;
@@ -1001,8 +1283,22 @@ namespace stream {
         }
         return;
       }
-      if (payload_size > payload.size() ||
-          !input::native(session->input, type, payload.data(), payload_size)) {
+      if (payload_size > payload.size()) {
+        BOOST_LOG(error) << "Rejected oversized KyProto native input message: type="sv
+                         << static_cast<unsigned>(type) << ", size="sv << payload_size;
+        session::stop(*session);
+        return;
+      }
+      if (type == PLANK_TRANSPORT_INPUT_CLIPBOARD_OFFER) {
+        if (!handle_client_clipboard_offer(
+              session, payload.data(), payload_size)) {
+          BOOST_LOG(error) << "Rejected malformed PLANK clipboard offer from client"sv;
+          session::stop(*session);
+          return;
+        }
+        continue;
+      }
+      if (!input::native(session->input, type, payload.data(), payload_size)) {
         BOOST_LOG(error) << "Rejected malformed KyProto native input message: type="sv
                          << static_cast<unsigned>(type) << ", size="sv << payload_size;
         session::stop(*session);
@@ -1037,6 +1333,8 @@ namespace stream {
 
       session.shutdown_event->raise(true);
       session.cursorThread.request_stop();
+      session.clipboardThread.request_stop();
+      session.fileClipboardThread.request_stop();
       session.inputThread.request_stop();
     }
 
@@ -1090,6 +1388,14 @@ namespace stream {
       BOOST_LOG(debug) << "Waiting for local cursor monitor to end..."sv;
       if (session.cursorThread.joinable()) {
         session.cursorThread.join();
+      }
+      BOOST_LOG(debug) << "Waiting for clipboard monitor to end..."sv;
+      if (session.clipboardThread.joinable()) {
+        session.clipboardThread.join();
+      }
+      BOOST_LOG(debug) << "Waiting for file clipboard worker to end..."sv;
+      if (session.fileClipboardThread.joinable()) {
+        session.fileClipboardThread.join();
       }
       BOOST_LOG(debug) << "Waiting for native input to end..."sv;
       if (session.inputThread.joinable()) {
@@ -1223,6 +1529,8 @@ namespace stream {
         launch_session.plank_display_lease_uid;
       session->authentication_session = launch_session.authentication_session;
       session->plank_transport_endpoint = launch_session.plank_transport_endpoint;
+      session->plank_feature_flags = launch_session.plank_feature_flags;
+      session->file_clipboard_mode = launch_session.file_clipboard_mode;
 
       if (session->plank_display_lease &&
           plank::session::activate_display_lease(
@@ -1239,6 +1547,17 @@ namespace stream {
         mail->queue<std::vector<std::vector<std::uint8_t>>>(mail::cursor_shape);
       session->control.cursor_position_event =
         mail->event<PLANK_CURSOR_POSITION_WIRE_MESSAGE>(mail::cursor_position);
+      session->control.clipboard_offer_queue =
+        mail->event<std::vector<std::vector<std::uint8_t>>>(mail::clipboard_offer);
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
+      if ((launch_session.plank_feature_flags & plank::topology::feature_clipboard_sync) != 0) {
+        if (auto clipboard = platf::x11::clipboard_t::make()) {
+          session->clipboard = std::make_shared<platf::x11::clipboard_t>(std::move(*clipboard));
+        } else {
+          BOOST_LOG(error) << "Unable to initialize X11 clipboard bridge for PLANK sync"sv;
+        }
+      }
+#endif
       session->video.idr_events = mail->event<bool>(mail::idr);
       session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
       session->audio.timestamp = 0;
