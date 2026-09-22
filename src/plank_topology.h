@@ -32,6 +32,10 @@ namespace plank::topology {
   constexpr std::uint32_t feature_worker_instance = 0x40000;
   // 0x80000-0x200000 are the macOS host's fixed-capture preview bits.
   constexpr std::uint32_t feature_desktop_sign_out = 0x400000;
+  // Virtual modes matching a notched Apple laptop's fullscreen viewport
+  // (the panel below the camera housing). A client may request them only
+  // after negotiating this bit, so older clients never see them offered.
+  constexpr std::uint32_t feature_notch_safe_laptop_modes = 0x1000000;
   constexpr std::uint32_t feature_flags =
     feature_output_topology |
     feature_selected_output |
@@ -52,7 +56,8 @@ namespace plank::topology {
     feature_desktop_handoff_notice |
     feature_authenticated_desktop_stage |
     feature_worker_instance |
-    feature_desktop_sign_out;
+    feature_desktop_sign_out |
+    feature_notch_safe_laptop_modes;
 
   constexpr bool valid_quic_udp_payload_mtu(std::uint32_t mtu) {
     return mtu >= 1200 && mtu <= 65527;
@@ -78,6 +83,7 @@ namespace plank::topology {
     if (mode == "2560x1440") return {2560, 1440};
     if (mode == "2560x1600") return {2560, 1600};
     if (mode == "2560x2160") return {2560, 2160};
+    if (mode == "3024x1890") return {3024, 1890};
     if (mode == "3440x1440") return {3440, 1440};
     if (mode == "3840x1600") return {3840, 1600};
     if (mode == "3840x2160") return {3840, 2160};
@@ -103,6 +109,20 @@ namespace plank::topology {
   constexpr bool valid_virtual_mode(std::string_view mode) {
     const auto size = virtual_mode_size(mode);
     return size.width > 0 && size.height > 0;
+  }
+
+  // 3024x1890: 14-inch MacBook Pro in its default scaling, fullscreen.
+  constexpr bool notch_safe_laptop_mode(std::string_view mode) {
+    return mode == "3024x1890";
+  }
+
+  constexpr bool virtual_modes_negotiated(
+    std::uint32_t negotiated_features,
+    std::string_view mode_1,
+    std::string_view mode_2
+  ) {
+    return (negotiated_features & feature_notch_safe_laptop_modes) != 0 ||
+           (!notch_safe_laptop_mode(mode_1) && !notch_safe_laptop_mode(mode_2));
   }
 
   constexpr bool valid_encoding_tuple(
