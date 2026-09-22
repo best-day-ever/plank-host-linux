@@ -259,7 +259,8 @@ namespace plank::auth {
    * @return Wire frame, or an empty vector when validation fails.
    */
   inline std::vector<std::uint8_t> encode_message(const message_t &message) {
-    if (message.transaction_id == 0 || message.payload.size() > maximum_payload_size) {
+    const auto payload_size = message.payload.size();
+    if (message.transaction_id == 0 || payload_size > maximum_payload_size) {
       return {};
     }
     wire_header_t header {
@@ -267,12 +268,12 @@ namespace plank::auth {
       to_little(wire_version),
       to_little(static_cast<std::uint16_t>(message.type)),
       to_little(message.transaction_id),
-      to_little(static_cast<std::uint32_t>(message.payload.size())),
+      to_little(static_cast<std::uint32_t>(payload_size)),
     };
-    std::vector<std::uint8_t> frame(sizeof(header) + message.payload.size());
+    std::vector<std::uint8_t> frame(sizeof(header) + payload_size);
     std::memcpy(frame.data(), &header, sizeof(header));
-    if (!message.payload.empty()) {
-      std::memcpy(frame.data() + sizeof(header), message.payload.data(), message.payload.size());
+    if (payload_size != 0) {
+      std::memcpy(frame.data() + sizeof(header), message.payload.data(), payload_size);
     }
     return frame;
   }
