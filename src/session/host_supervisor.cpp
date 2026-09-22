@@ -1081,7 +1081,7 @@ namespace {
     restore_report_t report;
     const auto account = account_for_uid(session.uid);
     if (!account) {
-      record.clear();
+      // Keep the recovery record if the account lookup failed temporarily.
       return report;
     }
     std::vector<std::string> visibility;
@@ -1114,8 +1114,8 @@ namespace {
     if (!report.visibility_exact) {
       std::cerr << "ERROR: PLANK output visibility (non-desktop) did not return to its pre-session values\n";
     }
-    record.clear();
-    if (report.metamode_exact) {
+    if (report.metamode_exact && report.visibility_exact) {
+      record.clear();
       report.recovered = true;
       std::clog << "Restored the exact pre-session NVIDIA MetaMode\n";
       return report;
@@ -1123,7 +1123,16 @@ namespace {
     const auto fallback = inventory ? plank::display::rest_metamode(*inventory) :
                                       plank::display::safe_physical_metamode(lease.snapshot);
     report.fallback = true;
-    report.recovered = !fallback.empty() && assign_metamode(fallback, *account, environment);
+    const auto physical_randr = inventory && !inventory->physical.empty() ?
+      inventory->physical.front().device.randr :
+      (lease.outputs.empty() ? std::string {} : lease.outputs.front().randr);
+    const bool visible = !physical_randr.empty() && run_bounded_user_command(
+      xrandr_path, {"--output", physical_randr, "--set", "non-desktop", "0"},
+      lease_command_timeout, *account, environment
+    );
+    report.recovered = visible && !fallback.empty() && assign_metamode(fallback, *account, environment);
+    // A safe physical fallback prevents a black screen, but it is not the
+    // user's pre-lease layout. Retain the record for a later exact recovery.
     if (const auto restored = capture_physical_snapshot(*account, environment)) {
       report.restored = restored->assignment;
     }

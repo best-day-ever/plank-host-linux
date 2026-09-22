@@ -91,6 +91,7 @@ namespace video {
      * capture after its copy (never set for a stream).
      */
     std::function<void(platf::img_t &)> captured_image_hook;
+    bool probe_synchronous_teardown {};  ///< Capture probe waits for NVENC destruction before process exit.
   };
 
   namespace amf {

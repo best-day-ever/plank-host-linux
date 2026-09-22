@@ -1606,11 +1606,16 @@ namespace cuda {
           return 0;
         }
 
-        stop();
-
         NVFBC_DESTROY_HANDLE_PARAMS params {NVFBC_DESTROY_HANDLE_PARAMS_VER};
 
         ctx_t ctx {handle};
+        // DestroyCaptureSession requires the NvFBC context on this thread.
+        // capture() has released its binding before calling reset(), so bind
+        // before stopping the session as well as before destroying the handle.
+        if (!ctx.bound) {
+          return -1;
+        }
+        stop();
         if (func.nvFBCDestroyHandle(handle, &params)) {
           BOOST_LOG(error) << "Couldn't destroy session handle: "sv << func.nvFBCGetLastErrorStr(handle);
         } else {

@@ -2956,8 +2956,12 @@ namespace video {
     // to restart encoding as soon as possible. For cases where the NVENC driver
     // hang occurs, this thread may probably never exit, but it will allow
     // streaming to continue without requiring a full restart of Sunshine.
-    auto fail_guard = util::fail_guard([&encoder, &session] {
-      if (encoder.flags & ASYNC_TEARDOWN) {
+    auto fail_guard = util::fail_guard([&encoder, &session, &config] {
+      if (config.probe_synchronous_teardown) {
+        // The probe is a short-lived process. A detached NVENC destructor can
+        // still be using the driver when main exits after capture() returns.
+        session.reset();
+      } else if (encoder.flags & ASYNC_TEARDOWN) {
         std::jthread encoder_teardown_thread {[session = std::move(session)]() mutable {
           BOOST_LOG(info) << "Starting async encoder teardown";
           session.reset();
@@ -4518,6 +4522,7 @@ namespace video {
     if (frames <= 0 || frames > 3600) return finish(2, "frames must be 1 to 3600");
     auto config = probe_config_for_mode(encoding_mode);
     if (!config) return finish(2, "not an NVENC encoding mode");
+    config->probe_synchronous_teardown = true;
     if (probe_encoders() || !select_encoder_backend_for_session("nvenc-direct"sv) ||
         !encoding_mode_available(encoding_mode)) {
       return finish(3, "the NVENC encoding mode is unavailable on this host");
