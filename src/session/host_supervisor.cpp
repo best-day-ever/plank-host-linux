@@ -1091,14 +1091,14 @@ namespace {
   struct restore_report_t {
     bool metamode_exact {};  ///< The exact snapshot came back.
     bool visibility_exact {};  ///< Every recorded non-desktop value came back.
-    bool fallback {};  ///< The first physical output was lit instead.
+    bool fallback {};  ///< A currently connected physical output was tried instead.
     bool recovered {};  ///< Exact or fallback succeeded.
     std::string restored;  ///< CurrentMetaMode after the restore.
   };
 
   /**
    * End an arrangement lease on its X server: visibility back first, then the
-   * exact snapshot, verified; else the first physical output at its native mode.
+   * exact snapshot, verified; else a current physical output at its native mode.
    */
   restore_report_t restore_arrangement_lease(
     const arrangement_lease_t &lease,
@@ -1149,11 +1149,23 @@ namespace {
       std::clog << "Restored the exact pre-session NVIDIA MetaMode\n";
       return report;
     }
-    const auto fallback = inventory ? plank::display::rest_metamode(*inventory) :
-                                      plank::display::safe_physical_metamode(lease.snapshot);
+    // A connector may have moved or disappeared during the stream. The
+    // session inventory then names the wrong first output; probe the live X
+    // server again before selecting the physical recovery target.
+    const auto fresh_inventory = capture_inventory(
+      *account, environment, inventory ? inventory->startup_policy : "physical"
+    );
+    const plank::display::inventory_t *physical_inventory = nullptr;
+    if (fresh_inventory && !fresh_inventory->physical.empty()) {
+      physical_inventory = &*fresh_inventory;
+    } else if (inventory && !inventory->physical.empty()) {
+      physical_inventory = &*inventory;
+    }
+    const auto fallback = physical_inventory ? plank::display::rest_metamode(*physical_inventory) :
+                                               plank::display::safe_physical_metamode(lease.snapshot);
     report.fallback = true;
-    const auto physical_randr = inventory && !inventory->physical.empty() ?
-      inventory->physical.front().device.randr :
+    const auto physical_randr = physical_inventory ?
+      physical_inventory->physical.front().device.randr :
       (lease.outputs.empty() ? std::string {} : lease.outputs.front().randr);
     const bool visible = !physical_randr.empty() && run_bounded_user_command(
       xrandr_path, {"--output", physical_randr, "--set", "non-desktop", "0"},
@@ -1166,7 +1178,7 @@ namespace {
       report.restored = restored->assignment;
     }
     std::cerr << "ERROR: Exact PLANK display restoration failed; "
-              << (report.recovered ? "enabled the first physical output at its native mode" :
+              << (report.recovered ? "enabled a physical output at its native mode" :
                                      "physical-output recovery also failed")
               << '\n';
     return report;
