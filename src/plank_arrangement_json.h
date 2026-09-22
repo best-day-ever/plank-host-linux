@@ -135,4 +135,21 @@ namespace plank::arrangement {
       {"desktop", {{"width", resolution.desktop_width}, {"height", resolution.desktop_height}}},
     };
   }
+
+  /**
+   * @brief Serialise a capture plan in the shared-vector `packing` result shape.
+   * @param plan A capture plan from plan_capture().
+   * @return `{packed, capture, source_rects}`.
+   */
+  inline nlohmann::json capture_plan_json(const capture_plan_t &plan) {
+    nlohmann::json rects = nlohmann::json::array();
+    for (const auto &rect : plan.source_rects) {
+      rects.push_back({{"x", rect.x}, {"y", rect.y}, {"width", rect.width}, {"height", rect.height}});
+    }
+    return {
+      {"packed", plan.packed},
+      {"capture", {{"width", plan.width}, {"height", plan.height}}},
+      {"source_rects", rects},
+    };
+  }
 }  // namespace plank::arrangement

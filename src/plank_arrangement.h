@@ -247,6 +247,75 @@ namespace plank::arrangement {
     std::string_view layout, std::string_view mode_1, std::string_view mode_2
   );
 
+  /**
+   * @brief How the requested outputs map into the encoded capture.
+   */
+  struct capture_plan_t {
+    bool packed {};  ///< Whether outputs were laid into rows (the desktop exceeds the encoder).
+    int width {};  ///< Capture width.
+    int height {};  ///< Capture height.
+    std::vector<rect_t> source_rects;  ///< Each entry's rectangle in capture coordinates, in request order.
+  };
+
+  /**
+   * @brief Outcome of capture planning: a plan or `canvas_too_large`.
+   */
+  struct capture_result_t {
+    std::optional<capture_plan_t> plan;  ///< The plan when `error` is none.
+    error_t error {error_t::none};  ///< `canvas_too_large` when the capture cannot fit.
+  };
+
+  /**
+   * @brief Lay the requested outputs into rows that fit an encoder limit.
+   *
+   * A desktop that fits the limit is captured unchanged. Otherwise outputs are
+   * placed in request order, top-left in their slot, and a new row starts when
+   * the next output does not fit the rest of the row; each row is as tall as
+   * its tallest output. An output wider than the limit, or rows taller than
+   * it, fail with `canvas_too_large`.
+   *
+   * @param request A validated request.
+   * @param limit_width Encoder maximum width.
+   * @param limit_height Encoder maximum height.
+   */
+  capture_result_t pack(const request_t &request, int limit_width, int limit_height);
+
+  /**
+   * @brief The capture of a request for one encoding mode on a host.
+   *
+   * With `packed_capture` the outputs are packed as needed (pack()); without
+   * it the desktop must fit the mode's limit. A mode without a published
+   * limit is captured unchanged.
+   */
+  capture_result_t plan_capture(
+    const request_t &request, const capabilities_t &capabilities, std::string_view encoding_mode
+  );
+
+  /**
+   * @brief One output's copy from the desktop (X screen) into a packed capture.
+   */
+  struct capture_region_t {
+    rect_t desktop;  ///< Source rectangle on the X screen.
+    rect_t capture;  ///< Destination rectangle in the capture (same size).
+  };
+
+  /** @brief The per-output copies of a packed plan, in request order (empty when unpacked). */
+  std::vector<capture_region_t> capture_regions(const request_t &request, const capture_plan_t &plan);
+
+  /**
+   * @brief Map a desktop point into a packed capture (for cursor positions).
+   *
+   * The point is clamped into the nearest output first, so a point in a gap
+   * between outputs lands on that output's edge. Without regions (an
+   * unpacked capture) the point is returned unchanged.
+   *
+   * @param regions The packed capture's copies.
+   * @param x Desktop X.
+   * @param y Desktop Y.
+   * @return Capture coordinates.
+   */
+  std::pair<int, int> desktop_to_capture(const std::vector<capture_region_t> &regions, int x, int y);
+
   /** @brief Bounding box of the request's rectangles (origin assumed at 0,0). */
   rect_t desktop_bounds(const request_t &request);
 

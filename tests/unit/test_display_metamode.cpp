@@ -166,7 +166,7 @@ namespace {
   }
 
   display::arrangement_plan_t plan_for(std::string_view request, const display::inventory_t &inventory) {
-    const auto capabilities = display::capabilities_from_inventory(inventory, {});
+    const auto capabilities = display::capabilities_from_inventory(inventory, {}, true);
     const auto result = arrangement::evaluate(request, capabilities);
     EXPECT_TRUE(result.resolution) << request << ": " << arrangement::error_code(result.error);
     std::string reason;

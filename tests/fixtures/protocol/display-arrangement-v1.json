@@ -1,7 +1,7 @@
 {
   "schema_version": 13,
   "feature": 134217728,
-  "description": "Display arrangement (0x8000000): grammar, check order, error codes and backing rule. See protocol/output-topology.md. Hosts also verify 'head' and 'carrier'; clients may ignore them.",
+  "description": "Display arrangement (0x8000000): grammar, check order, error codes and backing rule. See protocol/output-topology.md. Hosts also verify 'head' and 'carrier'; clients may ignore them. 'packing' pins how a host with packed_capture lays the requested outputs into one capture for the launch's encoding mode (request order, rows).",
   "virtual_pool": [
     "1024x2160",
     "1280x2160",
@@ -110,6 +110,60 @@
           "height": 8192,
           "qualified_width": 7680,
           "qualified_height": 4320
+        }
+      }
+    },
+    "fleet-hybrid-packed": {
+      "version": 1,
+      "fingerprint": "fleet-hybrid-packed-v1",
+      "max_outputs": 4,
+      "virtual_heads": 3,
+      "max_canvas": {
+        "width": 16384,
+        "height": 8192
+      },
+      "packed_capture": true,
+      "output_limits": {
+        "min_width": 640,
+        "min_height": 480,
+        "max_width": 8192,
+        "max_height": 8192,
+        "max_pixels": 33177600
+      },
+      "refresh_millihz": [
+        60000
+      ],
+      "physical_outputs": [
+        {
+          "id": "x11:HDMI-0",
+          "name": "HDMI-0",
+          "display_name": "MEC-O-3-H",
+          "edid_sha256": "0d7da54a596598e1b3611d1c138880021ff7ca1e827309a7658dbe7b4b6b1dd5",
+          "preferred": "3840x2160",
+          "modes": [
+            "4096x2160",
+            "3840x2160",
+            "1920x1080",
+            "1280x1024",
+            "1280x720",
+            "1024x768",
+            "720x480",
+            "640x480"
+          ]
+        }
+      ],
+      "encoding_limits": {
+        "hevc-10-444-nvenc": {
+          "width": 8192,
+          "height": 8192,
+          "qualified_width": 7680,
+          "qualified_height": 4320
+        },
+        "h264-8-444-nvenc": {
+          "width": 4096,
+          "height": 4096,
+          "qualified_width": 4096,
+          "qualified_height": 2160
         }
       }
     }
@@ -786,6 +840,230 @@
       "capabilities": "physical-laptop",
       "request": "1:1920x1080+0+0:auto,1920x1080+1920+0:auto",
       "error": "too_many_displays"
+    }
+  ],
+  "packing": [
+    {
+      "name": "macbook-and-uhd-fits-unpacked",
+      "capabilities": "fleet-hybrid-packed",
+      "request": "1:3024x1890+0+270:auto,3840x2160+3024+0:auto",
+      "encoding_mode": "hevc-10-444-nvenc",
+      "result": {
+        "packed": false,
+        "capture": {
+          "width": 6864,
+          "height": 2160
+        },
+        "source_rects": [
+          {
+            "x": 0,
+            "y": 270,
+            "width": 3024,
+            "height": 1890
+          },
+          {
+            "x": 3024,
+            "y": 0,
+            "width": 3840,
+            "height": 2160
+          }
+        ]
+      }
+    },
+    {
+      "name": "stacked-uhd-fits-unpacked",
+      "capabilities": "fleet-hybrid-packed",
+      "request": "1:3840x2160+0+0:auto,3840x2160+0+2160:auto",
+      "encoding_mode": "hevc-10-444-nvenc",
+      "result": {
+        "packed": false,
+        "capture": {
+          "width": 3840,
+          "height": 4320
+        },
+        "source_rects": [
+          {
+            "x": 0,
+            "y": 0,
+            "width": 3840,
+            "height": 2160
+          },
+          {
+            "x": 0,
+            "y": 2160,
+            "width": 3840,
+            "height": 2160
+          }
+        ]
+      }
+    },
+    {
+      "name": "three-uhd-row",
+      "capabilities": "fleet-hybrid-packed",
+      "request": "1:3840x2160+0+0:auto,3840x2160+3840+0:auto,3840x2160+7680+0:auto",
+      "encoding_mode": "hevc-10-444-nvenc",
+      "result": {
+        "packed": true,
+        "capture": {
+          "width": 7680,
+          "height": 4320
+        },
+        "source_rects": [
+          {
+            "x": 0,
+            "y": 0,
+            "width": 3840,
+            "height": 2160
+          },
+          {
+            "x": 3840,
+            "y": 0,
+            "width": 3840,
+            "height": 2160
+          },
+          {
+            "x": 0,
+            "y": 2160,
+            "width": 3840,
+            "height": 2160
+          }
+        ]
+      }
+    },
+    {
+      "name": "four-uhd-row",
+      "capabilities": "fleet-hybrid-packed",
+      "request": "1:3840x2160+0+0:auto,3840x2160+3840+0:auto,3840x2160+7680+0:auto,3840x2160+11520+0:auto",
+      "encoding_mode": "hevc-10-444-nvenc",
+      "result": {
+        "packed": true,
+        "capture": {
+          "width": 7680,
+          "height": 4320
+        },
+        "source_rects": [
+          {
+            "x": 0,
+            "y": 0,
+            "width": 3840,
+            "height": 2160
+          },
+          {
+            "x": 3840,
+            "y": 0,
+            "width": 3840,
+            "height": 2160
+          },
+          {
+            "x": 0,
+            "y": 2160,
+            "width": 3840,
+            "height": 2160
+          },
+          {
+            "x": 3840,
+            "y": 2160,
+            "width": 3840,
+            "height": 2160
+          }
+        ]
+      }
+    },
+    {
+      "name": "two-6k-side-by-side",
+      "capabilities": "fleet-hybrid-packed",
+      "request": "1:6016x3384+0+0:auto,6016x3384+6016+0:auto",
+      "encoding_mode": "hevc-10-444-nvenc",
+      "result": {
+        "packed": true,
+        "capture": {
+          "width": 6016,
+          "height": 6768
+        },
+        "source_rects": [
+          {
+            "x": 0,
+            "y": 0,
+            "width": 6016,
+            "height": 3384
+          },
+          {
+            "x": 0,
+            "y": 3384,
+            "width": 6016,
+            "height": 3384
+          }
+        ]
+      }
+    },
+    {
+      "name": "8k-and-uhd-beside",
+      "capabilities": "fleet-hybrid-packed",
+      "request": "1:7680x4320+0+0:auto,3840x2160+7680+1080:auto",
+      "encoding_mode": "hevc-10-444-nvenc",
+      "result": {
+        "packed": true,
+        "capture": {
+          "width": 7680,
+          "height": 6480
+        },
+        "source_rects": [
+          {
+            "x": 0,
+            "y": 0,
+            "width": 7680,
+            "height": 4320
+          },
+          {
+            "x": 0,
+            "y": 4320,
+            "width": 3840,
+            "height": 2160
+          }
+        ]
+      }
+    },
+    {
+      "name": "two-8k-too-large",
+      "capabilities": "fleet-hybrid-packed",
+      "request": "1:7680x4320+0+0:auto,7680x4320+7680+0:auto",
+      "encoding_mode": "hevc-10-444-nvenc",
+      "error": "canvas_too_large"
+    },
+    {
+      "name": "uhd-h264-fits",
+      "capabilities": "fleet-hybrid-packed",
+      "request": "1:3840x2160+0+0:auto",
+      "encoding_mode": "h264-8-444-nvenc",
+      "result": {
+        "packed": false,
+        "capture": {
+          "width": 3840,
+          "height": 2160
+        },
+        "source_rects": [
+          {
+            "x": 0,
+            "y": 0,
+            "width": 3840,
+            "height": 2160
+          }
+        ]
+      }
+    },
+    {
+      "name": "three-uhd-h264-too-large",
+      "capabilities": "fleet-hybrid-packed",
+      "request": "1:3840x2160+0+0:auto,3840x2160+3840+0:auto,3840x2160+7680+0:auto",
+      "encoding_mode": "h264-8-444-nvenc",
+      "error": "canvas_too_large"
+    },
+    {
+      "name": "three-uhd-without-packing",
+      "capabilities": "fleet-hybrid",
+      "request": "1:3840x2160+0+0:auto,3840x2160+3840+0:auto,3840x2160+7680+0:auto",
+      "encoding_mode": "hevc-10-444-nvenc",
+      "error": "canvas_too_large"
     }
   ]
 }

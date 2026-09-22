@@ -847,10 +847,12 @@ namespace plank::display {
 
   plank::arrangement::capabilities_t capabilities_from_inventory(
     const inventory_t &inventory,
-    const std::map<std::string, plank::arrangement::encoding_limit_t> &encoding_limits
+    const std::map<std::string, plank::arrangement::encoding_limit_t> &encoding_limits,
+    bool packed_capture
   ) {
     namespace arrangement = plank::arrangement;
     arrangement::capabilities_t capabilities;
+    capabilities.packed_capture = packed_capture;
     capabilities.virtual_heads = inventory.startup_policy == "hybrid" ?
       std::min<int>(inventory.virtual_heads, static_cast<int>(maximum_virtual_heads)) : 0;
     for (const auto &output : inventory.physical) {
@@ -892,11 +894,15 @@ namespace plank::display {
       static_cast<std::int64_t>(limits.max_width) * limits.max_height, maximum_output_pixels
     );
 
-    // Without packed capture the desktop is the encoded frame, and the X
-    // screen cannot grow beyond its boot-time Virtual size.
+    // The X screen cannot grow beyond its boot-time Virtual size. Without
+    // packed capture the desktop is also the encoded frame.
     int canvas_width = 8192;
     int canvas_height = 8192;
-    if (!encoding_limits.empty()) {
+    if (packed_capture && inventory.screen_virtual_width > 0 && inventory.screen_virtual_height > 0) {
+      canvas_width = inventory.screen_virtual_width;
+      canvas_height = inventory.screen_virtual_height;
+    }
+    if (!packed_capture && !encoding_limits.empty()) {
       int encoder_width = 0;
       int encoder_height = 0;
       for (const auto &[mode, limit] : encoding_limits) {

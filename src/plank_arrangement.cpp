@@ -374,6 +374,90 @@ namespace plank::arrangement {
     return resolve(*parsed.request, capabilities);
   }
 
+  capture_result_t pack(const request_t &request, int limit_width, int limit_height) {
+    const auto bounds = desktop_bounds(request);
+    capture_plan_t plan;
+    if (bounds.width <= limit_width && bounds.height <= limit_height) {
+      plan.width = bounds.width;
+      plan.height = bounds.height;
+      for (const auto &entry : request.entries) plan.source_rects.push_back(entry.rect);
+      return {std::move(plan), error_t::none};
+    }
+    plan.packed = true;
+    std::int64_t row_y = 0;
+    std::int64_t row_x = 0;
+    std::int64_t row_height = 0;
+    std::int64_t width = 0;
+    for (const auto &entry : request.entries) {
+      const auto &rect = entry.rect;
+      if (rect.width > limit_width) return {std::nullopt, error_t::canvas_too_large};
+      if (row_x > 0 && row_x + rect.width > limit_width) {
+        row_y += row_height;
+        row_x = 0;
+        row_height = 0;
+      }
+      plan.source_rects.push_back({
+        static_cast<int>(row_x), static_cast<int>(row_y), rect.width, rect.height,
+      });
+      row_x += rect.width;
+      row_height = std::max<std::int64_t>(row_height, rect.height);
+      width = std::max(width, row_x);
+    }
+    const auto height = row_y + row_height;
+    if (height > limit_height) return {std::nullopt, error_t::canvas_too_large};
+    plan.width = static_cast<int>(width);
+    plan.height = static_cast<int>(height);
+    return {std::move(plan), error_t::none};
+  }
+
+  capture_result_t plan_capture(
+    const request_t &request, const capabilities_t &capabilities, std::string_view encoding_mode
+  ) {
+    const auto limit = capabilities.encoding_limits.find(std::string {encoding_mode});
+    if (limit == capabilities.encoding_limits.end()) {
+      return pack(request, std::numeric_limits<int>::max(), std::numeric_limits<int>::max());
+    }
+    auto result = pack(request, limit->second.width, limit->second.height);
+    if (!capabilities.packed_capture && result.plan && result.plan->packed) {
+      return {std::nullopt, error_t::canvas_too_large};
+    }
+    return result;
+  }
+
+  std::vector<capture_region_t> capture_regions(const request_t &request, const capture_plan_t &plan) {
+    std::vector<capture_region_t> regions;
+    if (!plan.packed) return regions;
+    for (std::size_t index = 0; index < request.entries.size() && index < plan.source_rects.size(); ++index) {
+      regions.push_back({request.entries[index].rect, plan.source_rects[index]});
+    }
+    return regions;
+  }
+
+  std::pair<int, int> desktop_to_capture(const std::vector<capture_region_t> &regions, int x, int y) {
+    const capture_region_t *best = nullptr;
+    std::int64_t best_distance = std::numeric_limits<std::int64_t>::max();
+    std::int64_t best_x = x;
+    std::int64_t best_y = y;
+    for (const auto &region : regions) {
+      const auto &rect = region.desktop;
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      const auto clamped_x = std::clamp<std::int64_t>(x, rect.x, static_cast<std::int64_t>(rect.x) + rect.width - 1);
+      const auto clamped_y = std::clamp<std::int64_t>(y, rect.y, static_cast<std::int64_t>(rect.y) + rect.height - 1);
+      const auto distance = (clamped_x - x) * (clamped_x - x) + (clamped_y - y) * (clamped_y - y);
+      if (distance < best_distance) {
+        best = &region;
+        best_distance = distance;
+        best_x = clamped_x;
+        best_y = clamped_y;
+      }
+    }
+    if (best == nullptr) return {x, y};
+    return {
+      static_cast<int>(best->capture.x + (best_x - best->desktop.x)),
+      static_cast<int>(best->capture.y + (best_y - best->desktop.y)),
+    };
+  }
+
   std::optional<request_t> from_legacy(
     std::string_view layout, std::string_view mode_1, std::string_view mode_2
   ) {

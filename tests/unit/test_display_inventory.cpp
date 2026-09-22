@@ -299,7 +299,7 @@ TEST(DisplayInventory, ConvertsSysfsAddressesToXorgBusIds) {
 }
 
 TEST(DisplayInventory, FleetCapabilitiesReproduceTheSharedVectors) {
-  const auto capabilities = display::capabilities_from_inventory(fleet_inventory(), nvenc_limits());
+  const auto capabilities = display::capabilities_from_inventory(fleet_inventory(), nvenc_limits(), false);
   const auto published = arrangement::capabilities_json(capabilities);
   const auto &fixture_value = fleet_capabilities();
   EXPECT_EQ(published.at("physical_outputs"), fixture_value.at("physical_outputs"));
@@ -313,7 +313,7 @@ TEST(DisplayInventory, FleetCapabilitiesReproduceTheSharedVectors) {
   // A smaller boot-time Virtual size bounds the canvas too.
   auto small_screen = fleet_inventory();
   small_screen.screen_virtual_height = 4608;
-  EXPECT_EQ(display::capabilities_from_inventory(small_screen, nvenc_limits()).max_canvas_height, 4608);
+  EXPECT_EQ(display::capabilities_from_inventory(small_screen, nvenc_limits(), false).max_canvas_height, 4608);
   // 2:1 over the largest carrier (5120x2160), capped at 8192 and 7680x4320 pixels.
   EXPECT_EQ(capabilities.output_limits.max_width, 8192);
   EXPECT_EQ(capabilities.output_limits.max_height, 4320);
@@ -337,7 +337,7 @@ TEST(DisplayInventory, FleetCapabilitiesReproduceTheSharedVectors) {
   // The fingerprint follows every published field.
   auto fewer = nvenc_limits();
   fewer.erase("h264-8-444-nvenc");
-  EXPECT_NE(display::capabilities_from_inventory(fleet_inventory(), fewer).fingerprint,
+  EXPECT_NE(display::capabilities_from_inventory(fleet_inventory(), fewer, false).fingerprint,
             capabilities.fingerprint);
 }
 
@@ -347,7 +347,7 @@ TEST(DisplayInventory, PhysicalPolicyPublishesNoVirtualHeads) {
     std::nullopt
   );
   ASSERT_TRUE(inventory);
-  const auto capabilities = display::capabilities_from_inventory(*inventory, {});
+  const auto capabilities = display::capabilities_from_inventory(*inventory, {}, false);
   EXPECT_EQ(capabilities.virtual_heads, 0);
   EXPECT_EQ(capabilities.max_outputs, 1);
   EXPECT_EQ(capabilities.max_canvas_width, 8192);
@@ -363,4 +363,42 @@ TEST(DisplayInventory, PhysicalPolicyPublishesNoVirtualHeads) {
   EXPECT_EQ(arrangement::evaluate("1:5120x2880+0+0:auto", capabilities).error,
             arrangement::error_t::output_too_large);
   EXPECT_EQ(display::randr_name_from_id("x11:DP-4"), "DP-4");
+}
+
+TEST(DisplayInventory, PackedCaptureBoundsTheCanvasByTheXScreen) {
+  const auto packed = display::capabilities_from_inventory(fleet_inventory(), nvenc_limits(), true);
+  EXPECT_TRUE(packed.packed_capture);
+  // The boot-time Virtual size, not the encoder.
+  EXPECT_EQ(packed.max_canvas_width, 16384);
+  EXPECT_EQ(packed.max_canvas_height, 8192);
+  EXPECT_NE(packed.fingerprint,
+            display::capabilities_from_inventory(fleet_inventory(), nvenc_limits(), false).fingerprint);
+  auto h264_only = nvenc_limits();
+  h264_only.erase("hevc-10-444-nvenc");
+  const auto unpacked = display::capabilities_from_inventory(fleet_inventory(), h264_only, false);
+  EXPECT_EQ(unpacked.max_canvas_width, 4096);
+
+  // Three UHD monitors in a row: packed into 7680x4320 for HEVC, too large for H.264.
+  const auto request = arrangement::parse(
+    "1:3840x2160+0+0:auto,3840x2160+3840+0:auto,3840x2160+7680+0:auto"
+  ).request;
+  ASSERT_TRUE(request);
+  EXPECT_EQ(arrangement::validate(*request, packed), arrangement::error_t::none);
+  const auto hevc = arrangement::plan_capture(*request, packed, "hevc-10-444-nvenc");
+  ASSERT_TRUE(hevc.plan);
+  EXPECT_TRUE(hevc.plan->packed);
+  EXPECT_EQ(hevc.plan->width, 7680);
+  EXPECT_EQ(hevc.plan->height, 4320);
+  EXPECT_EQ(arrangement::plan_capture(*request, packed, "h264-8-444-nvenc").error,
+            arrangement::error_t::canvas_too_large);
+
+  // Without an X screen size (physical policy) the canvas stays 8192x8192.
+  const auto laptop = display::build_inventory(
+    devices(), screen("display/xrandr-laptop.txt"), "PCI:1:0:0", "580.159.04", "physical",
+    std::nullopt
+  );
+  ASSERT_TRUE(laptop);
+  const auto physical = display::capabilities_from_inventory(*laptop, nvenc_limits(), true);
+  EXPECT_EQ(physical.max_canvas_width, 8192);
+  EXPECT_EQ(physical.max_canvas_height, 8192);
 }

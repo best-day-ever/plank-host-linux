@@ -182,3 +182,79 @@ TEST(PlankArrangement, NamesMatchTheWire) {
   EXPECT_FALSE(arrangement::parse_mode_name("0x2160"));
   EXPECT_FALSE(arrangement::parse_mode_name("3840X2160"));
 }
+
+TEST(PlankArrangement, PackingVectorsPinTheCaptureRows) {
+  const auto capabilities = fixture_capabilities();
+  ASSERT_TRUE(capabilities.contains("fleet-hybrid-packed"));
+  EXPECT_TRUE(capabilities.at("fleet-hybrid-packed").packed_capture);
+  std::size_t cases = 0;
+  for (const auto &item : vectors().at("packing")) {
+    ++cases;
+    const auto name = item.at("name").get<std::string>();
+    const auto &host = capabilities.at(item.at("capabilities").get<std::string>());
+    const auto request = item.at("request").get<std::string>();
+    // The launch runs every check, then plans the capture for its encoding mode.
+    auto error = arrangement::evaluate(request, host).error;
+    std::optional<arrangement::capture_plan_t> plan;
+    if (error == arrangement::error_t::none) {
+      const auto parsed = arrangement::parse(request);
+      ASSERT_TRUE(parsed.request) << name;
+      const auto result = arrangement::plan_capture(
+        *parsed.request, host, item.at("encoding_mode").get<std::string>()
+      );
+      error = result.error;
+      plan = result.plan;
+    }
+    if (item.contains("error")) {
+      EXPECT_EQ(arrangement::error_code(error), item.at("error").get<std::string>()) << name;
+      EXPECT_FALSE(plan) << name;
+      continue;
+    }
+    ASSERT_TRUE(plan) << name << ": " << arrangement::error_code(error);
+    EXPECT_EQ(arrangement::capture_plan_json(*plan), item.at("result")) << name;
+  }
+  EXPECT_GE(cases, 10U);
+}
+
+TEST(PlankArrangement, PacksRowsAndMapsDesktopPointsIntoTheCapture) {
+  const auto request = arrangement::parse(
+    "1:3840x2160+0+0:auto,3840x2160+3840+0:auto,3840x2160+7680+0:auto"
+  ).request;
+  ASSERT_TRUE(request);
+  const auto packed = arrangement::pack(*request, 8192, 8192);
+  ASSERT_TRUE(packed.plan);
+  EXPECT_TRUE(packed.plan->packed);
+  EXPECT_EQ(packed.plan->width, 7680);
+  EXPECT_EQ(packed.plan->height, 4320);
+  const auto regions = arrangement::capture_regions(*request, *packed.plan);
+  ASSERT_EQ(regions.size(), 3U);
+  EXPECT_EQ(regions[2].desktop.x, 7680);
+  EXPECT_EQ(regions[2].capture.x, 0);
+  EXPECT_EQ(regions[2].capture.y, 2160);
+  // The third output's desktop origin lands at the start of the second row.
+  EXPECT_EQ(arrangement::desktop_to_capture(regions, 7680, 0), (std::pair {0, 2160}));
+  EXPECT_EQ(arrangement::desktop_to_capture(regions, 11519, 2159), (std::pair {3839, 4319}));
+  EXPECT_EQ(arrangement::desktop_to_capture(regions, 4000, 100), (std::pair {4000, 100}));
+  // Outside every output: the nearest edge.
+  EXPECT_EQ(arrangement::desktop_to_capture(regions, 20000, 5000), (std::pair {3839, 4319}));
+
+  // An unpacked plan has no regions and is the identity.
+  const auto fits = arrangement::pack(*request, 16384, 8192);
+  ASSERT_TRUE(fits.plan);
+  EXPECT_FALSE(fits.plan->packed);
+  const auto identity = arrangement::capture_regions(*request, *fits.plan);
+  EXPECT_TRUE(identity.empty());
+  EXPECT_EQ(arrangement::desktop_to_capture(identity, 9000, 10), (std::pair {9000, 10}));
+
+  // Too wide for any row, or rows too tall.
+  EXPECT_EQ(arrangement::pack(*request, 3838, 8192).error, arrangement::error_t::canvas_too_large);
+  EXPECT_EQ(arrangement::pack(*request, 4096, 4096).error, arrangement::error_t::canvas_too_large);
+
+  // A mode without a published limit is captured unchanged.
+  arrangement::capabilities_t host;
+  host.packed_capture = true;
+  const auto unlimited = arrangement::plan_capture(*request, host, "h264-8-444-software");
+  ASSERT_TRUE(unlimited.plan);
+  EXPECT_FALSE(unlimited.plan->packed);
+  EXPECT_EQ(unlimited.plan->width, 11520);
+}

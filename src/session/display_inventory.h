@@ -179,13 +179,20 @@ namespace plank::display {
   /**
    * @brief Build `display_capabilities`.
    *
+   * With `packed_capture` the desktop is bounded only by the boot-time X
+   * screen (8192x8192 when that is unknown), and a desktop wider than the
+   * launch's encoder is captured in rows. Without it the desktop must also fit
+   * the largest encoder.
+   *
    * @param inventory A valid inventory.
    * @param encoding_limits Probed per-mode encoder limits (may be empty).
+   * @param packed_capture Whether this build can pack the capture.
    * @return Capabilities with a fingerprint over every published field.
    */
   plank::arrangement::capabilities_t capabilities_from_inventory(
     const inventory_t &inventory,
-    const std::map<std::string, plank::arrangement::encoding_limit_t> &encoding_limits
+    const std::map<std::string, plank::arrangement::encoding_limit_t> &encoding_limits,
+    bool packed_capture = false
   );
 
   /** @brief RandR output name for a capabilities output ID `x11:<name>`. */

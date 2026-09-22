@@ -1145,7 +1145,8 @@ namespace {
     std::string_view request, const plank::display::inventory_t &inventory
   ) {
     namespace arrangement = plank::arrangement;
-    const auto capabilities = plank::display::capabilities_from_inventory(inventory, {});
+    // The supervisor applies desktops; encoder limits are the worker's check.
+    const auto capabilities = plank::display::capabilities_from_inventory(inventory, {}, true);
     const auto result = arrangement::evaluate(request, capabilities);
     if (!result.resolution) return {std::nullopt, std::string {arrangement::error_code(result.error)}};
     prepared_arrangement_t prepared;
@@ -1459,7 +1460,7 @@ namespace {
     report["startup_policy"] = policy;
     report["inventory"] = plank::display::inventory_json(*inventory);
     report["display_capabilities"] = plank::arrangement::capabilities_json(
-      plank::display::capabilities_from_inventory(*inventory, {})
+      plank::display::capabilities_from_inventory(*inventory, {}, true)
     );
     report["display_capabilities_note"] =
       "encoding_limits come from the media worker's encoder probe and are empty here";
@@ -1539,7 +1540,7 @@ namespace {
     }
     report["inventory"] = plank::display::inventory_json(*inventory);
     report["display_capabilities"] = plank::arrangement::capabilities_json(
-      plank::display::capabilities_from_inventory(*inventory, {})
+      plank::display::capabilities_from_inventory(*inventory, {}, true)
     );
     const auto prepared = prepare_arrangement(options.request, *inventory);
     if (!prepared.plan) {
