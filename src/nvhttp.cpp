@@ -1083,6 +1083,14 @@ namespace nvhttp {
                "NvFBC HEVC 10-bit NVENC negotiation is required");
       return false;
     }
+    if (plank::topology::nvenc_420_mode(session.encoding_mode) &&
+        (session.plank_feature_flags &
+         plank::topology::feature_nvfbc_nvenc_420) == 0) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message",
+               "NVENC 4:2:0 negotiation is required");
+      return false;
+    }
     const bool exact_mode_available =
       video::encoding_mode_available(session.encoding_mode);
     if (!exact_mode_available) {
@@ -1362,7 +1370,8 @@ namespace nvhttp {
       codec_mode_flags |= SCM_H264_HIGH10_422;
     }
     if (video::nvenc_direct_supports_hevc_444_8bit() ||
-        video::nvenc_direct_supports_hevc_444_10bit()) {
+        video::nvenc_direct_supports_hevc_444_10bit() ||
+        video::nvenc_direct_supports_hevc_420_10bit()) {
       codec_mode_flags |= SCM_HEVC;
       if (video::nvenc_direct_supports_hevc_444_8bit()) {
         codec_mode_flags |= SCM_HEVC_REXT8_444;
@@ -1370,6 +1379,9 @@ namespace nvhttp {
     }
     if (video::nvenc_direct_supports_hevc_444_10bit()) {
       codec_mode_flags |= SCM_HEVC_REXT10_444;
+    }
+    if (video::nvenc_direct_supports_hevc_420_10bit()) {
+      codec_mode_flags |= SCM_HEVC_MAIN10;
     }
     return codec_mode_flags;
   }
@@ -1383,6 +1395,8 @@ namespace nvhttp {
       "h264-8-444-nvenc"sv,
       "hevc-8-444-nvenc"sv,
       "hevc-10-444-nvenc"sv,
+      "h264-8-420-nvenc"sv,
+      "hevc-10-420-nvenc"sv,
     };
     std::string result;
     for (const auto mode : modes) {
@@ -1437,7 +1451,8 @@ namespace nvhttp {
     tree.put("root.PlankEncodingModes", get_plank_encoding_modes());
     tree.put("root.MaxLumaPixelsHEVC",
              video::nvenc_direct_supports_hevc_444_8bit() ||
-                 video::nvenc_direct_supports_hevc_444_10bit() ?
+                 video::nvenc_direct_supports_hevc_444_10bit() ||
+                 video::nvenc_direct_supports_hevc_420_10bit() ?
                "1869449984" : "0");
 
     // Moonlight clients track LAN IPv6 addresses separately from LocalIP which is expected to

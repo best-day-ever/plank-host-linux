@@ -74,9 +74,11 @@ namespace NVENC_NAMESPACE {
         break;
 
       case video::colorspace_e::rec709:
-        // Rec. 709
+        // Rec. 709 matrix and primaries. The captured desktop is sRGB-encoded,
+        // so tag the sRGB transfer (as the identity GBR modes do): clients then
+        // present PLANK 4:2:0 streams with the same tone curve as 4:4:4.
         colorspace.primaries = NV_ENC_VUI_COLOR_PRIMARIES_BT709;
-        colorspace.tranfer_function = NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+        colorspace.tranfer_function = NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SRGB;
         colorspace.matrix = NV_ENC_VUI_MATRIX_COEFFS_BT709;
         break;
 

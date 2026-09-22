@@ -188,6 +188,12 @@ namespace session_stream {
     if (encoding_mode == "hevc-10-444-nvenc"sv) {
       return VIDEO_FORMAT_H265_REXT10_444;
     }
+    if (encoding_mode == "h264-8-420-nvenc"sv) {
+      return VIDEO_FORMAT_H264;
+    }
+    if (encoding_mode == "hevc-10-420-nvenc"sv) {
+      return VIDEO_FORMAT_H265_MAIN10;
+    }
     return std::nullopt;
   }
 
@@ -312,6 +318,10 @@ namespace session_stream {
       config.monitor.chromaSamplingType == 1 && identity_gbr_requested &&
       (config.monitor.encoderCscMode & 0x1) != 0 &&
       (config.monitor.videoFormat == 0 || config.monitor.videoFormat == 1);
+    // NVENC 4:2:0: BT.709 matrix, limited range; nothing else is accepted.
+    const bool exact_bt709_limited_420 =
+      config.monitor.chromaSamplingType == 0 &&
+      config.monitor.encoderCscMode == plank::topology::nvenc_420_encoder_csc_mode;
     const bool encoding_mode_matches =
       (launch_session->encoding_mode == "h264-8-422-software" &&
        config.monitor.videoFormat == 0 && config.monitor.dynamicRange == 0 &&
@@ -333,7 +343,13 @@ namespace session_stream {
        exact_identity_444) ||
       (launch_session->encoding_mode == "hevc-10-444-nvenc" &&
        config.monitor.videoFormat == 1 && config.monitor.dynamicRange == 1 &&
-       exact_identity_444);
+       exact_identity_444) ||
+      (launch_session->encoding_mode == "h264-8-420-nvenc" &&
+       config.monitor.videoFormat == 0 && config.monitor.dynamicRange == 0 &&
+       exact_bt709_limited_420) ||
+      (launch_session->encoding_mode == "hevc-10-420-nvenc" &&
+       config.monitor.videoFormat == 1 && config.monitor.dynamicRange == 1 &&
+       exact_bt709_limited_420);
     if (!encoding_mode_matches) {
       result.status = PLANK_TRANSPORT_SETUP_STATUS_UNSUPPORTED;
       result.message = "Native stream format differs from accepted encoding mode";
@@ -349,11 +365,18 @@ namespace session_stream {
          (config.monitor.dynamicRange == 1 && config.monitor.videoFormat == 1 &&
           (launch_session->plank_feature_flags &
            plank::topology::feature_nvfbc_hevc10_nvenc) != 0));
+      const bool nvfbc_420_mode =
+        config.monitor.capture_source == video::capture_source_e::nvfbc_8bit &&
+        exact_bt709_limited_420 &&
+        (launch_session->plank_feature_flags &
+         plank::topology::feature_nvfbc_nvenc_420) != 0 &&
+        ((config.monitor.videoFormat == 0 && config.monitor.dynamicRange == 0) ||
+         (config.monitor.videoFormat == 1 && config.monitor.dynamicRange == 1));
       const bool native10_mode =
         config.monitor.capture_source == video::capture_source_e::x11_native10 &&
         config.monitor.videoFormat == 1 && config.monitor.dynamicRange == 1 &&
         exact_identity_444;
-      if (!nvfbc_mode && !native10_mode) {
+      if (!nvfbc_mode && !nvfbc_420_mode && !native10_mode) {
         result.status = PLANK_TRANSPORT_SETUP_STATUS_UNSUPPORTED;
         result.message = "Unsupported native NVENC capture/profile combination";
         return result;
