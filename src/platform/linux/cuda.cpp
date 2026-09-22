@@ -1743,6 +1743,7 @@ namespace cuda {
 
         env_width = status_params->screenSize.w;
         env_height = status_params->screenSize.h;
+        captured_image_hook = config.captured_image_hook;
 
         this->handle = std::move(*handle);
         return 0;
@@ -1761,10 +1762,13 @@ namespace cuda {
         // Force display_t::capture to initialize handle_t::capture
         cursor_visible = !*cursor;
 
-        ctx_t ctx {handle.handle};
+        // Destroy the handle only after this thread released its context:
+        // NvFBCDestroyHandle() invalidates the handle, so releasing the
+        // context afterwards failed ("Couldn't release NvFBC context").
         auto fg = util::fail_guard([&]() {
           handle.reset();
         });
+        ctx_t ctx {handle.handle};
 
         sleep_overshoot_logger.reset();
 
@@ -1955,13 +1959,13 @@ namespace cuda {
               return platf::capture_e::error;
             }
           }
-          return platf::capture_e::ok;
-        }
-
-        if (img->tex.copy((std::uint8_t *) device_ptr, img->height, img->row_pitch)) {
+        } else if (img->tex.copy((std::uint8_t *) device_ptr, img->height, img->row_pitch)) {
           return platf::capture_e::error;
         }
 
+        if (captured_image_hook) {
+          captured_image_hook(*img);
+        }
         return platf::capture_e::ok;
       }
 
@@ -2034,6 +2038,7 @@ namespace cuda {
 
       NVFBC_CREATE_CAPTURE_SESSION_PARAMS capture_params;  ///< NvFBC capture-session parameters used for frame grabs.
       std::vector<plank::arrangement::capture_region_t> capture_regions;  ///< Packed-capture copies, or empty.
+      std::function<void(platf::img_t &)> captured_image_hook;  ///< Capture-probe inspection of each copied frame.
     };
   }  // namespace nvfbc
 }  // namespace cuda

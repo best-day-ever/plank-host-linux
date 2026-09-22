@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -85,6 +86,11 @@ namespace video {
     std::vector<plank::arrangement::capture_region_t> capture_regions;
     int desktop_width {};  ///< Desktop bounding box, the pointer reference size of a packed capture.
     int desktop_height {};  ///< Desktop bounding box height.
+    /**
+     * Capture probe only: called on the capture thread with each packed
+     * capture after its copy (never set for a stream).
+     */
+    std::function<void(platf::img_t &)> captured_image_hook;
   };
 
   namespace amf {

@@ -2061,6 +2061,8 @@ namespace video {
       }
     };
 
+    // Why the platform capture loop last returned, for the log.
+    std::string_view capture_stop_reason = "the capture backend returned on its own";
     auto pull_free_image_callback = [&](std::shared_ptr<platf::img_t> &img_out) -> bool {
       img_out.reset();
       while (capture_ctx_queue->running()) {
@@ -2102,6 +2104,7 @@ namespace video {
           std::this_thread::sleep_for(1ms);
         }
       }
+      capture_stop_reason = "pull_free_image returned false: the capture queue stopped";
       return false;
     };
 
@@ -2127,10 +2130,12 @@ namespace video {
         })
 
         if (capture_ctxs.empty()) {
+          capture_stop_reason = "push_captured_image returned false: no session is listening";
           return false;
         }
 
         if (!capture_ctx_queue->running()) {
+          capture_stop_reason = "push_captured_image returned false: the capture queue stopped";
           return false;
         }
 
@@ -2140,6 +2145,7 @@ namespace video {
 
         if (switch_display_event->peek() || desktop_reattach_event->peek()) {
           artificial_reinit = true;
+          capture_stop_reason = "push_captured_image returned false: display switch or desktop reattach";
           return false;
         }
 
@@ -2149,7 +2155,15 @@ namespace video {
       // PLANK always transports cursor shape separately. It is never
       // composited into the captured video frame.
       bool capture_cursor = false;
+      capture_stop_reason = "the capture backend returned on its own";
       auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &capture_cursor);
+      {
+        constexpr std::array<std::string_view, 5> status_names {"ok", "reinit", "timeout", "interrupted", "error"};
+        const auto index = static_cast<std::size_t>(status);
+        BOOST_LOG(info) << "Video capture loop ended with status "sv
+                        << (index < status_names.size() ? status_names[index] : "unknown"sv)
+                        << " ("sv << capture_stop_reason << ')';
+      }
 
 #ifdef __linux__
       if (status == platf::capture_e::error &&
@@ -4525,112 +4539,120 @@ namespace video {
     report["desktop"] = {{"width", desktop.width}, {"height", desktop.height}};
     report["encoder_limit"] = {{"width", limit->second.width}, {"height", limit->second.height}};
 
-    const auto &encoder = nvenc_direct;
-    auto disp = platf::display(encoder.platform_formats->dev_type, std::string {}, *config);
-    if (!disp) return finish(5, "unable to open the NvFBC capture (is DISPLAY/XAUTHORITY the active X server?)");
-    report["screen"] = {{"width", disp->env_width}, {"height", disp->env_height}};
-    auto encode_device = make_encode_device(*disp, encoder, *config);
-    if (!encode_device) return finish(5, "unable to create the NVENC encode device");
-    auto session = make_encode_session(disp.get(), encoder, *config, disp->width, disp->height,
-                                       std::move(encode_device));
-    if (!session) return finish(5, "unable to create the NVENC encode session");
+    // The stream's own pipeline: video::capture() with its shared capture
+    // thread, image pool, latest-frame hand-off and NVENC encode loop. The
+    // probe only reads the packets a stream would send.
+    struct frame_dump_t {
+      std::mutex mutex;
+      std::condition_variable ready;
+      bool wanted {};
+      bool done {};
+      bool read {};
+      int width {};
+      int height {};
+      int pitch {};
+      std::vector<std::uint8_t> bgra;
+    };
+    auto dump = std::make_shared<frame_dump_t>();
+    config->captured_image_hook = [dump](platf::img_t &img) {
+      std::lock_guard lock {dump->mutex};
+      if (!dump->wanted || dump->done) return;
+      dump->read = platf::download_captured_image(img, dump->bgra);
+      dump->width = img.width;
+      dump->height = img.height;
+      dump->pitch = img.row_pitch;
+      dump->done = true;
+      dump->ready.notify_all();
+    };
 
-    // Capture on its own thread as the stream does; encode here.
-    std::mutex mutex;
-    std::condition_variable ready;
-    std::deque<std::shared_ptr<platf::img_t>> queued;
-    std::vector<std::shared_ptr<platf::img_t>> pool;
-    std::atomic_bool stop {false};
-    bool capture_done = false;
-    platf::capture_e capture_status {platf::capture_e::ok};
-    std::thread capture_thread {[&] {
-      bool cursor = true;
-      capture_status = disp->capture(
-        [&](std::shared_ptr<platf::img_t> &&frame, bool frame_captured) {
-          if (stop) return false;
-          if (frame && frame_captured) {
-            std::lock_guard lock {mutex};
-            if (queued.size() < 2) {
-              queued.push_back(std::move(frame));
-              ready.notify_one();
-            }
-          }
-          return true;
-        },
-        [&](std::shared_ptr<platf::img_t> &img_out) {
-          for (auto &candidate : pool) {
-            if (candidate.use_count() == 1) {
-              img_out = candidate;
-              return true;
-            }
-          }
-          if (pool.size() >= 4) return false;
-          img_out = disp->alloc_img();
-          if (!img_out) return false;
-          pool.push_back(img_out);
-          return true;
-        },
-        &cursor
-      );
-      std::lock_guard lock {mutex};
-      capture_done = true;
-      ready.notify_one();
+    auto mail = std::make_shared<safe::mail_raw_t>();
+    auto shutdown_event = mail->event<bool>(mail::shutdown);
+    auto packets = mail::man->queue<packet_t>(mail::video_packets);
+    std::thread pipeline {[mail, stream_config = *config]() {
+      platf::set_thread_name("probe::encode");
+      video::capture(mail, stream_config, nullptr);
     }};
 
     const auto extension = config->videoFormat == 0 ? ".h264" : ".hevc";
-    std::ofstream stream_file {output_directory / (std::string {"capture"} + extension), std::ios::binary};
-    auto packets = mail::man->queue<packet_t>(mail::video_packets);
-    session->request_idr_frame();
+    const auto stream_path = output_directory / (std::string {"capture"} + extension);
+    std::ofstream stream_file {stream_path, std::ios::binary};
     std::size_t bytes = 0;
     int encoded = 0;
-    std::shared_ptr<platf::img_t> last;
     std::string failure;
+    std::string loop_end = "the requested frames were encoded";
     const auto started = std::chrono::steady_clock::now();
     while (encoded < frames) {
-      std::shared_ptr<platf::img_t> frame;
-      {
-        std::unique_lock lock {mutex};
-        if (!ready.wait_for(lock, 5s, [&] { return !queued.empty() || capture_done; }) || queued.empty()) {
-          failure = capture_done ? "the capture stopped" : "no frame within five seconds";
-          break;
-        }
-        frame = std::move(queued.front());
-        queued.pop_front();
-      }
-      if (session->convert(*frame) ||
-          encode(encoded + 1, *session, packets, nullptr, frame->frame_timestamp)) {
-        failure = "conversion or encoding failed";
+      auto packet = packets->pop(5s);
+      if (!packet) {
+        failure = shutdown_event->peek() ?
+          "the stream pipeline stopped before the requested frames (see host.log: capture loop status)" :
+          "no encoded frame within five seconds";
+        loop_end = failure;
         break;
       }
-      while (packets->peek()) {
-        auto packet = packets->pop();
-        stream_file.write(reinterpret_cast<const char *>(packet->data()),
-                          static_cast<std::streamsize>(packet->data_size()));
-        bytes += packet->data_size();
-      }
+      if (encoded == 0) report["first_frame_idr"] = packet->is_idr();
+      stream_file.write(reinterpret_cast<const char *>(packet->data()),
+                        static_cast<std::streamsize>(packet->data_size()));
+      bytes += packet->data_size();
       ++encoded;
-      last = std::move(frame);
     }
     const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    stop = true;
-    capture_thread.join();
+
+    // One packed frame, read back on the capture thread (a debug copy only).
+    if (encoded > 0 && !shutdown_event->peek()) {
+      std::unique_lock lock {dump->mutex};
+      dump->wanted = true;
+      dump->ready.wait_for(lock, 5s, [&] { return dump->done; });
+    }
+    shutdown_event->raise(true);
+    pipeline.join();
     stream_file.close();
     report["frames_encoded"] = encoded;
     report["bytes"] = bytes;
     report["seconds"] = elapsed;
     report["fps"] = elapsed > 0 ? encoded / elapsed : 0.0;
-    report["stream"] = (output_directory / (std::string {"capture"} + extension)).string();
+    report["loop_end"] = loop_end;
+    report["stream"] = stream_path.string();
+    BOOST_LOG(info) << "PLANK capture probe: "sv << encoded << " frame(s) in "sv << elapsed << " s; "sv << loop_end;
 
-    // The last packed frame as a binary PPM (RGB).
-    std::vector<std::uint8_t> bgra;
-    if (last && platf::download_captured_image(*last, bgra)) {
+    std::lock_guard lock {dump->mutex};
+    if (dump->done && dump->read) {
+      // Mark each output's slot in the debug copy: a frame and a block in
+      // the output's colour, with index+1 white squares inside the block.
+      constexpr std::array<std::array<std::uint8_t, 3>, 4> colours {{
+        {255, 32, 32}, {32, 224, 32}, {48, 96, 255}, {255, 64, 255},
+      }};
+      const auto paint = [&](int x0, int y0, int width, int height, const std::array<std::uint8_t, 3> &rgb) {
+        for (int y = std::max(0, y0); y < std::min(dump->height, y0 + height); ++y) {
+          for (int x = std::max(0, x0); x < std::min(dump->width, x0 + width); ++x) {
+            auto *pixel = dump->bgra.data() + static_cast<std::size_t>(y) * dump->pitch + static_cast<std::size_t>(x) * 4;
+            pixel[0] = rgb[2];
+            pixel[1] = rgb[1];
+            pixel[2] = rgb[0];
+          }
+        }
+      };
+      const auto &slots = capture.plan->source_rects;
+      for (std::size_t index = 0; index < slots.size(); ++index) {
+        const auto &slot = slots[index];
+        const auto &colour = colours[index % colours.size()];
+        constexpr int border = 6;
+        paint(slot.x, slot.y, slot.width, border, colour);
+        paint(slot.x, slot.y + slot.height - border, slot.width, border, colour);
+        paint(slot.x, slot.y, border, slot.height, colour);
+        paint(slot.x + slot.width - border, slot.y, border, slot.height, colour);
+        paint(slot.x + 32, slot.y + 32, 64 + 40 * static_cast<int>(index + 1), 96, colour);
+        for (std::size_t square = 0; square <= index; ++square) {
+          paint(slot.x + 64 + 40 * static_cast<int>(square), slot.y + 64, 24, 32, {255, 255, 255});
+        }
+      }
       const auto ppm = output_directory / "capture.ppm";
       std::ofstream image {ppm, std::ios::binary};
-      image << "P6\n" << last->width << ' ' << last->height << "\n255\n";
-      std::vector<char> row(static_cast<std::size_t>(last->width) * 3);
-      for (int y = 0; y < last->height; ++y) {
-        const auto *source = bgra.data() + static_cast<std::size_t>(y) * last->row_pitch;
-        for (int x = 0; x < last->width; ++x) {
+      image << "P6\n" << dump->width << ' ' << dump->height << "\n255\n";
+      std::vector<char> row(static_cast<std::size_t>(dump->width) * 3);
+      for (int y = 0; y < dump->height; ++y) {
+        const auto *source = dump->bgra.data() + static_cast<std::size_t>(y) * dump->pitch;
+        for (int x = 0; x < dump->width; ++x) {
           row[static_cast<std::size_t>(x) * 3 + 0] = static_cast<char>(source[x * 4 + 2]);
           row[static_cast<std::size_t>(x) * 3 + 1] = static_cast<char>(source[x * 4 + 1]);
           row[static_cast<std::size_t>(x) * 3 + 2] = static_cast<char>(source[x * 4 + 0]);
@@ -4638,6 +4660,11 @@ namespace video {
         image.write(row.data(), static_cast<std::streamsize>(row.size()));
       }
       report["image"] = ppm.string();
+      report["image_markers"] =
+        "each output's slot is framed in its colour (red, green, blue, magenta by entry) "
+        "with entry+1 white squares in the corner block; the encoded stream is unmarked";
+    } else if (encoded > 0) {
+      report["image_error"] = "no packed frame could be read back";
     }
     if (!failure.empty()) return finish(6, failure);
     return finish(0);
