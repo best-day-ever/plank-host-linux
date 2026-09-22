@@ -11,12 +11,12 @@ namespace topology = plank::topology;
 TEST(PlankTopology, PublishesVersionThirteenFeatureContract) {
   EXPECT_EQ(topology::protocol_version, 13U);
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
-  EXPECT_EQ(topology::feature_flags, 0x2C7FFFFU);
+  EXPECT_EQ(topology::feature_flags, 0x6C7FFFFU);
   EXPECT_NE(topology::feature_flags & topology::feature_clipboard_sync, 0U);
   EXPECT_EQ(topology::feature_platform_file_clipboard,
             topology::feature_file_clipboard);
 #else
-  EXPECT_EQ(topology::feature_flags, 0x247FFFFU);
+  EXPECT_EQ(topology::feature_flags, 0x647FFFFU);
   EXPECT_EQ(topology::feature_flags & topology::feature_clipboard_sync, 0U);
   EXPECT_EQ(topology::feature_platform_file_clipboard, 0U);
 #endif
@@ -24,6 +24,8 @@ TEST(PlankTopology, PublishesVersionThirteenFeatureContract) {
   EXPECT_NE(topology::feature_flags & topology::feature_nvfbc_nvenc_420, 0U);
   EXPECT_NE(topology::feature_flags & topology::feature_desktop_sign_out, 0U);
   EXPECT_EQ(topology::feature_nvfbc_nvenc_420, 0x2000000U);
+  EXPECT_NE(topology::feature_flags & topology::feature_notch_safe_laptop_modes, 0U);
+  EXPECT_EQ(topology::feature_notch_safe_laptop_modes, 0x4000000U);
   EXPECT_NE(topology::feature_flags & topology::feature_nvfbc_hevc10_nvenc, 0U);
   EXPECT_NE(topology::feature_flags & topology::feature_fixed_transport_mtu, 0U);
   EXPECT_NE(topology::feature_flags & topology::feature_session_takeover, 0U);
@@ -42,6 +44,31 @@ TEST(PlankTopology, PublishesVersionThirteenFeatureContract) {
   EXPECT_TRUE(topology::valid_virtual_layout_modes(
     "dual-horizontal", "4096x2160", "4096x2160"
   ));
+}
+
+TEST(PlankTopology, OffersNotchSafeLaptopModesOnlyWhenNegotiated) {
+  const auto size = topology::virtual_mode_size("3024x1890");
+  EXPECT_EQ(size.width, 3024);
+  EXPECT_EQ(size.height, 1890);
+  EXPECT_TRUE(topology::valid_virtual_mode("3024x1890"));
+  // The panel size is not a mode: fullscreen stops at the camera housing.
+  EXPECT_FALSE(topology::valid_virtual_mode("3024x1964"));
+  EXPECT_TRUE(topology::valid_virtual_layout_modes(
+    "dual-horizontal", "3024x1890", "5120x2160"
+  ));
+
+  constexpr auto without = topology::feature_flags &
+    ~topology::feature_notch_safe_laptop_modes;
+  EXPECT_TRUE(topology::virtual_modes_negotiated(
+    topology::feature_flags, "3024x1890", ""
+  ));
+  EXPECT_TRUE(topology::virtual_modes_negotiated(
+    topology::feature_flags, "3840x2160", "3024x1890"
+  ));
+  EXPECT_FALSE(topology::virtual_modes_negotiated(without, "3024x1890", ""));
+  EXPECT_FALSE(topology::virtual_modes_negotiated(without, "3840x2160", "3024x1890"));
+  EXPECT_TRUE(topology::virtual_modes_negotiated(without, "2560x1600", ""));
+  EXPECT_TRUE(topology::virtual_modes_negotiated(without, "", ""));
 }
 
 TEST(PlankTopology, AcceptsOnlyValidFixedQuicPayloadCeilings) {

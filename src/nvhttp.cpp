@@ -835,6 +835,13 @@ namespace nvhttp {
       tree.put("root.<xmlattr>.status_message", "Missing PLANK host-layout binding");
       return false;
     }
+    if (!plank::topology::virtual_modes_negotiated(
+          session.plank_feature_flags, session.virtual_mode_1, session.virtual_mode_2
+        )) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Unnegotiated PLANK virtual display mode");
+      return false;
+    }
 
     std::vector<std::reference_wrapper<const platf::display_info_t>> ordered_outputs;
     ordered_outputs.reserve(outputs.size());
