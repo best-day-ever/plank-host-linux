@@ -769,6 +769,20 @@ namespace video {
   bool packed_capture_available();
 
   /**
+   * @brief Hardware probe: capture a display arrangement through the stream's packing path.
+   *
+   * Packs `request` for the probed limit of `encoding_mode` with the launch
+   * binding's rule, captures `frames` frames of the live X screen through the
+   * NvFBC packed-capture path, encodes them with that NVENC mode and writes
+   * `capture.h264`/`capture.hevc`, the last frame as `capture.ppm` and
+   * `probe.json` into `output_directory`.
+   *
+   * @return 0 on success; 2 usage, 3 unavailable, 4 canvas_too_large, 5 capture or encoder setup, 6 runtime failure.
+   */
+  int capture_probe(std::string_view request, std::string_view encoding_mode, int frames,
+                    const std::filesystem::path &output_directory);
+
+  /**
    * @brief Report whether a negotiated PLANK capture source is available.
    *
    * @param source PLANK protocol capture-source name.

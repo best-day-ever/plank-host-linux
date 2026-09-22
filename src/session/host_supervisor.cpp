@@ -1434,6 +1434,75 @@ namespace {
     return code;
   }
 
+  constexpr std::string_view media_worker_path = "/usr/libexec/plank/plank-host";
+
+  /**
+   * `--capture`: run the media worker's capture probe against the leased X
+   * server, as root with that session's X environment, and return its report.
+   */
+  nlohmann::json run_capture_probe(const plank::display::supervisor_options_t &options,
+                                   const plank::session::environment_t &environment) {
+    const std::filesystem::path output {options.capture_output};
+    std::error_code error;
+    std::filesystem::create_directories(output, error);
+    std::filesystem::remove(output / "probe.json", error);
+    const std::vector<std::string> arguments {
+      std::string {media_worker_path}, std::string {plank_config_path},
+      "log_path=" + (output / "host.log").string(), "--capture-probe", options.request,
+      options.capture_mode, std::to_string(options.capture_frames), output.string(),
+    };
+    const pid_t child = fork();
+    if (child == 0) {
+      sigset_t empty;
+      sigemptyset(&empty);
+      sigprocmask(SIG_SETMASK, &empty, nullptr);
+      clearenv();
+      set_environment_value("HOME", std::string {machine_home});
+      set_environment_value("PATH", "/usr/local/bin:/usr/bin:/bin");
+      set_environment_value("DISPLAY", environment.display);
+      set_environment_value("XAUTHORITY", environment.xauthority);
+      set_environment_value("XDG_RUNTIME_DIR", environment.runtime_directory);
+      const int null_output = open("/dev/null", O_WRONLY | O_CLOEXEC);
+      if (null_output >= 0) dup2(null_output, STDOUT_FILENO);
+      std::vector<char *> argv;
+      for (const auto &argument : arguments) argv.push_back(const_cast<char *>(argument.c_str()));
+      argv.push_back(nullptr);
+      execv(argv.front(), argv.data());
+      std::_Exit(127);
+    }
+    if (child < 0) return {{"exit_code", -1}, {"error", "unable to start the capture probe"}};
+    const auto timeout = std::chrono::seconds {60 + options.capture_frames / 10};
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    int status {};
+    bool exited = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+      const pid_t result = waitpid(child, &status, WNOHANG);
+      if (result == child) {
+        exited = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds {100});
+    }
+    if (!exited) {
+      kill(child, SIGKILL);
+      waitpid(child, nullptr, 0);
+      return {{"exit_code", -1}, {"error", "the capture probe timed out"}};
+    }
+    nlohmann::json report;
+    std::ifstream input {output / "probe.json"};
+    try {
+      if (input) report = nlohmann::json::parse(input);
+    } catch (const nlohmann::json::exception &) {
+      report = nlohmann::json::object();
+    }
+    if (!report.is_object()) report = nlohmann::json::object();
+    report["exit_code"] = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (!report.contains("error") && report["exit_code"] != 0) {
+      report["error"] = "the capture probe failed; see " + (output / "host.log").string();
+    }
+    return report;
+  }
+
   /** `--print-inventory`: capture and print the inventory and display_capabilities. */
   int print_inventory(const plank::display::supervisor_options_t &options) {
     nlohmann::json report {{"mode", "print-inventory"}};
@@ -1582,6 +1651,12 @@ namespace {
               << options.hold_seconds << " s\n";
     const auto start = std::chrono::steady_clock::now();
     const auto hold_end = start + std::chrono::seconds {options.hold_seconds};
+    bool capture_passed = true;
+    if (!options.capture_mode.empty()) {
+      // The media worker's own packed-capture path, while the lease holds.
+      report["capture"] = run_capture_probe(options, *environment);
+      capture_passed = report["capture"].value("exit_code", -1) == 0;
+    }
     while (std::chrono::steady_clock::now() < hold_end) {
       const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
         hold_end - std::chrono::steady_clock::now()
@@ -1611,7 +1686,7 @@ namespace {
     }
     const auto restored = restore_arrangement_lease(lease, *selected, *environment, inventory, record);
     report["restore"] = restore_json(restored);
-    const bool success = restored.metamode_exact && restored.visibility_exact;
+    const bool success = restored.metamode_exact && restored.visibility_exact && capture_passed;
     report["success"] = success;
     release();
     return emit_report(report, options.json,

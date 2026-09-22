@@ -6,6 +6,8 @@
 
 #include "../plank_arrangement.h"
 
+#include <algorithm>
+#include <array>
 #include <charconv>
 #include <set>
 #include <sstream>
@@ -59,6 +61,32 @@ namespace plank::display {
         const auto hold = parse_hold(arguments[++index]);
         if (!hold) return fail("--hold must be 0 to " + std::to_string(maximum_hold_seconds) + " seconds");
         options.hold_seconds = *hold;
+      } else if (argument == "--capture") {
+        if (!has_value) return fail("--capture needs an NVENC encoding mode");
+        options.capture_mode = std::string {arguments[++index]};
+        static constexpr std::array<std::string_view, 5> modes {
+          "h264-8-444-nvenc", "hevc-8-444-nvenc", "hevc-10-444-nvenc", "h264-8-420-nvenc", "hevc-10-420-nvenc",
+        };
+        if (std::find(modes.begin(), modes.end(), options.capture_mode) == modes.end()) {
+          return fail("--capture needs an NVENC encoding mode, for example hevc-10-444-nvenc");
+        }
+      } else if (argument == "--capture-frames") {
+        if (!has_value) return fail("--capture-frames needs a number of frames");
+        const auto value = arguments[++index];
+        int frames {};
+        const auto result = std::from_chars(value.data(), value.data() + value.size(), frames);
+        if (value.empty() || result.ec != std::errc {} || result.ptr != value.data() + value.size() ||
+            frames < 1 || frames > 3600 || value.front() == '0') {
+          return fail("--capture-frames must be 1 to 3600");
+        }
+        options.capture_frames = frames;
+      } else if (argument == "--capture-output") {
+        if (!has_value) return fail("--capture-output needs an absolute directory");
+        options.capture_output = std::string {arguments[++index]};
+        if (options.capture_output.empty() || options.capture_output.front() != '/' ||
+            options.capture_output.find_first_of(" \t\n") != std::string::npos) {
+          return fail("--capture-output needs an absolute directory without spaces");
+        }
       } else if (argument == "--print-inventory") {
         options.mode = supervisor_options_t::run_mode_t::print_inventory;
       } else if (argument == "--json") {
@@ -74,6 +102,13 @@ namespace plank::display {
       return fail("--worker applies only to the supervisor");
     }
     if (seen.contains("--hold") && !qualify) return fail("--hold applies only to --qualify-arrangement");
+    if ((seen.contains("--capture") || seen.contains("--capture-frames") || seen.contains("--capture-output")) &&
+        !qualify) {
+      return fail("--capture applies only to --qualify-arrangement");
+    }
+    if ((seen.contains("--capture-frames") || seen.contains("--capture-output")) && !seen.contains("--capture")) {
+      return fail("--capture-frames and --capture-output need --capture");
+    }
     if (options.json && !qualify && !inventory) {
       return fail("--json applies only to --qualify-arrangement and --print-inventory");
     }
@@ -84,6 +119,7 @@ namespace plank::display {
     const std::string name {program};
     return "usage: " + name + " [--worker ABSOLUTE_PATH]\n"
            "       " + name + " --qualify-arrangement REQUEST [--hold SECONDS] [--json]\n"
+           "           [--capture MODE [--capture-frames N] [--capture-output DIRECTORY]]\n"
            "       " + name + " --print-inventory [--json]\n";
   }
 
@@ -240,6 +276,23 @@ namespace plank::display {
                << "\n";
         }
       }
+    }
+    if (report.contains("capture")) {
+      const auto &capture = report.at("capture");
+      text << "capture probe: exit " << capture.value("exit_code", -1);
+      if (capture.contains("plan")) {
+        const auto &plan = capture.at("plan");
+        text << ", " << (plan.value("packed", false) ? "packed " : "unpacked ")
+             << plan.at("capture").value("width", 0) << "x" << plan.at("capture").value("height", 0);
+      }
+      if (capture.contains("frames_encoded")) {
+        text << ", " << capture.value("frames_encoded", 0) << " frames, "
+             << capture.value("fps", 0.0) << " fps";
+      }
+      if (capture.contains("error")) text << ", error: " << capture.value("error", "");
+      text << "\n";
+      if (capture.contains("stream")) text << "  stream: " << capture.value("stream", "") << "\n";
+      if (capture.contains("image")) text << "  image: " << capture.value("image", "") << "\n";
     }
     if (report.contains("hold_seconds")) text << "held: " << report.at("hold_seconds").get<int>() << " s\n";
     if (report.contains("restore")) {

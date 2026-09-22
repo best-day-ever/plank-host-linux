@@ -4447,4 +4447,205 @@ namespace video {
   }
 
 
+  namespace {
+    /** Stream parameters of one NVENC encoding mode, as a client would request them. */
+    std::optional<config_t> probe_config_for_mode(std::string_view mode) {
+      config_t config {};
+      config.framerate = 60;
+      config.bitrate = 150000;
+      config.slicesPerFrame = 1;
+      config.numRefFrames = 0;
+      config.enableIntraRefresh = 0;
+      const int identity = (COLORSPACE_IDENTITY_GBR << 1) | 1;
+      if (mode == "h264-8-444-nvenc"sv) {
+        config.videoFormat = 0, config.dynamicRange = 0, config.chromaSamplingType = 1, config.encoderCscMode = identity;
+      } else if (mode == "hevc-8-444-nvenc"sv) {
+        config.videoFormat = 1, config.dynamicRange = 0, config.chromaSamplingType = 1, config.encoderCscMode = identity;
+      } else if (mode == "hevc-10-444-nvenc"sv) {
+        config.videoFormat = 1, config.dynamicRange = 1, config.chromaSamplingType = 1, config.encoderCscMode = identity;
+      } else if (mode == "h264-8-420-nvenc"sv) {
+        config.videoFormat = 0, config.dynamicRange = 0, config.chromaSamplingType = 0,
+        config.encoderCscMode = plank::topology::nvenc_420_encoder_csc_mode;
+      } else if (mode == "hevc-10-420-nvenc"sv) {
+        config.videoFormat = 1, config.dynamicRange = 1, config.chromaSamplingType = 0,
+        config.encoderCscMode = plank::topology::nvenc_420_encoder_csc_mode;
+      } else {
+        return std::nullopt;
+      }
+      config.capture_source = capture_source_e::nvfbc_8bit;
+      config.encoder_backend = "nvenc-direct";
+      config.span_desktop = true;
+      return config;
+    }
+  }  // namespace
+
+  int capture_probe(std::string_view request_text, std::string_view encoding_mode, int frames,
+                    const std::filesystem::path &output_directory) {
+    nlohmann::json report {
+      {"request", std::string {request_text}}, {"encoding_mode", std::string {encoding_mode}},
+      {"frames_requested", frames},
+    };
+    std::error_code directory_error;
+    std::filesystem::create_directories(output_directory, directory_error);
+    const auto finish = [&](int code, std::string_view message = {}) {
+      if (!message.empty()) {
+        report["error"] = std::string {message};
+        BOOST_LOG(error) << "PLANK capture probe: "sv << message;
+      }
+      report["exit_code"] = code;
+      std::ofstream {output_directory / "probe.json"} << report.dump(2) << '\n';
+      std::cout << report.dump(2) << std::endl;
+      return code;
+    };
+    if (directory_error) return finish(2, "unable to create " + output_directory.string());
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    const auto request = plank::arrangement::parse(request_text).request;
+    if (!request) return finish(2, "not a canonical display arrangement");
+    if (frames <= 0 || frames > 3600) return finish(2, "frames must be 1 to 3600");
+    auto config = probe_config_for_mode(encoding_mode);
+    if (!config) return finish(2, "not an NVENC encoding mode");
+    if (probe_encoders() || !select_encoder_backend_for_session("nvenc-direct"sv) ||
+        !encoding_mode_available(encoding_mode)) {
+      return finish(3, "the NVENC encoding mode is unavailable on this host");
+    }
+    const auto limits = encoding_mode_limits();
+    const auto limit = limits.find(std::string {encoding_mode});
+    if (limit == limits.end()) return finish(3, "no probed encoder limit for this mode");
+
+    // The same packing rule the launch binding uses.
+    const auto capture = plank::arrangement::pack(*request, limit->second.width, limit->second.height);
+    if (!capture.plan) return finish(4, "canvas_too_large");
+    const auto desktop = plank::arrangement::desktop_bounds(*request);
+    config->width = capture.plan->width;
+    config->height = capture.plan->height;
+    config->capture_regions = plank::arrangement::capture_regions(*request, *capture.plan);
+    config->desktop_width = desktop.width;
+    config->desktop_height = desktop.height;
+    report["plan"] = plank::arrangement::capture_plan_json(*capture.plan);
+    report["desktop"] = {{"width", desktop.width}, {"height", desktop.height}};
+    report["encoder_limit"] = {{"width", limit->second.width}, {"height", limit->second.height}};
+
+    const auto &encoder = nvenc_direct;
+    auto disp = platf::display(encoder.platform_formats->dev_type, std::string {}, *config);
+    if (!disp) return finish(5, "unable to open the NvFBC capture (is DISPLAY/XAUTHORITY the active X server?)");
+    report["screen"] = {{"width", disp->env_width}, {"height", disp->env_height}};
+    auto encode_device = make_encode_device(*disp, encoder, *config);
+    if (!encode_device) return finish(5, "unable to create the NVENC encode device");
+    auto session = make_encode_session(disp.get(), encoder, *config, disp->width, disp->height,
+                                       std::move(encode_device));
+    if (!session) return finish(5, "unable to create the NVENC encode session");
+
+    // Capture on its own thread as the stream does; encode here.
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::deque<std::shared_ptr<platf::img_t>> queued;
+    std::vector<std::shared_ptr<platf::img_t>> pool;
+    std::atomic_bool stop {false};
+    bool capture_done = false;
+    platf::capture_e capture_status {platf::capture_e::ok};
+    std::thread capture_thread {[&] {
+      bool cursor = true;
+      capture_status = disp->capture(
+        [&](std::shared_ptr<platf::img_t> &&frame, bool frame_captured) {
+          if (stop) return false;
+          if (frame && frame_captured) {
+            std::lock_guard lock {mutex};
+            if (queued.size() < 2) {
+              queued.push_back(std::move(frame));
+              ready.notify_one();
+            }
+          }
+          return true;
+        },
+        [&](std::shared_ptr<platf::img_t> &img_out) {
+          for (auto &candidate : pool) {
+            if (candidate.use_count() == 1) {
+              img_out = candidate;
+              return true;
+            }
+          }
+          if (pool.size() >= 4) return false;
+          img_out = disp->alloc_img();
+          if (!img_out) return false;
+          pool.push_back(img_out);
+          return true;
+        },
+        &cursor
+      );
+      std::lock_guard lock {mutex};
+      capture_done = true;
+      ready.notify_one();
+    }};
+
+    const auto extension = config->videoFormat == 0 ? ".h264" : ".hevc";
+    std::ofstream stream_file {output_directory / (std::string {"capture"} + extension), std::ios::binary};
+    auto packets = mail::man->queue<packet_t>(mail::video_packets);
+    session->request_idr_frame();
+    std::size_t bytes = 0;
+    int encoded = 0;
+    std::shared_ptr<platf::img_t> last;
+    std::string failure;
+    const auto started = std::chrono::steady_clock::now();
+    while (encoded < frames) {
+      std::shared_ptr<platf::img_t> frame;
+      {
+        std::unique_lock lock {mutex};
+        if (!ready.wait_for(lock, 5s, [&] { return !queued.empty() || capture_done; }) || queued.empty()) {
+          failure = capture_done ? "the capture stopped" : "no frame within five seconds";
+          break;
+        }
+        frame = std::move(queued.front());
+        queued.pop_front();
+      }
+      if (session->convert(*frame) ||
+          encode(encoded + 1, *session, packets, nullptr, frame->frame_timestamp)) {
+        failure = "conversion or encoding failed";
+        break;
+      }
+      while (packets->peek()) {
+        auto packet = packets->pop();
+        stream_file.write(reinterpret_cast<const char *>(packet->data()),
+                          static_cast<std::streamsize>(packet->data_size()));
+        bytes += packet->data_size();
+      }
+      ++encoded;
+      last = std::move(frame);
+    }
+    const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    stop = true;
+    capture_thread.join();
+    stream_file.close();
+    report["frames_encoded"] = encoded;
+    report["bytes"] = bytes;
+    report["seconds"] = elapsed;
+    report["fps"] = elapsed > 0 ? encoded / elapsed : 0.0;
+    report["stream"] = (output_directory / (std::string {"capture"} + extension)).string();
+
+    // The last packed frame as a binary PPM (RGB).
+    std::vector<std::uint8_t> bgra;
+    if (last && platf::download_captured_image(*last, bgra)) {
+      const auto ppm = output_directory / "capture.ppm";
+      std::ofstream image {ppm, std::ios::binary};
+      image << "P6\n" << last->width << ' ' << last->height << "\n255\n";
+      std::vector<char> row(static_cast<std::size_t>(last->width) * 3);
+      for (int y = 0; y < last->height; ++y) {
+        const auto *source = bgra.data() + static_cast<std::size_t>(y) * last->row_pitch;
+        for (int x = 0; x < last->width; ++x) {
+          row[static_cast<std::size_t>(x) * 3 + 0] = static_cast<char>(source[x * 4 + 2]);
+          row[static_cast<std::size_t>(x) * 3 + 1] = static_cast<char>(source[x * 4 + 1]);
+          row[static_cast<std::size_t>(x) * 3 + 2] = static_cast<char>(source[x * 4 + 0]);
+        }
+        image.write(row.data(), static_cast<std::streamsize>(row.size()));
+      }
+      report["image"] = ppm.string();
+    }
+    if (!failure.empty()) return finish(6, failure);
+    return finish(0);
+#else
+    (void) request_text;
+    (void) encoding_mode;
+    (void) frames;
+    return finish(3, "this build has no NvFBC capture");
+#endif
+  }
 }  // namespace video

@@ -53,6 +53,9 @@ namespace plank::display {
     std::string request;  ///< Canonical arrangement (qualify only).
     int hold_seconds {default_hold_seconds};  ///< `--hold` (qualify only).
     bool json {};  ///< `--json` (qualify and print-inventory).
+    std::string capture_mode;  ///< `--capture MODE`: run the media worker's capture probe during the hold.
+    int capture_frames {120};  ///< `--capture-frames` (with `--capture`).
+    std::string capture_output {"/var/tmp/plank-capture-probe"};  ///< `--capture-output` (with `--capture`).
   };
 
   /**

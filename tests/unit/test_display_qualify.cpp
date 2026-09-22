@@ -183,3 +183,33 @@ TEST(DisplayQualify, ReportsTheInventory) {
             std::string::npos);
   EXPECT_NE(text.find("virtual DP-0 DFP-0/DPY-0 Connector-1 (reserved head)"), std::string::npos);
 }
+
+TEST(DisplayQualify, ParsesTheCaptureProbeOptions) {
+  const auto capture = parse({"--qualify-arrangement", "1:3840x2160+0+0:auto", "--hold", "30",
+                              "--capture", "hevc-10-444-nvenc", "--capture-frames", "60",
+                              "--capture-output", "/var/tmp/probe"});
+  ASSERT_TRUE(capture.options) << capture.error;
+  EXPECT_EQ(capture.options->capture_mode, "hevc-10-444-nvenc");
+  EXPECT_EQ(capture.options->capture_frames, 60);
+  EXPECT_EQ(capture.options->capture_output, "/var/tmp/probe");
+  const auto defaults = parse({"--qualify-arrangement", "1:3840x2160+0+0:auto", "--capture", "h264-8-444-nvenc"});
+  ASSERT_TRUE(defaults.options);
+  EXPECT_EQ(defaults.options->capture_frames, 120);
+  EXPECT_EQ(defaults.options->capture_output, "/var/tmp/plank-capture-probe");
+
+  EXPECT_FALSE(parse({"--qualify-arrangement", "1:3840x2160+0+0:auto", "--capture", "h264-10-444-software"}).options);
+  EXPECT_FALSE(parse({"--qualify-arrangement", "1:3840x2160+0+0:auto", "--capture-frames", "60"}).options);
+  EXPECT_FALSE(parse({"--qualify-arrangement", "1:3840x2160+0+0:auto", "--capture", "hevc-10-444-nvenc",
+                      "--capture-frames", "0"}).options);
+  EXPECT_FALSE(parse({"--qualify-arrangement", "1:3840x2160+0+0:auto", "--capture", "hevc-10-444-nvenc",
+                      "--capture-output", "relative/dir"}).options);
+  EXPECT_FALSE(parse({"--print-inventory", "--capture", "hevc-10-444-nvenc"}).options);
+
+  const auto text = display::report_text({
+    {"capture", {{"exit_code", 0}, {"frames_encoded", 120}, {"fps", 60.0},
+                 {"plan", {{"packed", true}, {"capture", {{"width", 7680}, {"height", 4320}}}}},
+                 {"stream", "/var/tmp/probe/capture.hevc"}}},
+  });
+  EXPECT_NE(text.find("capture probe: exit 0, packed 7680x4320, 120 frames"), std::string::npos);
+  EXPECT_NE(text.find("stream: /var/tmp/probe/capture.hevc"), std::string::npos);
+}
