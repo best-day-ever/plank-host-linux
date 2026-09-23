@@ -1017,6 +1017,38 @@ namespace {
     return no_user;
   }
 
+  /** GDM can leave an online greeter that logind never makes active. */
+  std::string inactive_seat0_greeter() {
+    char **sessions = nullptr;
+    const int count = sd_seat_get_sessions("seat0", &sessions, nullptr, nullptr);
+    if (count < 0) return {};
+    std::string greeter;
+    bool ambiguous = false;
+    for (int index = 0; index < count; ++index) {
+      char *session_class = nullptr;
+      const int status = sd_session_get_class(sessions[index], &session_class);
+      if (status >= 0 && session_class != nullptr &&
+          std::string_view {session_class} == "greeter" &&
+          sd_session_is_active(sessions[index]) == 0) {
+        // Multiple lingering greeters are ambiguous. Wait for GDM to settle.
+        if (!greeter.empty()) ambiguous = true;
+        else greeter = sessions[index];
+      }
+      free(session_class);
+      free(sessions[index]);
+    }
+    free(sessions);
+    return ambiguous ? std::string {} : greeter;
+  }
+
+  /** An old lease cannot be restored once its logind/X server session is gone. */
+  bool lease_session_vanished(std::string_view session_id) {
+    char *session_class = nullptr;
+    const int status = sd_session_get_class(std::string {session_id}.c_str(), &session_class);
+    free(session_class);
+    return plank::session::session_record_vanished(status);
+  }
+
   /** Stop GDM, rebuild the overlay, and recover on the physical layout if X fails. */
   bool restart_greeter_with_boot_overlay(std::string_view previous_session) {
     const bool stopped = run_bounded_command(
@@ -1124,8 +1156,9 @@ namespace {
   };
 
   /**
-   * End an arrangement lease on its X server: visibility back first, then the
-   * exact snapshot, verified; else a current physical output at its native mode.
+   * End an arrangement lease on its X server: expose the original outputs,
+   * restore the exact MetaMode, then hide outputs that were originally hidden.
+   * This keeps a lit scanout throughout the change for GNOME Shell.
    */
   restore_report_t restore_arrangement_lease(
     const arrangement_lease_t &lease,
@@ -1140,23 +1173,32 @@ namespace {
       // Keep the recovery record if the account lookup failed temporarily.
       return report;
     }
-    std::vector<std::string> visibility;
+    std::vector<std::string> prepare_visibility;
+    std::vector<std::string> finalize_visibility;
     for (const auto &output : lease.outputs) {
       if (output.non_desktop_before == 0) {
-        visibility.insert(visibility.end(), {"--output", output.randr, "--set", "non-desktop", "0"});
+        prepare_visibility.insert(prepare_visibility.end(),
+                                  {"--output", output.randr, "--set", "non-desktop", "0"});
       } else if (output.non_desktop_before == 1) {
-        visibility.insert(visibility.end(), {"--output", output.randr, "--off", "--set", "non-desktop", "1"});
+        finalize_visibility.insert(finalize_visibility.end(),
+                                   {"--output", output.randr, "--off", "--set", "non-desktop", "1"});
       }
     }
-    if (!visibility.empty() &&
-        !run_bounded_user_command(xrandr_path, visibility, lease_command_timeout, *account, environment)) {
-      std::cerr << "Unable to restore the pre-session PLANK output visibility\n";
+    if (!prepare_visibility.empty() &&
+        !run_bounded_user_command(xrandr_path, prepare_visibility,
+                                  lease_command_timeout, *account, environment)) {
+      std::cerr << "Unable to prepare the pre-session PLANK output visibility\n";
     }
     settle_randr(*account, environment);
     if (assign_metamode(lease.snapshot.assignment, *account, environment)) {
       const auto restored = capture_physical_snapshot(*account, environment);
       if (restored) report.restored = restored->assignment;
       report.metamode_exact = restored && restored->assignment == lease.snapshot.assignment;
+    }
+    if (!finalize_visibility.empty() &&
+        !run_bounded_user_command(xrandr_path, finalize_visibility,
+                                  lease_command_timeout, *account, environment)) {
+      std::cerr << "Unable to finalize the pre-session PLANK output visibility\n";
     }
     if (lease.primary_before) {
       const auto arguments = lease.primary_before->empty() ?
@@ -1264,8 +1306,9 @@ namespace {
 
   /**
    * Apply a planned arrangement as the session user: snapshot (first acquire
-   * only), record the lease, visibility first, settle, one CurrentMetaMode,
-   * primary, verify (retry once). Any failure restores the snapshot.
+   * only), record the lease, reveal target heads while the old scanout stays
+   * lit, assign CurrentMetaMode, hide unused heads, primary, verify (retry
+   * once). Any failure restores the snapshot.
    */
   apply_report_t apply_arrangement_plan(
     arrangement_lease_t &lease,
@@ -1337,10 +1380,10 @@ namespace {
       return report;
     };
     if (!run_bounded_user_command(
-          xrandr_path, plank::display::visibility_arguments(plan, hide_unused_physical_outputs),
+          xrandr_path, plank::display::prepare_visibility_arguments(plan),
           lease_command_timeout, *account, environment
         )) {
-      return failed("visibility_failed");
+      return failed("visibility_prepare_failed");
     }
     if (!settle_randr(*account, environment)) {
       std::cerr << "PLANK outputs did not settle within three seconds; applying the arrangement anyway\n";
@@ -1349,6 +1392,12 @@ namespace {
     for (int attempt = 0; attempt < 2 && !live; ++attempt) {
       report.attempts = attempt + 1;
       if (!assign_metamode(plan.metamode, *account, environment)) continue;
+      const auto finalize = plank::display::finalize_visibility_arguments(plan, hide_unused_physical_outputs);
+      if (!finalize.empty() && !run_bounded_user_command(
+            xrandr_path, finalize, lease_command_timeout, *account, environment
+          )) {
+        return failed("visibility_finalize_failed");
+      }
       run_bounded_user_command(
         xrandr_path, {"--output", plan.primary, "--primary"}, lease_command_timeout, *account,
         environment
@@ -1934,6 +1983,26 @@ int main(int argc, char **argv) {
     // A qualification run owns the display; one that died is restored here.
     qualification_live = arrangement_startup && check_qualification();
 
+    // A signed-out desktop may leave both an inactive GDM greeter and an
+    // arrangement marked active forever. Its old X server cannot restore the
+    // snapshot; discard that lease so bounded greeter recovery can run.
+    if (!qualification_live && !pending_display_request &&
+        seat0_has_no_user_session() &&
+        ((arrangement_lease && lease_session_vanished(arrangement_lease->session_id)) ||
+         (physical_display_lease && lease_session_vanished(physical_display_lease->session_id)))) {
+      stop_worker(worker);
+      if (arrangement_lease && lease_session_vanished(arrangement_lease->session_id)) {
+        arrangement_lease.reset();
+        clear_runtime_display_state();
+        std::clog << "Discarded a PLANK display arrangement after its X server session ended\n";
+      }
+      if (physical_display_lease && lease_session_vanished(physical_display_lease->session_id)) {
+        physical_display_lease.reset();
+        clear_runtime_display_state();
+        std::clog << "Discarded a temporary PLANK display lease after its X server session ended\n";
+      }
+    }
+
     if (physical_display_lease && !physical_display_lease->active &&
         std::chrono::steady_clock::now() >= physical_display_lease->deadline) {
       const auto selected = plank::session::active_seat0_graphical_session();
@@ -2160,31 +2229,42 @@ int main(int argc, char **argv) {
     const auto selected = plank::session::active_seat0_graphical_session();
     const auto selected_environment = selected ?
       plank::session::discover_environment(*selected) : std::nullopt;
-    const bool stalled_greeter = selected && selected->session_class == "greeter" &&
-      !selected_environment;
+    const std::string inactive_greeter = selected ? std::string {} : inactive_seat0_greeter();
+    const bool stalled_greeter =
+      (selected && selected->session_class == "greeter" && !selected_environment) ||
+      !inactive_greeter.empty();
+    const std::string recovery_session = selected ? selected->id : inactive_greeter;
     const bool safe_greeter_recovery = stalled_greeter && !arrangement_lease &&
       !physical_display_lease && !qualification_live && !pending_display_request &&
       seat0_has_no_user_session();
-    if (greeter_recovery.observe(stalled_greeter ? selected->id : "",
+    if (greeter_recovery.observe(stalled_greeter ? recovery_session : "",
                                  selected && !stalled_greeter, safe_greeter_recovery,
                                  std::chrono::steady_clock::now())) {
       // GDM can report an active greeter even after its X server disappeared.
       // Recheck immediately before touching the display manager; a user login
       // or a display lease may have begun while the greeter was stalled.
       const auto current = plank::session::active_seat0_graphical_session();
-      if (current && current->id == selected->id &&
-          !plank::session::discover_environment(*current) &&
+      const std::string current_inactive = current ? std::string {} : inactive_seat0_greeter();
+      const bool same_stalled_greeter = current ?
+        current->id == recovery_session && current->session_class == "greeter" &&
+          !plank::session::discover_environment(*current) :
+        current_inactive == recovery_session && !current_inactive.empty();
+      if (same_stalled_greeter &&
           !arrangement_lease && !physical_display_lease && !qualification_live &&
           !pending_display_request && seat0_has_no_user_session()) {
         std::cerr << "PLANK greeter has no usable X server; restarting GDM once\n";
         stop_worker(worker);
         const auto before_restart = plank::session::active_seat0_graphical_session();
-        if (before_restart && before_restart->id == selected->id &&
-            !plank::session::discover_environment(*before_restart) &&
+        const std::string before_inactive = before_restart ? std::string {} : inactive_seat0_greeter();
+        const bool still_stalled = before_restart ?
+          before_restart->id == recovery_session && before_restart->session_class == "greeter" &&
+            !plank::session::discover_environment(*before_restart) :
+          before_inactive == recovery_session && !before_inactive.empty();
+        if (still_stalled &&
             seat0_has_no_user_session()) {
           if (!run_bounded_command(systemctl_path, {"restart", "display-manager.service"},
                                    std::chrono::seconds {30}) ||
-              !wait_for_graphical_restart(selected->id)) {
+              !wait_for_graphical_restart(recovery_session)) {
             std::cerr << "PLANK greeter recovery did not yield a usable new X server\n";
           }
         }

@@ -3673,7 +3673,14 @@ namespace video {
     if (!chosen_encoder || !chosen_encoder->platform_formats) {
       return {};
     }
-    return platf::display_infos(chosen_encoder->platform_formats->dev_type);
+    auto outputs = platf::display_infos(chosen_encoder->platform_formats->dev_type);
+    // XRandR can expose no active CRTC during a modeset. The Linux capture
+    // fallback then reports a capture device without desktop geometry. Do
+    // not publish that placeholder as a usable monitor or bind it at launch.
+    std::erase_if(outputs, [](const auto &output) {
+      return output.width <= 0 || output.height <= 0;
+    });
+    return outputs;
   }
 
   std::string output_topology_generation(const std::vector<platf::display_info_t> &outputs) {

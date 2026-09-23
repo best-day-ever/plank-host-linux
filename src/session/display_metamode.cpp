@@ -268,6 +268,26 @@ namespace plank::display {
     return arguments;
   }
 
+  std::vector<std::string> prepare_visibility_arguments(const arrangement_plan_t &plan) {
+    std::vector<std::string> arguments;
+    for (const auto &output : plan.outputs) {
+      if (output.backing != "off") {
+        arguments.insert(arguments.end(), {"--output", output.randr, "--set", "non-desktop", "0"});
+      }
+    }
+    return arguments;
+  }
+
+  std::vector<std::string> finalize_visibility_arguments(const arrangement_plan_t &plan, bool hide_physical) {
+    std::vector<std::string> arguments;
+    for (const auto &output : plan.outputs) {
+      if (output.backing == "off" && (!output.physical || hide_physical)) {
+        arguments.insert(arguments.end(), {"--output", output.randr, "--off", "--set", "non-desktop", "1"});
+      }
+    }
+    return arguments;
+  }
+
   bool arrangement_live(const randr_screen_t &screen, const arrangement_plan_t &plan) {
     if (screen.width != plan.width || screen.height != plan.height) return false;
     for (const auto &output : plan.outputs) {
