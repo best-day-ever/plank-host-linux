@@ -30,5 +30,6 @@ TEST(GreeterRecovery, LimitsRestartsAcrossNewGreeterSessions) {
   EXPECT_FALSE(recovery.observe("c3", false, true, start + 90s));
   EXPECT_FALSE(recovery.observe("c3", true, false, start + 91s));
   EXPECT_FALSE(recovery.observe("c4", false, true, start + 92s));
-  EXPECT_TRUE(recovery.observe("c4", false, true, start + 112s));
+  EXPECT_FALSE(recovery.observe("c4", false, true, start + 112s));
+  EXPECT_TRUE(recovery.observe("c4", false, true, start + 650s));
 }
