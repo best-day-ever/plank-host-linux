@@ -4,11 +4,23 @@
  */
 #pragma once
 
+#include <cerrno>
 #include <chrono>
 #include <string>
 #include <string_view>
 
 namespace plank::session {
+  /**
+   * @brief Decide whether a seat session prevents a GDM restart.
+   * @param status Result of sd_session_get_class for this seat session.
+   * @param session_class Class returned for a live session.
+   * @return True for a user session or an error other than a vanished session.
+   */
+  inline bool seat_session_blocks_greeter_recovery(int status, std::string_view session_class) {
+    if (status >= 0) return session_class == "user";
+    return status != -ENXIO && status != -ENOENT;
+  }
+
   /**
    * @brief Tracks stalled greeter sessions and limits display-manager restarts.
    */

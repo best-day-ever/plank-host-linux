@@ -1003,8 +1003,14 @@ namespace {
     if (count < 0) return false;
     bool no_user = true;
     for (int index = 0; index < count; ++index) {
-      const auto session = plank::session::describe(sessions[index]);
-      if (!session || session->session_class == "user") no_user = false;
+      char *session_class = nullptr;
+      const int status = sd_session_get_class(sessions[index], &session_class);
+      if (plank::session::seat_session_blocks_greeter_recovery(
+            status, session_class == nullptr ? std::string_view {} : session_class
+          )) {
+        no_user = false;
+      }
+      free(session_class);
       free(sessions[index]);
     }
     free(sessions);

@@ -8,6 +8,15 @@
 
 using namespace std::chrono_literals;
 
+TEST(GreeterRecovery, IgnoresVanishedSeatRecordsButProtectsUserSessions) {
+  using plank::session::seat_session_blocks_greeter_recovery;
+  EXPECT_FALSE(seat_session_blocks_greeter_recovery(0, "greeter"));
+  EXPECT_TRUE(seat_session_blocks_greeter_recovery(0, "user"));
+  EXPECT_FALSE(seat_session_blocks_greeter_recovery(-ENXIO, ""));
+  EXPECT_FALSE(seat_session_blocks_greeter_recovery(-ENOENT, ""));
+  EXPECT_TRUE(seat_session_blocks_greeter_recovery(-EACCES, ""));
+}
+
 TEST(GreeterRecovery, WaitsForStalledGreeterAndRequiresSafeState) {
   plank::session::greeter_recovery_t recovery;
   const auto start = plank::session::greeter_recovery_t::clock::time_point {};
