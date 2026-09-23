@@ -2360,6 +2360,12 @@ int main(int argc, char **argv) {
             auto carried = *arrangement_lease;
             reason = apply_arrangement_lease(carried, *selected, *environment, *inventory, nullptr);
             if (reason.empty()) {
+              // The greeter stream ended at handoff. The new desktop has no
+              // stream until its worker confirms activation; bound this lease
+              // so a failed reconnect cannot leave the local screen hidden.
+              carried.active = false;
+              carried.deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds {30};
               arrangement_lease = std::move(carried);
               std::clog << "Carried the PLANK display arrangement into user session "
                         << selected->id << '\n';
@@ -2383,6 +2389,11 @@ int main(int argc, char **argv) {
               physical_display_lease.reset();
               std::cerr << "Unable to carry the temporary display lease from GDM into the authenticated desktop\n";
             } else {
+              // A greeter stream must not keep the user's new X server leased
+              // indefinitely when the desktop worker never gets a connection.
+              physical_display_lease->active = false;
+              physical_display_lease->deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds {30};
               std::clog << "Carried the temporary PLANK display lease into user session "
                         << selected->id << '\n';
             }
