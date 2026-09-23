@@ -5,6 +5,7 @@
 #include "display_inventory.h"
 #include "display_metamode.h"
 #include "display_qualify.h"
+#include "greeter_recovery.h"
 #include "session_context.h"
 #include "worker_control.h"
 #include "../plank_arrangement.h"
@@ -16,6 +17,7 @@
 #include <array>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -994,6 +996,21 @@ namespace {
     return false;
   }
 
+  /** Never restart GDM while any user desktop still belongs to seat0. */
+  bool seat0_has_no_user_session() {
+    char **sessions = nullptr;
+    const int count = sd_seat_get_sessions("seat0", &sessions, nullptr, nullptr);
+    if (count < 0) return false;
+    bool no_user = true;
+    for (int index = 0; index < count; ++index) {
+      const auto session = plank::session::describe(sessions[index]);
+      if (!session || session->session_class == "user") no_user = false;
+      free(sessions[index]);
+    }
+    free(sessions);
+    return no_user;
+  }
+
   /** Stop GDM, rebuild the overlay, and recover on the physical layout if X fails. */
   bool restart_greeter_with_boot_overlay(std::string_view previous_session) {
     const bool stopped = run_bounded_command(
@@ -1904,6 +1921,7 @@ int main(int argc, char **argv) {
   auto display_request_deadline = std::chrono::steady_clock::time_point::max();
   std::string pending_session;
   auto next_launch = std::chrono::steady_clock::now();
+  plank::session::greeter_recovery_t greeter_recovery;
   bool stopping = false;
   bool qualification_live = false;
   while (!stopping) {
@@ -2134,11 +2152,47 @@ int main(int argc, char **argv) {
     }
 
     const auto selected = plank::session::active_seat0_graphical_session();
+    const auto selected_environment = selected ?
+      plank::session::discover_environment(*selected) : std::nullopt;
+    const bool stalled_greeter = selected && selected->session_class == "greeter" &&
+      !selected_environment;
+    const bool safe_greeter_recovery = stalled_greeter && !arrangement_lease &&
+      !physical_display_lease && !qualification_live && !pending_display_request &&
+      seat0_has_no_user_session();
+    if (greeter_recovery.observe(stalled_greeter ? selected->id : "",
+                                 selected && !stalled_greeter, safe_greeter_recovery,
+                                 std::chrono::steady_clock::now())) {
+      // GDM can report an active greeter even after its X server disappeared.
+      // Recheck immediately before touching the display manager; a user login
+      // or a display lease may have begun while the greeter was stalled.
+      const auto current = plank::session::active_seat0_graphical_session();
+      if (current && current->id == selected->id &&
+          !plank::session::discover_environment(*current) &&
+          !arrangement_lease && !physical_display_lease && !qualification_live &&
+          !pending_display_request && seat0_has_no_user_session()) {
+        std::cerr << "PLANK greeter has no usable X server; restarting GDM once\n";
+        stop_worker(worker);
+        const auto before_restart = plank::session::active_seat0_graphical_session();
+        if (before_restart && before_restart->id == selected->id &&
+            !plank::session::discover_environment(*before_restart) &&
+            seat0_has_no_user_session()) {
+          if (!run_bounded_command(systemctl_path, {"restart", "display-manager.service"},
+                                   std::chrono::seconds {30}) ||
+              !wait_for_graphical_restart(selected->id)) {
+            std::cerr << "PLANK greeter recovery did not yield a usable new X server\n";
+          }
+        }
+        inventory_session_id.clear();
+        pending_session.clear();
+        next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {2};
+        continue;
+      }
+    }
     if (!selected) {
       pending_session.clear();
     } else if ((worker.pid <= 0 || worker.session_id != selected->id) &&
                std::chrono::steady_clock::now() >= next_launch) {
-      const auto environment = plank::session::discover_environment(*selected);
+      const auto &environment = selected_environment;
       const auto account = account_for_uid(selected->uid);
       if (!environment || !account || account->home.empty()) {
         if (pending_session != selected->id) {
