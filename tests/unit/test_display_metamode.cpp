@@ -218,6 +218,20 @@ TEST(DisplayMetaMode, CarriersAndViewportsUseViewPortIn) {
     "--output", "DP-5", "--off", "--set", "non-desktop", "1",
   }));
   EXPECT_EQ(display::visibility_arguments(macbook, false).size(), 17U);
+  // Switching from the local panel to a virtual head must not leave GNOME
+  // with zero monitors between the RandR and NVIDIA MetaMode updates.
+  EXPECT_EQ(display::prepare_visibility_arguments(macbook), (std::vector<std::string> {
+    "--output", "DP-0", "--set", "non-desktop", "0",
+  }));
+  EXPECT_EQ(display::finalize_visibility_arguments(macbook, true), (std::vector<std::string> {
+    "--output", "HDMI-0", "--off", "--set", "non-desktop", "1",
+    "--output", "DP-2", "--off", "--set", "non-desktop", "1",
+    "--output", "DP-5", "--off", "--set", "non-desktop", "1",
+  }));
+  EXPECT_EQ(display::finalize_visibility_arguments(macbook, false), (std::vector<std::string> {
+    "--output", "DP-2", "--off", "--set", "non-desktop", "1",
+    "--output", "DP-5", "--off", "--set", "non-desktop", "1",
+  }));
 
   const auto viewport = plan_for("1:3024x1890+0+0:physical", inventory);
   EXPECT_EQ(viewport.metamode,

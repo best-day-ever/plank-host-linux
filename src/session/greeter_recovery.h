@@ -10,6 +10,11 @@
 #include <string_view>
 
 namespace plank::session {
+  /** A logind session record that has already disappeared. */
+  inline bool session_record_vanished(int status) {
+    return status == -ENXIO || status == -ENOENT;
+  }
+
   /**
    * @brief Decide whether a seat session prevents a GDM restart.
    * @param status Result of sd_session_get_class for this seat session.
@@ -18,7 +23,7 @@ namespace plank::session {
    */
   inline bool seat_session_blocks_greeter_recovery(int status, std::string_view session_class) {
     if (status >= 0) return session_class == "user";
-    return status != -ENXIO && status != -ENOENT;
+    return !session_record_vanished(status);
   }
 
   /**

@@ -15,6 +15,9 @@ TEST(GreeterRecovery, IgnoresVanishedSeatRecordsButProtectsUserSessions) {
   EXPECT_FALSE(seat_session_blocks_greeter_recovery(-ENXIO, ""));
   EXPECT_FALSE(seat_session_blocks_greeter_recovery(-ENOENT, ""));
   EXPECT_TRUE(seat_session_blocks_greeter_recovery(-EACCES, ""));
+  EXPECT_TRUE(plank::session::session_record_vanished(-ENOENT));
+  EXPECT_TRUE(plank::session::session_record_vanished(-ENXIO));
+  EXPECT_FALSE(plank::session::session_record_vanished(-EACCES));
 }
 
 TEST(GreeterRecovery, WaitsForStalledGreeterAndRequiresSafeState) {
@@ -41,4 +44,13 @@ TEST(GreeterRecovery, LimitsRestartsAcrossNewGreeterSessions) {
   EXPECT_FALSE(recovery.observe("c4", false, true, start + 92s));
   EXPECT_FALSE(recovery.observe("c4", false, true, start + 112s));
   EXPECT_TRUE(recovery.observe("c4", false, true, start + 650s));
+}
+
+TEST(GreeterRecovery, InactiveGreeterWaitsAndRecoversOnlyAfterLeasesAreGone) {
+  plank::session::greeter_recovery_t recovery;
+  const auto start = plank::session::greeter_recovery_t::clock::time_point {};
+  EXPECT_FALSE(recovery.observe("c21", false, false, start));
+  EXPECT_FALSE(recovery.observe("c21", false, false, start + 25s));
+  EXPECT_TRUE(recovery.observe("c21", false, true, start + 26s));
+  EXPECT_FALSE(recovery.observe("c21", true, false, start + 27s));
 }

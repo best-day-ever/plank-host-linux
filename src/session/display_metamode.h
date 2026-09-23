@@ -171,6 +171,12 @@ namespace plank::display {
    */
   std::vector<std::string> visibility_arguments(const arrangement_plan_t &plan, bool hide_physical);
 
+  /** Make future desktop outputs visible without disabling the current scanout. */
+  std::vector<std::string> prepare_visibility_arguments(const arrangement_plan_t &plan);
+
+  /** Hide unused outputs only after the new MetaMode has lit its scanouts. */
+  std::vector<std::string> finalize_visibility_arguments(const arrangement_plan_t &plan, bool hide_physical);
+
   /**
    * @brief Whether a live xrandr state shows exactly the planned desktop.
    */
