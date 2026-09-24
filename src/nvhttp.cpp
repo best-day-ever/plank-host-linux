@@ -48,6 +48,7 @@
 // local includes
 #include "config.h"
 #include "auth/gssapi_admission.h"
+#include "auth/auth_executor.h"
 #include "auth/web_auth.h"
 #include "config.h"
 #include "display_device.h"
@@ -1566,6 +1567,9 @@ namespace nvhttp {
     launch_session->host_layout = get_arg(args, "plankHostLayout", "");
     launch_session->virtual_mode_1 = get_arg(args, "plankVirtualMode1", "");
     launch_session->virtual_mode_2 = get_arg(args, "plankVirtualMode2", "");
+    const auto primary_output = get_arg(args, "plankPrimaryOutput", "");
+    launch_session->primary_output = primary_output.empty() ? -1 :
+      primary_output == "0" ? 0 : primary_output == "1" ? 1 : -2;
     launch_session->display_arrangement_requested =
       args.find("plankDisplayArrangement"s) != std::end(args);
     launch_session->display_arrangement = get_arg(args, "plankDisplayArrangement", "");
