@@ -8,6 +8,7 @@
 #include <array>
 #include <bit>
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -17,6 +18,7 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <strings.h>
 #include <sys/socket.h>
 #include <type_traits>
 #include <unistd.h>
