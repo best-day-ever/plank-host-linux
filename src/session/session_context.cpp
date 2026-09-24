@@ -435,16 +435,18 @@ namespace plank::session {
       ((request.layout == "single" || request.layout == "dual-horizontal") &&
        plank::topology::valid_virtual_layout_modes(
          request.layout, request.mode_1, request.mode_2
-       ));
+       ) && plank::topology::valid_primary_output(request.layout, request.primary_output));
     const bool control_valid = request.action == display_request_t::action_t::acquire ||
-      (request.layout.empty() && request.mode_1.empty() && request.mode_2.empty());
+      (request.layout.empty() && request.mode_1.empty() && request.mode_2.empty() &&
+       request.primary_output == -1);
     if (!acquire_valid || !control_valid || request.account_uid == 0) {
       return {};
     }
     const auto account_uid = std::to_string(request.account_uid);
-    const std::array<std::string_view, 6> fields {
+    const auto primary_output = std::to_string(request.primary_output);
+    const std::array<std::string_view, 7> fields {
       display_request_prefix, action, request.layout, request.mode_1,
-      request.mode_2, account_uid
+      request.mode_2, account_uid, primary_output
     };
     std::string message;
     for (const auto field : fields) {
@@ -463,7 +465,7 @@ namespace plank::session {
     const bool acquire = request.action == display_request_t::action_t::acquire;
     const auto parsed = acquire ? plank::arrangement::parse(request.arrangement) :
                                   plank::arrangement::parse_result_t {};
-    if (request.account_uid == 0 || !request.layout.empty() || !request.mode_1.empty() ||
+    if (request.account_uid == 0 || request.primary_output != -1 || !request.layout.empty() || !request.mode_1.empty() ||
         !request.mode_2.empty() || (acquire && !parsed.request) ||
         (!acquire && !request.arrangement.empty())) {
       return {};
@@ -504,10 +506,11 @@ namespace plank::session {
       return display_arrangement_request_message(request) == message ?
                std::optional<display_request_t> {std::move(request)} : std::nullopt;
     }
-    if (fields.size() != 6 || fields.front() != display_request_prefix) return std::nullopt;
+    if (fields.size() != 7 || fields.front() != display_request_prefix) return std::nullopt;
     const auto account_uid = parse_integer<unsigned long long>(fields[5]);
     if (!account_uid || *account_uid == 0 ||
         *account_uid > std::numeric_limits<uid_t>::max()) return std::nullopt;
+    if (fields[6] != "-1" && fields[6] != "0" && fields[6] != "1") return std::nullopt;
     const auto action = fields[1] == "acquire" ? display_request_t::action_t::acquire :
       fields[1] == "activate" ? display_request_t::action_t::activate :
       fields[1] == "release" ? display_request_t::action_t::release :
@@ -516,7 +519,7 @@ namespace plank::session {
         fields[1] != "release") return std::nullopt;
     display_request_t request {
       action, std::string {fields[2]}, std::string {fields[3]}, std::string {fields[4]},
-      static_cast<uid_t>(*account_uid)
+      static_cast<uid_t>(*account_uid), fields[6] == "-1" ? -1 : fields[6] == "0" ? 0 : 1
     };
     return display_request_message(request).empty() ?
              std::nullopt : std::optional<display_request_t> {std::move(request)};

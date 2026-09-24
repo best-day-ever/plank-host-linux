@@ -18,12 +18,12 @@ namespace topology = plank::topology;
 TEST(PlankTopology, PublishesVersionThirteenFeatureContract) {
   EXPECT_EQ(topology::protocol_version, 13U);
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
-  EXPECT_EQ(topology::feature_flags, 0x6C7FFFFU);
+  EXPECT_EQ(topology::feature_flags, 0x16C7FFFFU);
   EXPECT_NE(topology::feature_flags & topology::feature_clipboard_sync, 0U);
   EXPECT_EQ(topology::feature_platform_file_clipboard,
             topology::feature_file_clipboard);
 #else
-  EXPECT_EQ(topology::feature_flags, 0x647FFFFU);
+  EXPECT_EQ(topology::feature_flags, 0x1647FFFFU);
   EXPECT_EQ(topology::feature_flags & topology::feature_clipboard_sync, 0U);
   EXPECT_EQ(topology::feature_platform_file_clipboard, 0U);
 #endif
@@ -36,6 +36,9 @@ TEST(PlankTopology, PublishesVersionThirteenFeatureContract) {
   EXPECT_NE(topology::feature_flags & topology::feature_nvfbc_hevc10_nvenc, 0U);
   EXPECT_NE(topology::feature_flags & topology::feature_fixed_transport_mtu, 0U);
   EXPECT_NE(topology::feature_flags & topology::feature_session_takeover, 0U);
+  EXPECT_NE(topology::feature_flags & topology::feature_virtual_primary_connector, 0U);
+  EXPECT_EQ(topology::feature_virtual_primary_connector, 0x10000000U);
+  EXPECT_EQ(topology::feature_virtual_primary_connector & topology::feature_nvfbc_nvenc_420, 0U);
   EXPECT_TRUE(topology::valid_virtual_mode("1024x2160"));
   EXPECT_TRUE(topology::valid_virtual_mode("2560x2160"));
   EXPECT_TRUE(topology::valid_virtual_mode("4096x2160"));

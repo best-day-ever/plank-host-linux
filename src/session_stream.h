@@ -39,6 +39,7 @@ namespace session_stream {
     std::string host_layout;  ///< Exact PLANK host display layout required by the bookmark.
     std::string virtual_mode_1;  ///< Exact qualified mode required for virtual output 1.
     std::string virtual_mode_2;  ///< Exact qualified mode required for virtual output 2.
+    int primary_output {-1};  ///< Optional primary virtual connector selected by the client.
     bool display_arrangement_requested {};  ///< Whether the launch carried plankDisplayArrangement.
     std::string display_arrangement;  ///< Requested display arrangement (feature 0x8000000), as sent.
     std::optional<plank::arrangement::capture_plan_t> arrangement_capture;  ///< Capture plan for the launch's encoding mode.

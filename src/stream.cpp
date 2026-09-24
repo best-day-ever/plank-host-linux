@@ -611,7 +611,7 @@ namespace stream {
     static_assert(cursor_sample_period.count() > 0);
     auto next_cursor_sample = std::chrono::steady_clock::now();
 
-    while (!stop_token.stop_requested()) {
+    while (!stop_token.stop_requested() && !session->shutdown_event->peek()) {
       platf::x11::cursor_position_t root_position {};
       if (!cursor->query_position(root_position) ||
           !queue_cursor_position(session, root_position, position_sequence)) {
@@ -1506,6 +1506,12 @@ namespace stream {
       if (!session.broadcast_ref) {
         return -1;
       }
+
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
+      if (clipboard_sync_enabled(&session) && session.clipboard) {
+        session.clipboardThread = std::jthread {localClipboardThread, &session};
+      }
+#endif
 
       {
         auto sessions = session.broadcast_ref->sessions.lock();

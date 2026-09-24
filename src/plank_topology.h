@@ -45,6 +45,7 @@ namespace plank::topology {
   // arrangement extension"). Advertised per host, never in feature_flags:
   // only a physical or hybrid startup with a valid display inventory has it.
   constexpr std::uint32_t feature_display_arrangement = 0x8000000;
+  constexpr std::uint32_t feature_virtual_primary_connector = 0x10000000;
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
   constexpr std::uint32_t feature_platform_clipboard_sync = feature_clipboard_sync;
   constexpr std::uint32_t feature_platform_file_clipboard = feature_file_clipboard;
@@ -75,7 +76,34 @@ namespace plank::topology {
     feature_desktop_sign_out |
     feature_platform_clipboard_sync |
     feature_nvfbc_nvenc_420 |
-    feature_notch_safe_laptop_modes;
+    feature_notch_safe_laptop_modes |
+    feature_virtual_primary_connector;
+
+  // The optional connector index applies only to negotiated virtual-startup
+  // sessions; existing and physical layouts keep their established ordering.
+  constexpr bool valid_primary_output(std::string_view layout, int primary) {
+    return primary == -1 ||
+      (primary == 0 && (layout == "single" || layout == "dual-horizontal")) ||
+      (primary == 1 && layout == "dual-horizontal");
+  }
+
+  constexpr bool valid_virtual_primary_binding(std::string_view layout,
+                                               std::string_view startup_kind,
+                                               int primary,
+                                               std::uint32_t client_features) {
+    return valid_primary_output(layout, primary) &&
+      (primary == -1 ||
+       (startup_kind == "single" &&
+        (client_features & feature_virtual_primary_connector) != 0));
+  }
+
+  constexpr bool virtual_primary_connector_matches(std::string_view startup_kind,
+                                                   int primary,
+                                                   std::size_t output_count,
+                                                   std::string_view selected_id) {
+    return startup_kind != "single" || primary < 0 ||
+      (static_cast<std::size_t>(primary) < output_count && selected_id == "x11:DP-0");
+  }
 
   constexpr bool valid_quic_udp_payload_mtu(std::uint32_t mtu) {
     return mtu >= 1200 && mtu <= 65527;

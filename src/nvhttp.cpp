@@ -23,12 +23,13 @@
 #include <vector>
 
 // lib includes
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/context_base.hpp>
-#include <boost/algorithm/string/predicate.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/xml_parser.hpp>
+#include <fcntl.h>
 #include <nlohmann/json.hpp>
 #include <Simple-Web-Server/server_http.hpp>
 
@@ -47,13 +48,16 @@
 // local includes
 #include "config.h"
 #include "auth/gssapi_admission.h"
+#include "auth/auth_executor.h"
 #include "auth/web_auth.h"
+#include "config.h"
 #include "display_device.h"
 #include "globals.h"
 #include "httpcommon.h"
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
+#include "plank_topology.h"
 #include "platform/common.h"
 #include "process.h"
 #include "session_stream.h"
@@ -288,78 +292,6 @@ namespace nvhttp {
 #endif
 
   /**
-   * @brief HTTPS server backend that requires TLS 1.3.
-   */
-  class SunshineHTTPSServer: public SimpleWeb::ServerBase<SunshineHTTPS> {
-  public:
-    /**
-     * @brief Initialize the HTTPS server with Sunshine's certificate and key files.
-     *
-     * @param certification_file Path to the server certificate file.
-     * @param private_key_file Path to the matching private key file.
-     */
-    SunshineHTTPSServer(const std::string &certification_file, const std::string &private_key_file,
-                        bool tls13_only):
-        ServerBase<SunshineHTTPS>::ServerBase(443),
-        context(boost::asio::ssl::context::tls_server) {
-      // Disabling TLS 1.0 and 1.1 (see RFC 8996)
-      context.set_options(boost::asio::ssl::context::no_tlsv1);
-      context.set_options(boost::asio::ssl::context::no_tlsv1_1);
-      if (tls13_only && SSL_CTX_set_min_proto_version(context.native_handle(), TLS1_3_VERSION) != 1) {
-        throw std::runtime_error("Unable to require TLS 1.3 for PLANK authentication");
-      }
-      context.use_certificate_chain_file(certification_file);
-      context.use_private_key_file(private_key_file, boost::asio::ssl::context::pem);
-    }
-
-  protected:
-    boost::asio::ssl::context context;  ///< TLS server context configured with Sunshine's certificate and protocol policy.
-
-    // This is Server<HTTPS>::accept() with SSL validation support added
-    /**
-     * @brief Accept a pending connection and arm the server for the next client.
-     */
-    void accept() override {
-      auto connection = create_connection(*io_service, context);
-
-      acceptor->async_accept(connection->socket->lowest_layer(), [this, connection](const SimpleWeb::error_code &ec) {
-        auto lock = connection->handler_runner->continue_lock();
-        if (!lock) {
-          return;
-        }
-
-        if (ec != SimpleWeb::error::operation_aborted) {
-          this->accept();
-        }
-
-        auto session = std::make_shared<Session>(config.max_request_streambuf_size, connection);
-
-        if (!ec) {
-          boost::asio::ip::tcp::no_delay option(true);
-          SimpleWeb::error_code ec;
-          session->connection->socket->lowest_layer().set_option(option, ec);
-
-          session->connection->set_timeout(config.timeout_request);
-          session->connection->socket->async_handshake(boost::asio::ssl::stream_base::server, [this, session](const SimpleWeb::error_code &ec) {
-            session->connection->cancel_timeout();
-            auto lock = session->connection->handler_runner->continue_lock();
-            if (!lock) {
-              return;
-            }
-            if (!ec) {
-              this->read(session);
-            } else if (this->on_error) {
-              this->on_error(session->request, ec);
-            }
-          });
-        } else if (this->on_error) {
-          this->on_error(session->request, ec);
-        }
-      });
-    }
-  };
-
-  /**
    * @brief HTTPS server type used for GameStream endpoints requiring TLS.
    */
   using https_server_t = SunshineHTTPSServer;
@@ -468,7 +400,7 @@ namespace nvhttp {
    * @param request HTTPS request carrying a username and, for brokered
    * Kerberos admission, an optional base64 `gssapi_token`.
    */
-  void auth_start(const resp_https_t &response, const req_https_t &request) {
+  void auth_start(const resp_https_t &response, const req_https_t &request, const std::string &peer, std::stop_token cancellation) {
     if (!web_auth) {
       write_auth_json(response, SimpleWeb::StatusCode::server_error_service_unavailable,
                       {{"state", "unavailable"}});
@@ -508,8 +440,10 @@ namespace nvhttp {
    *
    * @param response HTTPS response.
    * @param request HTTPS request carrying prompt responses.
+   * @param peer Client address captured on the HTTPS event loop.
+   * @param cancellation Request cancellation on disconnect or shutdown.
    */
-  void auth_respond(const resp_https_t &response, const req_https_t &request) {
+  void auth_respond(const resp_https_t &response, const req_https_t &request, const std::string &peer, std::stop_token cancellation) {
     auto body = read_auth_json(request);
     if (!web_auth || !body.is_object() || !body.contains("conversation_id") ||
         !body["conversation_id"].is_string() || !body.contains("responses") ||
@@ -535,8 +469,7 @@ namespace nvhttp {
       }
     }
     const auto conversation_id = body["conversation_id"].get<std::string>();
-    const auto step = web_auth->respond(conversation_id, authentication_peer(request),
-                                        std::move(responses));
+    const auto step = web_auth->respond(conversation_id, peer, std::move(responses), cancellation);
     write_auth_json(response, SimpleWeb::StatusCode::success_ok, auth_step_json(step));
   }
 
@@ -798,7 +731,11 @@ namespace nvhttp {
       outputs.size() == 1 ? "single" :
       outputs.size() == 2 ? "dual-horizontal" : "unhealthy";
     if (result.virtual_layout) {
-      for (const auto &output : outputs) {
+      auto left_to_right = outputs;
+      std::sort(left_to_right.begin(), left_to_right.end(), [](const auto &left, const auto &right) {
+        return std::tie(left.x, left.y, left.id) < std::tie(right.x, right.y, right.id);
+      });
+      for (const auto &output : left_to_right) {
         result.virtual_modes.push_back(
           std::format("{}x{}", output.width, output.height)
         );
@@ -1138,6 +1075,13 @@ namespace nvhttp {
     });
 
     const auto live_layout = live_display_layout(outputs);
+    if (!plank::topology::valid_virtual_primary_binding(
+          session.host_layout, live_layout.startup_kind, session.primary_output,
+          session.plank_feature_flags)) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Invalid or unnegotiated virtual primary binding");
+      return false;
+    }
     if (!plank::topology::layout_allowed_by_startup_layout(
           session.host_layout, live_layout.startup_kind
         )) {
@@ -1224,7 +1168,7 @@ namespace nvhttp {
       const auto transition = plank::session::request_display_transition({
         plank::session::display_request_t::action_t::acquire,
         session.host_layout, session.virtual_mode_1, session.virtual_mode_2,
-        authenticated_uid
+        authenticated_uid, session.primary_output
       });
       if (transition == plank::session::display_request_status::submitted) {
         tree.put("root.<xmlattr>.status_code", 425);
@@ -1623,6 +1567,9 @@ namespace nvhttp {
     launch_session->host_layout = get_arg(args, "plankHostLayout", "");
     launch_session->virtual_mode_1 = get_arg(args, "plankVirtualMode1", "");
     launch_session->virtual_mode_2 = get_arg(args, "plankVirtualMode2", "");
+    const auto primary_output = get_arg(args, "plankPrimaryOutput", "");
+    launch_session->primary_output = primary_output.empty() ? -1 :
+      primary_output == "0" ? 0 : primary_output == "1" ? 1 : -2;
     launch_session->display_arrangement_requested =
       args.find("plankDisplayArrangement"s) != std::end(args);
     launch_session->display_arrangement = get_arg(args, "plankDisplayArrangement", "");
@@ -2262,8 +2209,26 @@ namespace nvhttp {
     };
     https_server.default_resource["GET"] = not_found<SunshineHTTPS>;
     https_server.resource["^/serverinfo$"]["GET"] = serverinfo<SunshineHTTPS>;
-    https_server.resource["^/plank/auth/start$"]["POST"] = auth_start;
-    https_server.resource["^/plank/auth/respond$"]["POST"] = auth_respond;
+    plank::auth::auth_executor_t authentication;
+    auto dispatch_auth = [&authentication, &https_server](auto handler) {
+      return [&authentication, &https_server, handler](auto response, auto request) {
+        const auto peer = authentication_peer(request);
+        // Construct the allocating callable before acquiring an owned descriptor.
+        plank::auth::auth_executor_t::job_t job = [response, request, handler, peer](std::stop_token cancellation) {
+          try {
+            handler(response, request, peer, cancellation);
+          } catch (...) {
+            write_auth_json(response, SimpleWeb::StatusCode::server_error_service_unavailable, {{"state", "unavailable"}});
+          }
+        };
+        const int peer_fd = https_server.duplicate_auth_peer(request);
+        if (peer_fd < 0 || !authentication.submit(std::move(job), peer_fd)) {
+          write_auth_json(response, SimpleWeb::StatusCode::server_error_service_unavailable, {{"state", "busy"}});
+        }
+      };
+    };
+    https_server.resource["^/plank/auth/start$"]["POST"] = dispatch_auth(auth_start);
+    https_server.resource["^/plank/auth/respond$"]["POST"] = dispatch_auth(auth_respond);
     https_server.resource["^/plank/topology$"]["GET"] = [](auto resp, auto req) {
       if (require_authentication(resp, req)) {
         output_topology(resp, req);
@@ -2315,6 +2280,10 @@ namespace nvhttp {
     https_server.stop();
 
     ssl.join();
+    // No new callbacks can submit work after the HTTPS loop joins. Cancel PAM
+    // waits before destroying the executor, server or manager.
+    authentication.stop();
+    web_auth->cancel_all();
   }
 
 }  // namespace nvhttp
