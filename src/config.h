@@ -288,6 +288,8 @@ namespace config {
     std::string startup_layout;  ///< PLANK physical, virtual or hybrid display policy applied before the display manager starts.
     bool lock_on_disconnect;  ///< Lock the captured user desktop when the last authenticated stream ends.
     std::string file_clipboard;  ///< Maximum file clipboard direction policy; off by default.
+    std::string clipboard_entitlement_group;  ///< Optional OS group required for text clipboard sync.
+    std::string file_clipboard_entitlement_group;  ///< Optional OS group required for file clipboard transfer.
     bool desktop_handoff;  ///< Sign PLANK logins into GDM, unlock the owner's desktop, offer sign-out of an idle owner.
   };
 

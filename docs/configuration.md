@@ -150,6 +150,16 @@ Accepted values are `off`, `client-to-host`, `host-to-client`, and
 plain-text clipboard sync. The Host does not advertise or open file-transfer
 channels when the setting is `off`.
 
+### clipboard_entitlement_group, file_clipboard_entitlement_group
+
+Optional operating-system groups checked for the authenticated account at each
+stream launch and resume. When set, text clipboard sync requires membership in
+`clipboard_entitlement_group`; file clipboard transfer additionally requires
+membership in `file_clipboard_entitlement_group`. A failed account or group lookup
+denies the corresponding feature for that session. Empty values preserve the
+Host's existing policy. Group changes take effect on a new session once the
+system's identity cache has refreshed.
+
 ## Display
 
 ### startup_layout
