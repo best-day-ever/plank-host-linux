@@ -30,6 +30,10 @@ namespace plank::auth {
         return client_.respond(std::move(responses));
       }
 
+      void cancel() noexcept override {
+        client_.cancel();
+      }
+
       step_t begin_gssapi(std::uint64_t transaction_id, std::string_view username,
                           std::string_view remote_host,
                           std::span<const std::uint8_t> token) override {
@@ -113,44 +117,69 @@ namespace plank::auth {
   web_auth_step_t web_auth_manager_t::begin_gssapi(std::string_view username,
                                                    std::string_view remote_host,
                                                    std::span<const std::uint8_t> token) {
-    std::lock_guard lock {mutex_};
-    expire_locked();
     if (username.empty() || username.size() > 256 || remote_host.empty() ||
-        remote_host.size() > 256 || token.empty() || token.size() > maximum_gssapi_token_size ||
-        conversations_.size() + tokens_.size() >= 32) {
+        remote_host.size() > 256 || token.empty() || token.size() > maximum_gssapi_token_size) {
       return {};
     }
-    std::shared_ptr<conversation_i> conversation = factory_();
-    if (!conversation) {
-      return {};
+    entry_ptr_t entry;
+    std::string id;
+    std::uint64_t transaction_id;
+    {
+      retired_t retired;
+      std::lock_guard lock {mutex_};
+      expire_locked(retired);
+      if (conversations_.size() + tokens_.size() >= 32) return {};
+      entry = std::make_shared<entry_t>();
+      entry->conversation = factory_();
+      id = random_(24);
+      if (!entry->conversation || id.empty() || conversations_.contains(id) || tokens_.contains(id)) return {};
+      transaction_id = next_transaction_++;
+      if (next_transaction_ == 0) next_transaction_ = 1;
+      entry->remote_host = remote_host;
+      entry->username = username;
+      entry->expires = now_() + conversation_lifetime_;
+      entry->busy = true;
+      conversations_.emplace(id, entry);
     }
-    const auto transaction_id = next_transaction_++;
-    if (next_transaction_ == 0) {
-      next_transaction_ = 1;
+    step_t step {step_t::state_e::denied, {}, phase_e::protocol, -1};
+    try {
+      step = entry->conversation->begin_gssapi(transaction_id, username, remote_host, token);
+    } catch (...) {
+      entry->conversation->cancel();
     }
-    auto step = conversation->begin_gssapi(transaction_id, username, remote_host, token);
     if (step.state != step_t::state_e::authenticated) {
       // Single round trip: a challenge is never retained for GSSAPI admission.
-      return {step_t::state_e::denied, {}, {}, {}, step.phase,
+      step = {step_t::state_e::denied, {}, step.phase,
               step.state == step_t::state_e::denied ? step.pam_status : -1};
     }
-    entry_t entry {
-      std::string {remote_host},
-      std::string {username},
-      now_() + conversation_lifetime_,
-      std::move(conversation),
-      {},
-    };
-    return retain(std::move(step), {}, std::move(entry));
+    return retain(std::move(step), id, entry);
   }
 
   web_auth_step_t web_auth_manager_t::respond(std::string_view conversation_id,
                                               std::string_view remote_host,
-                                              std::vector<std::string> responses) {
-    std::lock_guard lock {mutex_};
-    expire_locked();
-    const auto found = conversations_.find(std::string {conversation_id});
-    if (found == conversations_.end() || found->second.remote_host != remote_host) {
+                                              std::vector<std::string> responses,
+                                              std::stop_token cancellation) {
+    entry_ptr_t entry;
+    const std::string id {conversation_id};
+    {
+      retired_t retired;
+      std::lock_guard lock {mutex_};
+      expire_locked(retired);
+      const auto found = conversations_.find(id);
+      if (found == conversations_.end() || found->second->remote_host != remote_host ||
+          found->second->busy || found->second->cancelled || cancellation.stop_requested()) {
+        erase(responses);
+        return {};
+      }
+      entry = found->second;
+      entry->busy = true;
+      entry->expires = now_() + conversation_lifetime_;
+    }
+    std::stop_callback on_cancel {cancellation, [this, &id]() { cancel(id); }};
+    step_t step {step_t::state_e::denied, {}, phase_e::protocol, -1};
+    try {
+      step = entry->conversation->respond(std::move(responses));
+    } catch (...) {
       erase(responses);
       entry->conversation->cancel();
     }

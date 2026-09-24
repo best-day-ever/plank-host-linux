@@ -151,7 +151,7 @@ namespace plank::auth {
      * @param payload Encoded `begin_gssapi` payload.
      * @return Terminal result; a challenge is converted to a protocol denial.
      */
-    step_t submit_gssapi(std::vector<std::uint8_t> payload);
+    step_t submit_gssapi(std::vector<std::uint8_t> payload, const io_context_t &context);
 
     int descriptor_ = -1;  ///< Connected Unix socket.
     std::uint64_t transaction_id_ = 0;  ///< Active transaction identifier.

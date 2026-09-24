@@ -88,6 +88,7 @@ namespace plank::auth {
                                     std::string_view remote_host, std::string_view tty,
                                     std::span<const std::uint8_t> token) {
     close();
+    const io_context_t context {io_context_t::clock_t::now() + operation_timeout_, cancellation_.get_token()};
     begin_request_t request {
       std::string {username},
       std::string {remote_host},
@@ -100,20 +101,23 @@ namespace plank::auth {
     if (!encoded) {
       return protocol_error();
     }
-    descriptor_ = broker_channel::request_connection();
+    descriptor_ = broker_channel::request_connection(context);
     if (descriptor_ < 0) {
       return protocol_error();
     }
     transaction_id_ = transaction_id;
-    return submit_gssapi(std::move(payload));
+    return submit_gssapi(std::move(payload), context);
   }
 
-  step_t pam_client_t::submit_gssapi(std::vector<std::uint8_t> payload) {
-    if (!write_message(descriptor_, {message_type_e::begin_gssapi, transaction_id_, std::move(payload)})) {
+  step_t pam_client_t::submit_gssapi(std::vector<std::uint8_t> payload, const io_context_t &context) {
+    const bool written = write_sensitive_message(descriptor_,
+      {message_type_e::begin_gssapi, transaction_id_, payload}, context);
+    if (!payload.empty()) explicit_bzero(payload.data(), payload.size());
+    if (!written) {
       close();
       return protocol_error();
     }
-    auto step = read_step();
+    auto step = read_step(context);
     if (step.state == step_t::state_e::challenge) {
       close();
       return protocol_error();
@@ -198,7 +202,8 @@ namespace plank::auth {
     if (!encode_begin(request, true, payload)) {
       return protocol_error();
     }
-    return submit_gssapi(std::move(payload));
+    return submit_gssapi(std::move(payload),
+                         {io_context_t::clock_t::now() + operation_timeout_, cancellation_.get_token()});
   }
 #endif
 

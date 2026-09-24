@@ -47,6 +47,9 @@ namespace plank::auth {
      */
     virtual step_t respond(std::vector<std::string> responses) = 0;
 
+    /** @brief Irrevocably interrupt an in-flight broker operation. */
+    virtual void cancel() noexcept = 0;
+
     /**
      * @brief Request single-round-trip Kerberos GSSAPI admission.
      *

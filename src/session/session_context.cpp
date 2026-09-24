@@ -465,7 +465,7 @@ namespace plank::session {
     const bool acquire = request.action == display_request_t::action_t::acquire;
     const auto parsed = acquire ? plank::arrangement::parse(request.arrangement) :
                                   plank::arrangement::parse_result_t {};
-    if (request.account_uid == 0 || !request.layout.empty() || !request.mode_1.empty() ||
+    if (request.account_uid == 0 || request.primary_output != -1 || !request.layout.empty() || !request.mode_1.empty() ||
         !request.mode_2.empty() || (acquire && !parsed.request) ||
         (!acquire && !request.arrangement.empty())) {
       return {};
@@ -506,7 +506,7 @@ namespace plank::session {
       return display_arrangement_request_message(request) == message ?
                std::optional<display_request_t> {std::move(request)} : std::nullopt;
     }
-    if (fields.size() != 6 || fields.front() != display_request_prefix) return std::nullopt;
+    if (fields.size() != 7 || fields.front() != display_request_prefix) return std::nullopt;
     const auto account_uid = parse_integer<unsigned long long>(fields[5]);
     if (!account_uid || *account_uid == 0 ||
         *account_uid > std::numeric_limits<uid_t>::max()) return std::nullopt;
