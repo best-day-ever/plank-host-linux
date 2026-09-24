@@ -631,7 +631,6 @@ int main(int argc, char **argv) {
       std::signal(SIGINT, SIG_DFL);
       std::signal(SIGTERM, SIG_DFL);
       std::signal(SIGCHLD, SIG_DFL);
-      sigprocmask(SIG_SETMASK, &previous_signals, nullptr);
       serve_client(client, credentials.uid, *policy);
       std::_Exit(0);
     }
