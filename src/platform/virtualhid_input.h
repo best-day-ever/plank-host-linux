@@ -35,6 +35,11 @@ namespace platf::virtualhid {
      */
     explicit input_context_t(lvh::BackendKind backend);
 
+    /** A stream needs both devices before the host can accept sessions. */
+    [[nodiscard]] bool ready() const {
+      return runtime && keyboard && mouse;
+    }
+
     std::unique_ptr<lvh::Runtime> runtime;  ///< libvirtualhid runtime.
     std::unique_ptr<lvh::Keyboard> keyboard;  ///< Shared virtual keyboard.
     std::unique_ptr<lvh::Mouse> mouse;  ///< Shared virtual mouse.

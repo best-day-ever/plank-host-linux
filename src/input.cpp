@@ -1578,6 +1578,20 @@ namespace input {
   [[nodiscard]] std::unique_ptr<platf::deinit_t> init() {
     platf_input = platf::input();
 
+    if (!platf_input) {
+      BOOST_LOG(error) << "Unable to initialize platform input"sv;
+      return nullptr;
+    }
+
+#if defined(__linux__)
+    const auto &virtualhid = platf::virtualhid::get_input_context(platf_input);
+    if (!virtualhid.ready()) {
+      BOOST_LOG(error) << "Remote input unavailable: libvirtualhid keyboard or mouse was not created"sv;
+      platf_input.reset();
+      return nullptr;
+    }
+#endif
+
     return std::make_unique<deinit_t>();
   }
 
