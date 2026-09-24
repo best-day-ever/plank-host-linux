@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <gtest/gtest.h>
 #include <memory>
+#include <pwd.h>
 #include <span>
 #include <string>
 #include <unistd.h>
