@@ -34,6 +34,7 @@
 #include <Simple-Web-Server/server_http.hpp>
 
 #include <pwd.h>
+#include <grp.h>
 #include <unistd.h>
 
 #ifdef PLANK_TRANSPORT
@@ -47,6 +48,7 @@
 
 // local includes
 #include "config.h"
+#include "clipboard_entitlements.h"
 #include "auth/gssapi_admission.h"
 #include "auth/auth_executor.h"
 #include "auth/web_auth.h"
@@ -524,6 +526,42 @@ namespace nvhttp {
       return std::to_string(uid);
     }
     return result->pw_name;
+  }
+
+  // Check the authenticated OS account, never a username or feature bit from
+  // the client. An NSS/SSSD lookup failure removes the entitlement.
+  bool account_in_group(uid_t uid, const std::string &group_name) {
+    if (group_name.empty()) return true;
+    std::array<char, 16384> user_buffer {};
+    passwd user {};
+    passwd *found_user = nullptr;
+    if (getpwuid_r(uid, &user, user_buffer.data(), user_buffer.size(), &found_user) != 0 ||
+        found_user == nullptr) return false;
+
+    std::array<char, 16384> group_buffer {};
+    group entitlement {};
+    group *found_group = nullptr;
+    if (getgrnam_r(group_name.c_str(), &entitlement, group_buffer.data(),
+                   group_buffer.size(), &found_group) != 0 || found_group == nullptr) return false;
+
+    std::array<gid_t, 256> memberships {};
+    int count = static_cast<int>(memberships.size());
+    if (getgrouplist(user.pw_name, user.pw_gid, memberships.data(), &count) < 0) return false;
+    return std::find(memberships.begin(), memberships.begin() + count,
+                     entitlement.gr_gid) != memberships.begin() + count;
+  }
+
+  void apply_clipboard_entitlements(session_stream::launch_session_t &session, uid_t uid) {
+    const bool text = account_in_group(uid, config::sunshine.clipboard_entitlement_group);
+    const bool files = text && account_in_group(uid, config::sunshine.file_clipboard_entitlement_group);
+    session.plank_feature_flags = plank::clipboard_entitlements::effective_features(
+      session.plank_feature_flags, text, files
+    );
+    const auto file_features = plank::topology::feature_clipboard_sync |
+                               plank::topology::feature_file_clipboard;
+    if ((session.plank_feature_flags & file_features) != file_features) {
+      session.file_clipboard_mode = "off";
+    }
   }
 
   /**
@@ -1917,6 +1955,7 @@ namespace nvhttp {
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     auto launch_session = make_launch_session(host_audio, args);
+    apply_clipboard_entitlements(*launch_session, *authenticated_uid);
     if (!validate_capture_source(*launch_session, tree)) {
       tree.put("root.gamesession", 0);
       return;
@@ -2022,6 +2061,8 @@ namespace nvhttp {
     tree.put("root.PlankCaptureSource", launch_session->capture_source);
     tree.put("root.PlankEncoderBackend", launch_session->encoder_backend);
     tree.put("root.PlankEncodingMode", launch_session->encoding_mode);
+    tree.put("root.PlankClipboardSync",
+             (launch_session->plank_feature_flags & plank::topology::feature_clipboard_sync) != 0 ? 1 : 0);
 
     session_stream::launch_session_raise(launch_session);
     complete_desktop_login(*authenticated_uid);
@@ -2101,6 +2142,7 @@ namespace nvhttp {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
     const auto launch_session = make_launch_session(host_audio, args);
+    apply_clipboard_entitlements(*launch_session, *authenticated_uid);
     if (!validate_capture_source(*launch_session, tree)) {
       tree.put("root.resume", 0);
       return;
@@ -2173,6 +2215,8 @@ namespace nvhttp {
     tree.put("root.PlankCaptureSource", launch_session->capture_source);
     tree.put("root.PlankEncoderBackend", launch_session->encoder_backend);
     tree.put("root.PlankEncodingMode", launch_session->encoding_mode);
+    tree.put("root.PlankClipboardSync",
+             (launch_session->plank_feature_flags & plank::topology::feature_clipboard_sync) != 0 ? 1 : 0);
 
     session_stream::launch_session_raise(launch_session);
     complete_desktop_login(*authenticated_uid);

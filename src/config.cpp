@@ -863,6 +863,8 @@ namespace config {
     "physical",  // PLANK startup display policy
     false,  // PLANK lock the captured desktop after the last stream
     "off",  // PLANK file clipboard policy
+    "",  // no text clipboard group requirement unless configured
+    "",  // no file clipboard group requirement unless configured
     false,  // PLANK greeter sign-in, owner unlock and idle-owner sign-out
   };
 
@@ -1596,6 +1598,8 @@ namespace config {
     string_restricted_f(vars, "file_clipboard", sunshine.file_clipboard,
                         {"off"sv, "client-to-host"sv, "host-to-client"sv,
                          "bidirectional"sv});
+    string_f(vars, "clipboard_entitlement_group", sunshine.clipboard_entitlement_group);
+    string_f(vars, "file_clipboard_entitlement_group", sunshine.file_clipboard_entitlement_group);
 
     int port = sunshine.port;
     int_between_f(vars, "port"s, port, {1024 - nvhttp::PORT_HTTPS, 65535});
