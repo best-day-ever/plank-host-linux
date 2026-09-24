@@ -141,6 +141,22 @@ TEST(InputConfigDefaults, AdvertisesNativePenWithoutRemappingRightAlt) {
   EXPECT_TRUE(config::input.high_resolution_scrolling);
 }
 
+TEST(InputReadiness, RequiresKeyboardAndMouse) {
+  platf::virtualhid::input_context_t context {lvh::BackendKind::fake};
+  ASSERT_NE(context.runtime, nullptr);
+  ASSERT_NE(context.keyboard, nullptr);
+  ASSERT_NE(context.mouse, nullptr);
+  EXPECT_TRUE(context.ready());
+
+  context.mouse.reset();
+  EXPECT_FALSE(context.ready());
+
+  platf::virtualhid::input_context_t without_keyboard {lvh::BackendKind::fake};
+  ASSERT_NE(without_keyboard.runtime, nullptr);
+  without_keyboard.keyboard.reset();
+  EXPECT_FALSE(without_keyboard.ready());
+}
+
 TEST_F(InputRetainedSessionTest, DisconnectSuspendsRatherThanDiscardingResumableRawTablet) {
   const std::string session_id = "resumed-tablet-client";
   std::uint64_t first_connection_id = 0;

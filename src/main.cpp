@@ -427,6 +427,10 @@ int main(int argc, char *argv[]) {
   }
 
   auto input_deinit_guard = input::init();
+  if (!input_deinit_guard) {
+    BOOST_LOG(fatal) << "Input backend failed to initialize"sv;
+    return -1;
+  }
 
   if (video::probe_encoders()) {
     BOOST_LOG(error) << "Video failed to find working encoder"sv;
