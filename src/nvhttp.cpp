@@ -1843,6 +1843,12 @@ namespace nvhttp {
     tree.put("root.PairStatus", authorization_status);
     tree.put("root.currentgame", current_appid);
     tree.put("root.state", current_appid > 0 ? "SUNSHINE_SERVER_BUSY" : "SUNSHINE_SERVER_FREE");
+    // Coarse occupancy for the broker's assigned-host list. Do not expose the
+    // desktop account through unauthenticated serverinfo.
+    const bool workstation_busy = session_stream::session_count() > 0 ||
+                                  session_stream::launch_session_pending() ||
+                                  plank::session::attached_desktop_owner().has_value();
+    tree.put("root.PlankWorkstationBusy", workstation_busy ? 1 : 0);
 
     std::ostringstream data;
 
