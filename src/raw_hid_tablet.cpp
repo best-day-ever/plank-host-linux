@@ -9,6 +9,7 @@
 #include <array>
 #include <cerrno>
 #include <cstring>
+#include <fstream>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -17,6 +18,7 @@
 #include <utility>
 
 #ifdef __linux__
+  #include <dirent.h>
   #include <fcntl.h>
   #include <linux/uhid.h>
   #include <poll.h>
@@ -62,6 +64,21 @@ namespace raw_hid {
       value = util::endian::little(value);
       std::memcpy(&destination, &value, sizeof(value));
     }
+
+#ifdef __linux__
+    /**
+     * @brief Read the physical path of one input event node from sysfs.
+     *
+     * @param event_name Node name such as `event12`.
+     * @return Physical path, or an empty string when unavailable.
+     */
+    std::string read_phys(const char *event_name) {
+      std::ifstream file {"/sys/class/input/"s + event_name + "/device/phys"};
+      std::string phys;
+      std::getline(file, phys);
+      return phys;
+    }
+#endif
   }  // namespace
 
   class tablet_t::impl_t {
@@ -134,6 +151,9 @@ namespace raw_hid {
           return false;
         }
         transport_active_ = false;
+#ifdef __linux__
+        release_retained_contacts();
+#endif
         BOOST_LOG(info) << "Suspended raw HID tablet transport while retaining endpoints for generation "sv << generation_;
         return true;
       }
@@ -198,6 +218,9 @@ namespace raw_hid {
       std::lock_guard lock {mutex_};
       transport_active_ = false;
       feedback_queue_ = {};
+#ifdef __linux__
+      release_retained_contacts();
+#endif
     }
 
     /**
@@ -320,6 +343,10 @@ namespace raw_hid {
 #ifdef __linux__
       transport_active_ = true;
       const auto &device = *device_;
+      // Every interface shares one physical path so hid-wacom groups them.
+      // Retained endpoints keep it for later generations, so it is stored
+      // rather than rebuilt from generation_.
+      const std::string physical = "plank/raw-tablet/" + std::to_string(generation_);
       for (const auto &descriptor : descriptors_) {
         const int fd = open("/dev/uhid", O_RDWR | O_CLOEXEC | O_NONBLOCK);
         if (fd < 0) {
@@ -335,7 +362,6 @@ namespace raw_hid {
         uhid_event create {};
         create.type = UHID_CREATE2;
         std::memcpy(create.u.create2.name, device.name, sizeof(device.name));
-        const std::string physical = "plank/raw-tablet/" + std::to_string(generation_);
         std::memcpy(create.u.create2.phys, physical.data(), std::min(physical.size(), sizeof(create.u.create2.phys) - 1));
         std::memcpy(create.u.create2.uniq, device.unique, sizeof(device.unique));
         create.u.create2.rd_size = static_cast<std::uint16_t>(descriptor.size());
@@ -357,6 +383,7 @@ namespace raw_hid {
       }};
       retained_device_ = device_;
       retained_descriptors_ = descriptors_;
+      retained_phys_ = physical;
 #ifdef SUNSHINE_TESTS
       ++endpoint_epoch_;
 #endif
@@ -396,6 +423,62 @@ namespace raw_hid {
         close(fd);
       }
       uhid_fds_.clear();
+      retained_phys_.clear();
+    }
+
+    /**
+     * @brief End contact held on the input nodes of the retained endpoints.
+     *
+     * The endpoints and their XInput identities survive a suspend, so the
+     * kernel would otherwise keep the last reported tip, buttons, keys and
+     * touches until the next report, which then draws from the old contact
+     * point to the new one. Only releases are injected; tool proximity stays.
+     * evdev injects through its shared input handle, including when an evdev
+     * reader owns a grab. Verify input-core state before reporting success.
+     */
+    void release_retained_contacts() {
+      if (retained_phys_.empty()) {
+        return;
+      }
+      DIR *directory = opendir("/sys/class/input");
+      if (directory == nullptr) {
+        const int error_code = errno;
+        BOOST_LOG(warning) << "Raw HID tablet cannot scan retained input nodes: "sv << std::strerror(error_code);
+        return;
+      }
+      int released = 0;
+      for (;;) {
+        errno = 0;
+        const dirent *entry = readdir(directory);
+        if (entry == nullptr) {
+          const int error_code = errno;
+          if (error_code != 0) {
+            BOOST_LOG(warning) << "Raw HID tablet input-node scan failed: "sv << std::strerror(error_code);
+          }
+          break;
+        }
+        if (std::strncmp(entry->d_name, "event", 5) != 0 || read_phys(entry->d_name) != retained_phys_) {
+          continue;
+        }
+        const std::string path = "/dev/input/"s + entry->d_name;
+        const int fd = open(path.c_str(), O_RDWR | O_CLOEXEC | O_NONBLOCK);
+        if (fd < 0) {
+          const int error_code = errno;
+          BOOST_LOG(warning) << "Raw HID tablet cannot open "sv << path << " to release contact: "sv << std::strerror(error_code);
+          continue;
+        }
+        const auto result = release_node_contacts(fd);
+        if (result.error != 0) {
+          BOOST_LOG(warning) << "Raw HID tablet contact cleanup failed on "sv << path << " ("sv << result.operation << "): "sv << std::strerror(result.error);
+        } else if (result.released) {
+          ++released;
+        }
+        close(fd);
+      }
+      closedir(directory);
+      if (released != 0) {
+        BOOST_LOG(info) << "Released held raw HID tablet contact on "sv << released << " input node(s)"sv;
+      }
     }
 
     /**
@@ -545,6 +628,7 @@ namespace raw_hid {
     std::vector<int> uhid_fds_;  ///< UHID endpoints by interface.
     std::optional<PLANK_RAW_HID_DEVICE_MESSAGE> retained_device_;  ///< Identity backing retained UHID endpoints.
     std::vector<std::vector<std::uint8_t>> retained_descriptors_;  ///< Descriptors backing retained endpoints.
+    std::string retained_phys_;  ///< Physical path shared by the retained endpoints' input nodes.
     bool transport_active_ = false;  ///< Whether the current transport may deliver tablet frames.
     bool replace_interfaces_ = false;  ///< Whether a completed attach requires endpoint replacement.
 #ifdef SUNSHINE_TESTS

@@ -1843,12 +1843,17 @@ namespace nvhttp {
     tree.put("root.PairStatus", authorization_status);
     tree.put("root.currentgame", current_appid);
     tree.put("root.state", current_appid > 0 ? "SUNSHINE_SERVER_BUSY" : "SUNSHINE_SERVER_FREE");
-    // Coarse occupancy for the broker's assigned-host list. Do not expose the
-    // desktop account through unauthenticated serverinfo.
-    const bool workstation_busy = session_stream::session_count() > 0 ||
-                                  session_stream::launch_session_pending() ||
-                                  plank::session::attached_desktop_owner().has_value();
-    tree.put("root.PlankWorkstationBusy", workstation_busy ? 1 : 0);
+    // Coarse occupancy. Unauthenticated polls learn whether a user desktop or
+    // live stream currently owns the Host, from advisory snapshots that take no
+    // stream lock, so the broker's busy probe stays responsive during teardown.
+    // BDE's broker reads PlankWorkstationBusy; upstream Clients read
+    // PlankOccupied. The account name is published only when the administrator
+    // opts in; BDE deployments leave publish_session_user off.
+    const auto desktop = plank::session::confirmed_desktop_occupancy(config::nvhttp.publish_session_user);
+    const bool occupied = desktop.desktop_owned || session_stream::has_stream_session();
+    tree.put("root.PlankOccupied", occupied ? 1 : 0);
+    tree.put("root.PlankWorkstationBusy", occupied ? 1 : 0);
+    if (desktop.account_name) tree.put("root.PlankSessionUser", *desktop.account_name);
 
     std::ostringstream data;
 

@@ -95,6 +95,22 @@ stream is using, after its Client confirms. Default: `false`. See
 `docs/plank-desktop-handoff.md`. Independently of this setting, only one
 account streams at a time.
 
+### publish_session_user
+
+Publish the login name of the account that owns the active user desktop on
+unauthenticated `/serverinfo`. Accepted values: `true` or `false`. Default:
+`false`. When `true` and a user desktop is active, Clients show
+`In Session - Ernie.Armitage`. A directory login is published as the
+name before `@`. When `false`,
+or when the name cannot be published, Clients show `In Session` with no
+account. This does not publish a UID or session id, and it does not apply to
+the sign-in screen.
+
+The same unauthenticated response always carries the nameless
+`PlankWorkstationBusy` and `PlankOccupied` flags. BDE workstations leave this
+setting off: the Fernweh broker reads only the nameless flag, after pinning
+the Host certificate.
+
 ### pkey
 
 Path to the host TLS private key. The packaged profile uses
