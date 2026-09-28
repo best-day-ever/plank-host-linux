@@ -95,6 +95,22 @@ stream is using, after its Client confirms. Default: `false`. See
 `docs/plank-desktop-handoff.md`. Independently of this setting, only one
 account streams at a time.
 
+### publish_session_user
+
+Publish the login name of the account that owns the active user desktop on
+unauthenticated `/serverinfo`. Accepted values: `true` or `false`. Default:
+`false`. When `true` and a user desktop is active, Clients show
+`In Session - Ernie.Armitage`. A directory login is published as the
+name before `@`. When `false`,
+or when the name cannot be published, Clients show `In Session` with no
+account. This does not publish a UID or session id, and it does not apply to
+the sign-in screen.
+
+The same unauthenticated response always carries the nameless
+`PlankWorkstationBusy` and `PlankOccupied` flags. BDE workstations leave this
+setting off: the Fernweh broker reads only the nameless flag, after pinning
+the Host certificate.
+
 ### pkey
 
 Path to the host TLS private key. The packaged profile uses
@@ -150,15 +166,21 @@ Accepted values are `off`, `client-to-host`, `host-to-client`, and
 plain-text clipboard sync. The Host does not advertise or open file-transfer
 channels when the setting is `off`.
 
-### clipboard_entitlement_group, file_clipboard_entitlement_group
+### clipboard_entitlement_group
 
-Optional operating-system groups checked for the authenticated account at each
+Optional operating-system group checked for the authenticated account at each
 stream launch and resume. When set, text clipboard sync requires membership in
-`clipboard_entitlement_group`; file clipboard transfer additionally requires
-membership in `file_clipboard_entitlement_group`. A failed account or group lookup
-denies the corresponding feature for that session. Empty values preserve the
-Host's existing policy. Group changes take effect on a new session once the
-system's identity cache has refreshed.
+this group. A failed account or group lookup denies text clipboard for that
+session. An empty value preserves the Host's existing policy. Group changes
+take effect on a new session once the system's identity cache has refreshed.
+
+### file_clipboard_entitlement_group
+
+Optional operating-system group for file clipboard transfer, checked like
+`clipboard_entitlement_group`. File transfer shares the text clipboard's
+authenticated session, so it also requires `clipboard_entitlement_group`
+membership when that group is set. A failed lookup denies file transfer for
+that session. An empty value preserves the Host's existing policy.
 
 ## Display
 

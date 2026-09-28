@@ -8,6 +8,7 @@
 #include <memory>
 #include <vector>
 
+#include "raw_hid_contact.h"
 #include "thread_safe.h"
 
 namespace raw_hid {
@@ -58,8 +59,10 @@ namespace raw_hid {
     /**
      * @brief Suspend transport delivery while retaining stable UHID endpoints.
      *
-     * A resumed client must present the same device identity and report
-     * descriptors before input delivery is enabled again.
+     * Held pen, button, key and touch contact on the retained endpoints is
+     * released so a suspend mid-stroke cannot leave a stuck contact. A resumed
+     * client must present the same device identity and report descriptors
+     * before input delivery is enabled again.
      */
     void suspend();
 
