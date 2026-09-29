@@ -97,6 +97,8 @@ namespace stream {
 
     std::shared_ptr<input::input_t> input;  ///< Platform input device state for this stream.
     std::uint64_t input_connection_id = 0;  ///< Lease preventing an older disconnect from resetting resumed input.
+    std::chrono::steady_clock::time_point started_at = std::chrono::steady_clock::now();  ///< Session age for bounded private diagnostics.
+    std::chrono::steady_clock::time_point last_transport_report = started_at;  ///< Last transport summary; owned by the control thread.
 
     std::jthread audioThread;  ///< Audio thread.
     std::jthread videoThread;  ///< Video thread.
@@ -922,6 +924,26 @@ namespace stream {
             session->controlEnd.raise(true);
             continue;
           }
+
+#ifdef PLANK_TRANSPORT
+          const auto now = std::chrono::steady_clock::now();
+          if (session->plank_transport_endpoint && now - session->last_transport_report >= 1min) {
+            session->last_transport_report = now;
+            auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(session->plank_transport_endpoint.get());
+            PlankTransportNativeStats stats {};
+            stats.struct_size = sizeof(stats);
+            if (plank_transport_native_endpoint_stats(endpoint, &stats) == PLANK_TRANSPORT_OK) {
+              BOOST_LOG(info) << "Native session status: age_s="sv
+                              << std::chrono::duration_cast<std::chrono::seconds>(now - session->started_at).count()
+                              << " state="sv << plank_transport_native_endpoint_state(endpoint)
+                              << " video_frames="sv << stats.video_frames_sent
+                              << " input_received="sv << stats.input_packets_received
+                              << " control_received="sv << stats.data_packets_received
+                              << " rtt_us="sv << stats.quic_rtt_us
+                              << " packets_lost="sv << stats.quic_packets_lost;
+            }
+          }
+#endif
 
           if (!session->cursorThread.joinable()) {
             session->cursorThread = std::jthread(localCursorThread, session);
