@@ -2059,7 +2059,7 @@ namespace cuda {
       std::chrono::nanoseconds delay;  ///< Delay before the timer task becomes eligible to run.
 
       bool cursor_visible;  ///< Whether the cursor should be included in the capture.
-      nvfbc::frame_gate_t frame_gate;  ///< Suppress duplicate grabs after the first image.
+      ::nvfbc::frame_gate_t frame_gate;  ///< Suppress duplicate grabs after the first image.
       std::shared_ptr<platf::img_t> inspection_image;  ///< Probe-only retention for static-frame readback.
       handle_t handle;  ///< NvFBC capture handle owning the active capture session.
 
