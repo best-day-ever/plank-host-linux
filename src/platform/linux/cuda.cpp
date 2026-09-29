@@ -28,6 +28,7 @@ extern "C" {
 // local includes
 #include "cuda.h"
 #include "graphics.h"
+#include "nvfbc_frame_gate.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/nvenc/nvenc_cuda_factory.h"
@@ -1888,6 +1889,7 @@ namespace cuda {
           }
         }
 
+        frame_gate.reset();
         return platf::capture_e::ok;
       }
 
@@ -1928,6 +1930,11 @@ namespace cuda {
           return platf::capture_e::error;
         }
 
+        // NOWAIT may return the previous frame. Keep polling for real changes,
+        // but leave static refresh to the encoder's minimum-FPS cadence.
+        if (!frame_gate.publish(info.bIsNewFrame)) {
+          return platf::capture_e::timeout;
+        }
         if (!pull_free_image_cb(img_out)) {
           return platf::capture_e::interrupted;
         }
@@ -1937,6 +1944,7 @@ namespace cuda {
         // server started rendering a new frame. Preserve it so the streaming
         // protocol can report capture-to-packet processing latency. Repeated
         // frames retain the old driver timestamp and must remain untimestamped.
+        img_out->frame_timestamp.reset();
         if (info.bIsNewFrame && info.ulTimestampUs != 0) {
           const auto timestamp_us = std::chrono::microseconds {
             static_cast<std::chrono::microseconds::rep>(info.ulTimestampUs)
@@ -2044,6 +2052,7 @@ namespace cuda {
       std::chrono::nanoseconds delay;  ///< Delay before the timer task becomes eligible to run.
 
       bool cursor_visible;  ///< Whether the cursor should be included in the capture.
+      nvfbc::frame_gate_t frame_gate;  ///< Suppress duplicate grabs after the first image.
       handle_t handle;  ///< NvFBC capture handle owning the active capture session.
 
       NVFBC_CREATE_CAPTURE_SESSION_PARAMS capture_params;  ///< NvFBC capture-session parameters used for frame grabs.
