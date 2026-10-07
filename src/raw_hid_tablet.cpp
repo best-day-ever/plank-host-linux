@@ -10,6 +10,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -152,6 +153,7 @@ namespace raw_hid {
         }
         transport_active_ = false;
 #ifdef __linux__
+        cancel_report_requests();
         release_retained_contacts();
 #endif
         BOOST_LOG(info) << "Suspended raw HID tablet transport while retaining endpoints for generation "sv << generation_;
@@ -185,7 +187,11 @@ namespace raw_hid {
         event.u.get_report_reply.err = static_cast<std::uint16_t>(std::max(error, 0));
         event.u.get_report_reply.size = static_cast<std::uint16_t>(payload.size() - sizeof(error));
         std::copy(payload.begin() + sizeof(error), payload.end(), event.u.get_report_reply.data);
-        return write_event(uhid_fds_[interface_id], event);
+        const bool written = write_event(uhid_fds_[interface_id], event);
+        if (written) {
+          pending_reports_.erase({interface_id, transaction_id});
+        }
+        return written;
       }
       if (type == PLANK_RAW_HID_SET_REPORT_REPLY && payload.size() == sizeof(std::int32_t)) {
         std::int32_t error;
@@ -195,7 +201,11 @@ namespace raw_hid {
         event.type = UHID_SET_REPORT_REPLY;
         event.u.set_report_reply.id = transaction_id;
         event.u.set_report_reply.err = static_cast<std::uint16_t>(std::max(error, 0));
-        return write_event(uhid_fds_[interface_id], event);
+        const bool written = write_event(uhid_fds_[interface_id], event);
+        if (written) {
+          pending_reports_.erase({interface_id, transaction_id});
+        }
+        return written;
       }
 #endif
       return false;
@@ -219,6 +229,7 @@ namespace raw_hid {
       transport_active_ = false;
       feedback_queue_ = {};
 #ifdef __linux__
+      cancel_report_requests();
       release_retained_contacts();
 #endif
     }
@@ -235,6 +246,7 @@ namespace raw_hid {
 #endif
       std::lock_guard lock {mutex_};
 #ifdef __linux__
+      cancel_report_requests();
       destroy_interfaces();
 #endif
       descriptors_.clear();
@@ -291,10 +303,12 @@ namespace raw_hid {
       device.unique[sizeof(device.unique) - 1] = '\0';
 
       std::lock_guard lock {mutex_};
+#ifdef __linux__
+      cancel_report_requests();
+#endif
       generation_ = generation;
       device_ = device;
       descriptors_.assign(interface_count, {});
-      started_.assign(interface_count, false);
       transport_active_ = false;
       return true;
     }
@@ -320,16 +334,20 @@ namespace raw_hid {
 
       if (!uhid_fds_.empty() && retained_device_ &&
           std::memcmp(std::addressof(*retained_device_), std::addressof(*device_), sizeof(*device_)) == 0 &&
-          retained_descriptors_ == descriptors_) {
+          retained_descriptors_ == descriptors_ &&
+          std::ranges::all_of(started_, [](bool started) {
+            return started;
+          })) {
         retained_device_ = device_;
         retained_descriptors_ = descriptors_;
-        started_.assign(descriptors_.size(), true);
         transport_active_ = true;
         BOOST_LOG(info) << "Reused stable raw HID tablet endpoints for generation "sv << generation_;
         send_attach_result(generation_, success);
         return true;
       }
 
+      // An interrupted initial kernel probe is not a reusable tablet. Only
+      // replace an incomplete group; fully started endpoints keep their IDs.
       replace_interfaces_ = true;
       return true;
     }
@@ -342,6 +360,7 @@ namespace raw_hid {
     bool create_group() {
 #ifdef __linux__
       transport_active_ = true;
+      started_.assign(descriptors_.size(), false);
       const auto &device = *device_;
       // Every interface shares one physical path so hid-wacom groups them.
       // Retained endpoints keep it for later generations, so it is stored
@@ -397,6 +416,32 @@ namespace raw_hid {
 
 #ifdef __linux__
     /**
+     * @brief Complete in-flight kernel queries before retiring their transport lease.
+     *
+     * Caller holds mutex_. A client worker cancels stale completions on focus
+     * loss, so the Host must answer requests already sent as well as new ones.
+     * This leaves no synchronous hid-wacom query waiting on an old generation.
+     */
+    void cancel_report_requests() {
+      for (const auto &[key, type] : pending_reports_) {
+        const auto [interface_id, transaction_id] = key;
+        uhid_event reply {};
+        reply.type = type;
+        if (type == UHID_GET_REPORT_REPLY) {
+          reply.u.get_report_reply.id = transaction_id;
+          reply.u.get_report_reply.err = ENOTCONN;
+        } else {
+          reply.u.set_report_reply.id = transaction_id;
+          reply.u.set_report_reply.err = ENOTCONN;
+        }
+        if (interface_id < uhid_fds_.size() && !write_event(uhid_fds_[interface_id], reply)) {
+          BOOST_LOG(warning) << "Unable to cancel suspended raw HID kernel request"sv;
+        }
+      }
+      pending_reports_.clear();
+    }
+
+    /**
      * @brief Write a complete event to a UHID endpoint.
      *
      * @param fd UHID endpoint.
@@ -404,7 +449,11 @@ namespace raw_hid {
      * @return True when the kernel accepted the event.
      */
     static bool write_event(int fd, const uhid_event &event) {
-      const auto written = write(fd, &event, sizeof(event));
+      ssize_t written;
+      int retries = 4;
+      do {
+        written = write(fd, &event, sizeof(event));
+      } while (written < 0 && errno == EINTR && --retries > 0);
       if (written != static_cast<ssize_t>(sizeof(event))) {
         BOOST_LOG(error) << "Raw HID tablet UHID write failed: "sv << std::strerror(errno);
         return false;
@@ -537,32 +586,43 @@ namespace raw_hid {
      * @param event Kernel event.
      */
     void handle_uhid_event(std::uint16_t interface_id, const uhid_event &event) {
-      {
-        std::lock_guard lock {mutex_};
-        if (!transport_active_) {
-          return;
-        }
+      std::lock_guard lock {mutex_};
+      if (interface_id >= uhid_fds_.size()) {
+        return;
       }
       if (event.type == UHID_START) {
-        bool all_started = false;
-        {
-          std::lock_guard lock {mutex_};
-          started_[interface_id] = true;
-          all_started = std::ranges::all_of(started_, [](const bool value) {
-            return value;
-          });
-        }
-        if (all_started) {
+        started_[interface_id] = true;
+        if (transport_active_ && std::ranges::all_of(started_, [](bool started) {
+              return started;
+            })) {
           send_attach_result(generation_, success);
         }
+      } else if (!transport_active_) {
+        // A kernel request is synchronous. Complete it while suspended rather
+        // than leaving hid-wacom blocked until the kernel's request timeout.
+        uhid_event reply {};
+        if (event.type == UHID_GET_REPORT) {
+          reply.type = UHID_GET_REPORT_REPLY;
+          reply.u.get_report_reply.id = event.u.get_report.id;
+          reply.u.get_report_reply.err = ENOTCONN;
+        } else if (event.type == UHID_SET_REPORT) {
+          reply.type = UHID_SET_REPORT_REPLY;
+          reply.u.set_report_reply.id = event.u.set_report.id;
+          reply.u.set_report_reply.err = ENOTCONN;
+        } else {
+          return;
+        }
+        write_event(uhid_fds_[interface_id], reply);
       } else if (event.type == UHID_OPEN) {
         send_frame(PLANK_RAW_HID_OPEN, interface_id, 0, {});
       } else if (event.type == UHID_CLOSE) {
         send_frame(PLANK_RAW_HID_CLOSE, interface_id, 0, {});
       } else if (event.type == UHID_GET_REPORT) {
+        pending_reports_[{interface_id, event.u.get_report.id}] = UHID_GET_REPORT_REPLY;
         const std::array<std::uint8_t, 2> request {event.u.get_report.rnum, event.u.get_report.rtype};
         send_frame(PLANK_RAW_HID_GET_REPORT, interface_id, event.u.get_report.id, request);
       } else if (event.type == UHID_SET_REPORT) {
+        pending_reports_[{interface_id, event.u.set_report.id}] = UHID_SET_REPORT_REPLY;
         std::vector<std::uint8_t> request {event.u.set_report.rtype};
         request.insert(request.end(), event.u.set_report.data, event.u.set_report.data + event.u.set_report.size);
         send_frame(PLANK_RAW_HID_SET_REPORT, interface_id, event.u.set_report.id, request);
@@ -597,6 +657,7 @@ namespace raw_hid {
      */
     void send_frame(PLANK_RAW_HID_MESSAGE_TYPE type, std::uint16_t interface_id, std::uint32_t transaction_id,
                     std::span<const std::uint8_t> payload, std::uint16_t generation = 0) {
+      std::lock_guard lock {mutex_};
       std::vector<std::uint8_t> frame(sizeof(PLANK_RAW_HID_WIRE_HEADER) + payload.size());
       PLANK_RAW_HID_WIRE_HEADER header {};
       write_little(header.magic, static_cast<std::uint32_t>(PLANK_RAW_HID_WIRE_MAGIC));
@@ -609,13 +670,10 @@ namespace raw_hid {
       std::memcpy(frame.data(), &header, sizeof(header));
       std::ranges::copy(payload, frame.begin() + sizeof(header));
 
-      feedback_queue_t queue;
-      {
-        std::lock_guard lock {mutex_};
-        queue = feedback_queue_;
-      }
-      if (queue) {
-        queue->raise(std::move(frame));
+      if (feedback_queue_ && !feedback_queue_->raise_reliable(std::move(frame), 100ms)) {
+        // Signal the control loop to fail the session instead of silently
+        // losing a feature request or attach acknowledgement.
+        feedback_queue_->stop();
       }
     }
 
@@ -635,6 +693,7 @@ namespace raw_hid {
     std::uint64_t endpoint_epoch_ = 0;  ///< Number of successfully created endpoint groups.
 #endif
 #ifdef __linux__
+    std::map<std::pair<std::uint16_t, std::uint32_t>, std::uint32_t> pending_reports_;  ///< Kernel queries awaiting the active Client lease.
     std::jthread poll_thread_;  ///< Worker relaying kernel control requests.
 #endif
   };

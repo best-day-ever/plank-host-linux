@@ -229,6 +229,12 @@ namespace platf::virtualhid {
     }
   }
 
+  /**
+   * @brief Apply pen buttons and, for motion/contact events, tool state.
+   * @param context Per-client tablet and held-button state.
+   * @param touch_port Host mapping viewport.
+   * @param pen Normalized pen event; button-only events preserve tip/hover state.
+   */
   void pen_update(client_context_t &context, const touch_port_t &touch_port, const pen_input_t &pen) {
     if (!context.pen) {
       return;
@@ -252,6 +258,12 @@ namespace platf::virtualhid {
       } else {
         context.pressed_pen_buttons.erase(button);
       }
+    }
+
+    if (pen.eventType == LI_TOUCH_EVENT_BUTTON_ONLY) {
+      // pressureOrDistance has no contact discriminator in this event. Do
+      // not turn a barrel-button change during a stroke into a hover/release.
+      return;
     }
 
     if (pen.eventType == LI_TOUCH_EVENT_CANCEL_ALL) {
