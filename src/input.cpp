@@ -1604,10 +1604,17 @@ namespace input {
         );
         state.inputs.try_emplace(std::move(session_id), input);
       }
+    }
+
+    if (resumed) {
+      // A replacement can win the state lock before the old disconnect. End
+      // its held input now; the old reset will correctly become a no-op once
+      // this new lease is published. Raw device identities remain retained.
+      reset_input_state(input, input->connection_id.load());
+    }
+    connection_id = ++input->connection_id;
+    if (connection_id == 0) {
       connection_id = ++input->connection_id;
-      if (connection_id == 0) {
-        connection_id = ++input->connection_id;
-      }
     }
 
     if (resumed) {

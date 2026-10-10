@@ -379,6 +379,29 @@ TEST_F(InputRetainedSessionTest, StaleDisconnectDoesNotReleaseResumedConnections
   EXPECT_FALSE(mouse->last_submitted_event().pressed);
 }
 
+TEST_F(InputRetainedSessionTest, RebindBeforeOldDisconnectReleasesPreviousLease) {
+  std::uint64_t lease = 0;
+  auto session = allocate("rebind-before-disconnect", lease);
+  input::testing::handle_mouse_button(session, 1, false);
+  auto &context = platf::virtualhid::get_client_context(input::testing::client_context(session));
+  platf::pen_input_t pen {};
+  pen.toolType = LI_TOOL_TYPE_PEN;
+  pen.eventType = LI_TOUCH_EVENT_DOWN;
+  pen.pressureOrDistance = 0.6F;
+  platf::virtualhid::pen_update(context, {}, pen);
+
+  std::uint64_t next_lease = 0;
+  auto resumed = allocate("rebind-before-disconnect", next_lease);
+  ASSERT_EQ(session, resumed);
+  EXPECT_FALSE(mouse->last_submitted_event().pressed);
+  EXPECT_EQ(context.pen->last_submitted_tool().transition, lvh::PointerTransition::cancel);
+  input::testing::handle_mouse_button(resumed, 1, false);
+  platf::virtualhid::pen_update(context, {}, pen);
+  input::reset(session, lease);
+  EXPECT_TRUE(mouse->last_submitted_event().pressed);
+  EXPECT_EQ(context.pen->last_submitted_tool().transition, lvh::PointerTransition::update);
+}
+
 TEST_F(InputRetainedSessionTest, ReconnectKeepsNewDragHeldUntilItsOwnRelease) {
   std::uint64_t first_connection_id = 0;
   auto first = allocate("reconnect-release", first_connection_id);
