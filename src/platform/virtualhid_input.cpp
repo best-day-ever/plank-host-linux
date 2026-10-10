@@ -240,7 +240,10 @@ namespace platf::virtualhid {
       return;
     }
 
-    const auto pen_buttons = static_cast<std::byte>(pen.penButtons);
+    const bool leaving = pen.eventType == LI_TOUCH_EVENT_CANCEL_ALL ||
+                         pen.eventType == LI_TOUCH_EVENT_CANCEL ||
+                         pen.eventType == LI_TOUCH_EVENT_HOVER_LEAVE;
+    const auto pen_buttons = static_cast<std::byte>(leaving ? 0 : pen.penButtons);
     const std::array button_states {
       std::pair {lvh::PenButton::primary, (pen_buttons & static_cast<std::byte>(LI_PEN_BUTTON_PRIMARY)) != std::byte {}},
       std::pair {lvh::PenButton::secondary, (pen_buttons & static_cast<std::byte>(LI_PEN_BUTTON_SECONDARY)) != std::byte {}},
@@ -252,7 +255,12 @@ namespace platf::virtualhid {
         continue;
       }
 
-      log_failure("submit libvirtualhid pen button"sv, context.pen->button(button, pressed));
+      const auto status = context.pen->button(button, pressed);
+      log_failure("submit libvirtualhid pen button"sv, status);
+      if (!status.ok()) {
+        // Retain the last accepted state so the next report retries this edge.
+        continue;
+      }
       if (pressed) {
         context.pressed_pen_buttons.insert(button);
       } else {
@@ -264,13 +272,6 @@ namespace platf::virtualhid {
       // pressureOrDistance has no contact discriminator in this event. Do
       // not turn a barrel-button change during a stroke into a hover/release.
       return;
-    }
-
-    if (pen.eventType == LI_TOUCH_EVENT_CANCEL_ALL) {
-      for (const auto button : context.pressed_pen_buttons) {
-        log_failure("release libvirtualhid pen button"sv, context.pen->button(button, false));
-      }
-      context.pressed_pen_buttons.clear();
     }
 
     using enum lvh::PointerTransition;

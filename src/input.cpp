@@ -169,6 +169,10 @@ namespace input {
   }
 
   static task_pool_util::TaskPool::task_id_t key_press_repeat_id {};
+  // Native delivery no longer runs on task_pool. Serialize delivery, timers,
+  // lease changes and cleanup explicitly; a generation check alone is not a
+  // barrier against a new connection attaching while cleanup is in progress.
+  static std::mutex input_state_mutex;
   static std::unordered_map<key_press_id_t, bool> key_press {};
   static std::array<std::uint8_t, 5> mouse_press {};
 
@@ -269,21 +273,6 @@ namespace input {
   retained_input_state_t &retained_input_state() {
     static retained_input_state_t state;
     return state;
-  }
-
-  /**
-   * @brief Execute lifecycle work on the input task thread when it is running.
-   *
-   * @tparam Function Callable type.
-   * @param function Lifecycle operation to execute.
-   */
-  template<typename Function>
-  void dispatch_input_task(Function &&function) {
-    if (task_pool.running()) {
-      task_pool.push(std::forward<Function>(function));
-    } else {
-      std::forward<Function>(function)();
-    }
   }
 
   /**
@@ -825,6 +814,7 @@ namespace input {
    * @param synthetic_modifiers Synthetic modifiers.
    */
   void repeat_key(uint16_t key_code, uint8_t flags, uint8_t synthetic_modifiers) {
+    std::lock_guard lock {input_state_mutex};
     // If key no longer pressed, stop repeating
     if (!key_press[make_kpid(key_code, flags)]) {
       key_press_repeat_id = nullptr;
@@ -1066,6 +1056,15 @@ namespace input {
    * @param packet The pen packet.
    */
   void passthrough(std::shared_ptr<input_t> &input, PSS_PEN_PACKET packet) {
+    if (packet->eventType == LI_TOUCH_EVENT_CANCEL_ALL || packet->eventType == LI_TOUCH_EVENT_CANCEL ||
+        packet->eventType == LI_TOUCH_EVENT_HOVER_LEAVE) {
+      // Releases must work even during a display transition without a viewport.
+      platf::pen_input_t pen {};
+      pen.eventType = packet->eventType;
+      pen.toolType = LI_TOOL_TYPE_UNKNOWN;
+      platf::pen_update(input->client_context.get(), {}, pen);
+      return;
+    }
     const auto pointer_data = prepare_absolute_pointer_data(input, packet);
     if (!pointer_data) {
       return;
@@ -1243,6 +1242,7 @@ namespace input {
    * @param input The input context pointer.
    */
   void passthrough_next_message(std::shared_ptr<input_t> input) {
+    std::lock_guard state_lock {input_state_mutex};
     // 'entry' backs the 'payload' pointer, so they must remain in scope together
     std::vector<uint8_t> entry;
     PNV_INPUT_HEADER payload;
@@ -1346,6 +1346,7 @@ namespace input {
 #ifdef PLANK_TRANSPORT
   bool native(std::shared_ptr<input_t> &input, std::uint8_t type,
               const std::uint8_t *payload, std::size_t payload_size) {
+    std::lock_guard lock {input_state_mutex};
     if (!input || !payload || payload_size == 0) {
       return false;
     }
@@ -1510,6 +1511,10 @@ namespace input {
     task_pool.cancel(key_press_repeat_id);
     reset_mouse_buttons();
     reset_keyboard_keys();
+    platf::pen_input_t pen {};
+    pen.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
+    pen.toolType = LI_TOOL_TYPE_UNKNOWN;
+    platf::pen_update(input->client_context.get(), {}, pen);
     // Keep the host UHID/XInput endpoints stable while this retained session
     // is resumable. The replacement transport must re-present the same USB
     // identity and descriptors before tablet reports are accepted again.
@@ -1520,11 +1525,8 @@ namespace input {
    * @brief Reset the object to its initial empty state.
    */
   void reset(std::shared_ptr<input_t> &input, const std::uint64_t connection_id) {
-    // Serialize reset with input delivery, but reject work from an older stream
-    // after the retained state has already been rebound to a resumed stream.
-    dispatch_input_task([input, connection_id]() {
-      reset_input_state(input, connection_id);
-    });
+    std::lock_guard lock {input_state_mutex};
+    reset_input_state(input, connection_id);
   }
 
   void terminate_retained_input() {
@@ -1585,6 +1587,7 @@ namespace input {
    * @brief Allocate and initialize platform input state for a stream.
    */
   std::shared_ptr<input_t> alloc(safe::mail_t mail, std::string session_id, std::uint64_t &connection_id) {
+    std::lock_guard state_lock {input_state_mutex};
     std::shared_ptr<input_t> input;
     bool resumed = false;
     {
@@ -1608,15 +1611,8 @@ namespace input {
     }
 
     if (resumed) {
-      // Bind raw-HID feedback synchronously before the replacement control
-      // stream can submit its attach descriptors. The remaining platform
-      // rebind work stays serialized on the input task thread.
-      input->raw_hid_tablet->rebind(
-        mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback)
-      );
-      dispatch_input_task([input, mail = std::move(mail)]() {
-        rebind_input(input, mail);
-      });
+      // Publish the entire binding before starting the native input receiver.
+      rebind_input(input, mail);
     }
 
     if (!enable_num_lock()) {
@@ -1625,6 +1621,7 @@ namespace input {
 
     // Workaround to ensure new frames will be captured when a client connects
     task_pool.pushDelayed([]() {
+      std::lock_guard lock {input_state_mutex};
       platf::move_mouse(platf_input, 1, 1);
       platf::move_mouse(platf_input, -1, -1);
     },
@@ -1641,6 +1638,7 @@ namespace input {
     }
 
     bool handle_raw_hid(const std::shared_ptr<input_t> &input, const std::vector<std::uint8_t> &frame) {
+      std::lock_guard lock {input_state_mutex};
       return input && handle_raw_hid_frame(input, frame);
     }
 
@@ -1653,12 +1651,14 @@ namespace input {
     }
 
     void select_normalized_pen(const std::shared_ptr<input_t> &input) {
+      std::lock_guard lock {input_state_mutex};
       if (input) {
         select_normalized_pen_backend(input);
       }
     }
 
     void handle_keyboard(const std::shared_ptr<input_t> &input, const std::uint16_t key_code, const bool release) {
+      std::lock_guard lock {input_state_mutex};
       if (!input) {
         return;
       }
@@ -1670,6 +1670,7 @@ namespace input {
     }
 
     void handle_mouse_button(const std::shared_ptr<input_t> &input, const std::uint8_t button, const bool release) {
+      std::lock_guard lock {input_state_mutex};
       if (!input) {
         return;
       }
@@ -1688,6 +1689,15 @@ namespace input {
       }
       const auto &context = platf::virtualhid::get_input_context(platf_input);
       return context.keyboard ? context.keyboard->last_submitted_event().key_code : 0;
+    }
+
+    void with_input_lock(const std::function<void()> &action) {
+      std::lock_guard lock {input_state_mutex};
+      action();
+    }
+
+    platf::client_input_t *client_context(const std::shared_ptr<input_t> &input) {
+      return input->client_context.get();
     }
   }  // namespace testing
 #endif

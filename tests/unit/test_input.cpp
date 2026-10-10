@@ -6,6 +6,7 @@
 // standard includes
 #include <chrono>
 #include <cstring>
+#include <future>
 #include <memory>
 #include <string>
 #include <thread>
@@ -16,12 +17,14 @@ extern "C" {
 }
 
 // local includes
-#include "../tests_common.h"
 #include "src/config.h"
+#include "src/globals.h"
 #include "src/input.h"
 #include "src/platform/virtualhid_input.h"
 #include "src/raw_hid_tablet.h"
 #include "src/utility.h"
+
+#include <gtest/gtest.h>
 
 namespace {
   std::vector<std::uint8_t> make_raw_hid_frame(
@@ -160,6 +163,63 @@ TEST_F(InputRetainedSessionTest, DisconnectSuspendsRatherThanDiscardingResumable
 
   input::reset(resumed, resumed_connection_id);
   EXPECT_EQ(input::testing::raw_hid_generation(resumed), 8);
+}
+
+TEST_F(InputRetainedSessionTest, DisconnectReleasesNormalizedPenWithoutViewport) {
+  std::uint64_t lease = 0;
+  auto session = allocate("normalized-pen-cleanup", lease);
+  auto &context = platf::virtualhid::get_client_context(input::testing::client_context(session));
+  ASSERT_NE(context.pen, nullptr);
+  platf::pen_input_t pen {};
+  pen.toolType = LI_TOOL_TYPE_PEN;
+  pen.eventType = LI_TOUCH_EVENT_DOWN;
+  pen.penButtons = LI_PEN_BUTTON_PRIMARY;
+  pen.pressureOrDistance = 0.7F;
+  platf::virtualhid::pen_update(context, {}, pen);
+  ASSERT_EQ(context.pressed_pen_buttons.size(), 1);
+  input::reset(session, lease);
+  EXPECT_TRUE(context.pressed_pen_buttons.empty());
+  EXPECT_EQ(context.pen->last_submitted_tool().transition, lvh::PointerTransition::cancel);
+}
+
+TEST_F(InputRetainedSessionTest, RebindAndCleanupCannotRaceInputDelivery) {
+  using namespace std::chrono_literals;
+  std::uint64_t lease = 0;
+  auto session = allocate("input-serialization", lease);
+  std::promise<void> locked, unlock, reset_started, rebind_started;
+  auto gate = unlock.get_future();
+  auto holder = std::async(std::launch::async, [&] {
+    input::testing::with_input_lock([&] {
+      locked.set_value();
+      gate.wait();
+    });
+  });
+  locked.get_future().wait();
+  auto resetting = std::async(std::launch::async, [&] {
+    reset_started.set_value();
+    input::reset(session, lease);
+  });
+  auto rebinding = std::async(std::launch::async, [&] {
+    rebind_started.set_value();
+    std::uint64_t next_lease = 0;
+    auto resumed = input::alloc(std::make_shared<safe::mail_raw_t>(), "input-serialization", next_lease);
+    input::testing::handle_mouse_button(resumed, 1, false);
+    return std::make_pair(resumed, next_lease);
+  });
+  reset_started.get_future().wait();
+  rebind_started.get_future().wait();
+  EXPECT_EQ(resetting.wait_for(30ms), std::future_status::timeout);
+  EXPECT_EQ(rebinding.wait_for(30ms), std::future_status::timeout);
+  unlock.set_value();
+  holder.get();
+  resetting.get();
+  auto resumed = rebinding.get();
+  sessions.push_back(resumed);
+  EXPECT_EQ(session, resumed.first);
+  EXPECT_GT(resumed.second, lease);
+  // Regardless of which waiter acquires the lock first, old cleanup cannot
+  // release the new lease's button after it has been pressed.
+  EXPECT_TRUE(mouse->last_submitted_event().pressed);
 }
 
 TEST_F(InputRetainedSessionTest, LeftButtonReleaseIsImmediateAndNotRepeatedOnDisconnect) {

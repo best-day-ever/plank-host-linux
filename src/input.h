@@ -125,6 +125,12 @@ namespace input {
      * @brief Return the last key submitted to the fake platform keyboard.
      */
     std::uint16_t last_keyboard_code();
+
+    /** @brief Hold the production input barrier for a deterministic concurrency test. */
+    void with_input_lock(const std::function<void()> &action);
+
+    /** @brief Access the fake per-client backend while no input thread is running. */
+    platf::client_input_t *client_context(const std::shared_ptr<input_t> &input);
   }  // namespace testing
 #endif
 

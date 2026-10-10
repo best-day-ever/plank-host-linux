@@ -44,3 +44,44 @@ TEST(NormalizedPen, BarrelButtonsPreserveActiveStrokeAndHover) {
   EXPECT_FLOAT_EQ(state.pressure, -1.0F);
   EXPECT_FLOAT_EQ(state.distance, 0.4F);
 }
+
+TEST(NormalizedPen, LeaveAndCancelReleaseButtonsEvenWithStalePeerBits) {
+  for (const auto event_type : {LI_TOUCH_EVENT_CANCEL_ALL, LI_TOUCH_EVENT_CANCEL, LI_TOUCH_EVENT_HOVER_LEAVE}) {
+    platf::virtualhid::input_context_t runtime {lvh::BackendKind::fake};
+    platf::virtualhid::client_context_t client {runtime};
+    ASSERT_NE(client.pen, nullptr);
+    platf::pen_input_t event {};
+    event.eventType = LI_TOUCH_EVENT_DOWN;
+    event.toolType = LI_TOOL_TYPE_ERASER;
+    event.penButtons = LI_PEN_BUTTON_PRIMARY | LI_PEN_BUTTON_SECONDARY | LI_PEN_BUTTON_TERTIARY;
+    event.pressureOrDistance = 0.8F;
+    platf::virtualhid::pen_update(client, {}, event);
+    ASSERT_EQ(client.pressed_pen_buttons.size(), 3);
+    event.eventType = event_type;
+    event.toolType = LI_TOOL_TYPE_UNKNOWN;
+    platf::virtualhid::pen_update(client, {}, event);
+    EXPECT_TRUE(client.pressed_pen_buttons.empty());
+    const auto state = client.pen->last_submitted_tool();
+    EXPECT_EQ(state.transition, event_type == LI_TOUCH_EVENT_HOVER_LEAVE ? lvh::PointerTransition::leave : lvh::PointerTransition::cancel);
+    EXPECT_LT(state.pressure, 0.0F);
+  }
+}
+
+TEST(NormalizedPen, FailedButtonWriteDoesNotChangeAcceptedState) {
+  platf::virtualhid::input_context_t runtime {lvh::BackendKind::fake};
+  platf::virtualhid::client_context_t client {runtime};
+  ASSERT_NE(client.pen, nullptr);
+  platf::pen_input_t event {};
+  event.eventType = LI_TOUCH_EVENT_BUTTON_ONLY;
+  event.penButtons = LI_PEN_BUTTON_PRIMARY;
+  platf::virtualhid::pen_update(client, {}, event);
+  ASSERT_TRUE(client.pressed_pen_buttons.contains(lvh::PenButton::primary));
+  ASSERT_TRUE(client.pen->close().ok());
+  event.penButtons = LI_PEN_BUTTON_SECONDARY;
+  platf::virtualhid::pen_update(client, {}, event);
+  EXPECT_TRUE(client.pressed_pen_buttons.contains(lvh::PenButton::primary));
+  EXPECT_FALSE(client.pressed_pen_buttons.contains(lvh::PenButton::secondary));
+  event.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
+  platf::virtualhid::pen_update(client, {}, event);
+  EXPECT_TRUE(client.pressed_pen_buttons.contains(lvh::PenButton::primary));
+}

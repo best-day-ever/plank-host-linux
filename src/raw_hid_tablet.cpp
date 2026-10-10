@@ -154,7 +154,7 @@ namespace raw_hid {
         transport_active_ = false;
 #ifdef __linux__
         cancel_report_requests();
-        release_retained_contacts();
+        contacts_clean_ = release_retained_contacts();
 #endif
         BOOST_LOG(info) << "Suspended raw HID tablet transport while retaining endpoints for generation "sv << generation_;
         return true;
@@ -230,7 +230,7 @@ namespace raw_hid {
       feedback_queue_ = {};
 #ifdef __linux__
       cancel_report_requests();
-      release_retained_contacts();
+      contacts_clean_ = release_retained_contacts();
 #endif
     }
 
@@ -277,6 +277,12 @@ namespace raw_hid {
       std::lock_guard lock {mutex_};
       return endpoint_epoch_;
     }
+
+    /** @brief Override contact cleanup only in the component-test build. */
+    void set_contact_cleanup_for_test(std::function<bool()> cleanup) {
+      std::lock_guard lock {mutex_};
+      contact_cleanup_for_test_ = std::move(cleanup);
+    }
 #endif
 
   private:
@@ -305,6 +311,9 @@ namespace raw_hid {
       std::lock_guard lock {mutex_};
 #ifdef __linux__
       cancel_report_requests();
+      if (transport_active_) {
+        contacts_clean_ = release_retained_contacts();
+      }
 #endif
       generation_ = generation;
       device_ = device;
@@ -338,6 +347,19 @@ namespace raw_hid {
           std::ranges::all_of(started_, [](bool started) {
             return started;
           })) {
+#ifdef __linux__
+        // Retry a transient cleanup error before reusing the stable device.
+        // Only a proven unhealthy endpoint group is replaced, never a healthy
+        // group merely because the stream/focus changed.
+        if (!contacts_clean_) {
+          contacts_clean_ = release_retained_contacts();
+          if (!contacts_clean_) {
+            BOOST_LOG(warning) << "Replacing raw HID endpoints after contact cleanup failed twice"sv;
+            replace_interfaces_ = true;
+            return true;
+          }
+        }
+#endif
         retained_device_ = device_;
         retained_descriptors_ = descriptors_;
         transport_active_ = true;
@@ -358,6 +380,7 @@ namespace raw_hid {
      * @return True when all create requests were written.
      */
     bool create_group() {
+      contacts_clean_ = true;
 #ifdef __linux__
       transport_active_ = true;
       started_.assign(descriptors_.size(), false);
@@ -484,24 +507,33 @@ namespace raw_hid {
      * point to the new one. Only releases are injected; tool proximity stays.
      * evdev injects through its shared input handle, including when an evdev
      * reader owns a grab. Verify input-core state before reporting success.
+     * @return True only when all discovered endpoints were verified idle.
      */
-    void release_retained_contacts() {
+    bool release_retained_contacts() {
+  #ifdef SUNSHINE_TESTS
+      if (contact_cleanup_for_test_) {
+        return contact_cleanup_for_test_();
+      }
+  #endif
       if (retained_phys_.empty()) {
-        return;
+        return true;
       }
       DIR *directory = opendir("/sys/class/input");
       if (directory == nullptr) {
         const int error_code = errno;
         BOOST_LOG(warning) << "Raw HID tablet cannot scan retained input nodes: "sv << std::strerror(error_code);
-        return;
+        return false;
       }
       int released = 0;
+      int matched = 0;
+      bool clean = true;
       for (;;) {
         errno = 0;
         const dirent *entry = readdir(directory);
         if (entry == nullptr) {
           const int error_code = errno;
           if (error_code != 0) {
+            clean = false;
             BOOST_LOG(warning) << "Raw HID tablet input-node scan failed: "sv << std::strerror(error_code);
           }
           break;
@@ -509,15 +541,18 @@ namespace raw_hid {
         if (std::strncmp(entry->d_name, "event", 5) != 0 || read_phys(entry->d_name) != retained_phys_) {
           continue;
         }
+        ++matched;
         const std::string path = "/dev/input/"s + entry->d_name;
         const int fd = open(path.c_str(), O_RDWR | O_CLOEXEC | O_NONBLOCK);
         if (fd < 0) {
+          clean = false;
           const int error_code = errno;
           BOOST_LOG(warning) << "Raw HID tablet cannot open "sv << path << " to release contact: "sv << std::strerror(error_code);
           continue;
         }
         const auto result = release_node_contacts(fd);
         if (result.error != 0) {
+          clean = false;
           BOOST_LOG(warning) << "Raw HID tablet contact cleanup failed on "sv << path << " ("sv << result.operation << "): "sv << std::strerror(result.error);
         } else if (result.released) {
           ++released;
@@ -528,6 +563,10 @@ namespace raw_hid {
       if (released != 0) {
         BOOST_LOG(info) << "Released held raw HID tablet contact on "sv << released << " input node(s)"sv;
       }
+      if (matched == 0) {
+        BOOST_LOG(warning) << "Raw HID contact cleanup could not verify any retained input nodes"sv;
+      }
+      return clean && matched != 0;
     }
 
     /**
@@ -688,9 +727,11 @@ namespace raw_hid {
     std::vector<std::vector<std::uint8_t>> retained_descriptors_;  ///< Descriptors backing retained endpoints.
     std::string retained_phys_;  ///< Physical path shared by the retained endpoints' input nodes.
     bool transport_active_ = false;  ///< Whether the current transport may deliver tablet frames.
+    bool contacts_clean_ = true;  ///< Last suspend verified releases, or no previous contacts exist.
     bool replace_interfaces_ = false;  ///< Whether a completed attach requires endpoint replacement.
 #ifdef SUNSHINE_TESTS
     std::uint64_t endpoint_epoch_ = 0;  ///< Number of successfully created endpoint groups.
+    std::function<bool()> contact_cleanup_for_test_;  ///< Component-test syscall boundary.
 #endif
 #ifdef __linux__
     std::map<std::pair<std::uint16_t, std::uint32_t>, std::uint32_t> pending_reports_;  ///< Kernel queries awaiting the active Client lease.
@@ -744,6 +785,10 @@ namespace raw_hid {
 
   std::uint64_t tablet_t::endpoint_epoch() {
     return impl_->endpoint_epoch();
+  }
+
+  void tablet_t::set_contact_cleanup_for_test(std::function<bool()> cleanup) {
+    impl_->set_contact_cleanup_for_test(std::move(cleanup));
   }
 #endif
 }  // namespace raw_hid
