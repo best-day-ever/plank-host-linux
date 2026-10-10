@@ -110,6 +110,11 @@ TEST(RawHidTablet, ReusesIdenticalEndpointsAcrossFocusAndTransportResume) {
 
   const auto first_mail = std::make_shared<safe::mail_raw_t>();
   raw_hid::tablet_t tablet {first_mail->queue<std::vector<std::uint8_t>>("raw-hid-test")};
+  // This empty collection tests UHID lifecycle, not evdev contacts. It has no
+  // input node to inspect; contact syscall behavior has its own fixtures.
+  tablet.set_contact_cleanup_for_test([] {
+    return true;
+  });
   PLANK_RAW_HID_DEVICE_MESSAGE device {};
   device.interfaceCount = util::endian::little<std::uint16_t>(1);
   device.bus = util::endian::little<std::uint16_t>(3);

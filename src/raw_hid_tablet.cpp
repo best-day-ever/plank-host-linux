@@ -349,8 +349,8 @@ namespace raw_hid {
           })) {
 #ifdef __linux__
         // Retry a transient cleanup error before reusing the stable device.
-        // Only a proven unhealthy endpoint group is replaced, never a healthy
-        // group merely because the stream/focus changed.
+        // Only a group whose cleanup still cannot be verified is replaced,
+        // never a healthy group merely because the stream/focus changed.
         if (!contacts_clean_) {
           contacts_clean_ = release_retained_contacts();
           if (!contacts_clean_) {

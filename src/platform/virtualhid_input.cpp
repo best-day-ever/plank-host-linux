@@ -320,7 +320,12 @@ namespace platf::virtualhid {
     state.tilt_y = tilt_y;
     state.transition = transition;
     state.viewport = pointer_viewport(touch_port);
-    log_failure("submit libvirtualhid pen state"sv, context.pen->place_tool(state));
+    const auto status = context.pen->place_tool(state);
+    log_failure("submit libvirtualhid pen state"sv, status);
+    if (leaving && status.ok()) {
+      // Linux's completed leave/cancel also releases all barrel buttons.
+      context.pressed_pen_buttons.clear();
+    }
   }
 
 }  // namespace platf::virtualhid

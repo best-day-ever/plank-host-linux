@@ -14,6 +14,9 @@
 
 extern "C" {
 #include <moonlight-common-c/src/plank.h>
+#ifdef PLANK_TRANSPORT
+  #include <plank_transport_input.h>
+#endif
 }
 
 // local includes
@@ -181,6 +184,27 @@ TEST_F(InputRetainedSessionTest, DisconnectReleasesNormalizedPenWithoutViewport)
   EXPECT_TRUE(context.pressed_pen_buttons.empty());
   EXPECT_EQ(context.pen->last_submitted_tool().transition, lvh::PointerTransition::cancel);
 }
+
+#ifdef PLANK_TRANSPORT
+TEST_F(InputRetainedSessionTest, NativePenCancelDoesNotRequireDisplayGeometry) {
+  std::uint64_t lease = 0;
+  auto session = allocate("cancel-without-viewport", lease);
+  auto &context = platf::virtualhid::get_client_context(input::testing::client_context(session));
+  ASSERT_NE(context.pen, nullptr);
+  platf::pen_input_t pen {};
+  pen.toolType = LI_TOOL_TYPE_ERASER;
+  pen.eventType = LI_TOUCH_EVENT_DOWN;
+  pen.penButtons = LI_PEN_BUTTON_PRIMARY;
+  pen.pressureOrDistance = 0.5F;
+  platf::virtualhid::pen_update(context, {}, pen);
+  std::array<std::uint8_t, PLANK_TRANSPORT_INPUT_PEN_SIZE> payload {};
+  payload[0] = LI_TOUCH_EVENT_CANCEL_ALL;
+  payload[1] = LI_TOOL_TYPE_UNKNOWN;
+  ASSERT_TRUE(input::native(session, PLANK_TRANSPORT_INPUT_PEN, payload.data(), payload.size()));
+  EXPECT_TRUE(context.pressed_pen_buttons.empty());
+  EXPECT_EQ(context.pen->last_submitted_tool().transition, lvh::PointerTransition::cancel);
+}
+#endif
 
 TEST_F(InputRetainedSessionTest, RebindAndCleanupCannotRaceInputDelivery) {
   using namespace std::chrono_literals;
