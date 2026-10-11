@@ -24,6 +24,7 @@ extern "C" {
 #include "src/globals.h"
 #include "src/input.h"
 #include "src/platform/virtualhid_input.h"
+#include "src/process.h"
 #include "src/raw_hid_tablet.h"
 #include "src/utility.h"
 
@@ -97,7 +98,6 @@ namespace {
       // fixture run against the next test's replacement platform backend.
       static_cast<task_pool_util::TaskPool &>(task_pool) = task_pool_util::TaskPool {};
       sessions.clear();
-      input::terminate_retained_input();
       input::testing::set_platform_input({});
     }
 
@@ -166,6 +166,59 @@ TEST_F(InputRetainedSessionTest, DisconnectSuspendsRatherThanDiscardingResumable
 
   input::reset(resumed, resumed_connection_id);
   EXPECT_EQ(input::testing::raw_hid_generation(resumed), 8);
+}
+
+TEST_F(InputRetainedSessionTest, OrphanReservationCleanupAndFreshLaunchKeepDesktopInput) {
+  proc::proc_t reservation;
+  ASSERT_EQ(reservation.execute(proc::desktop_app_id), 0);
+  std::uint64_t lease = 0;
+  auto first = allocate("plank-desktop", lease);
+  ASSERT_TRUE(input::testing::handle_raw_hid(first, make_raw_hid_device_frame(7)));
+  input::reset(first, lease);
+
+  // Match a completed stream join: only the desktop owner may retain input.
+  std::weak_ptr<input::input_t> retained = first;
+  sessions.clear();
+  first.reset();
+  // These are the real reservation calls made by /launch after network loss.
+  reservation.terminate();
+  ASSERT_FALSE(retained.expired());
+  ASSERT_EQ(reservation.execute(proc::desktop_app_id), 0);
+  ASSERT_FALSE(retained.expired());
+  std::uint64_t next_lease = 0;
+  auto resumed = allocate("plank-desktop", next_lease);
+  EXPECT_EQ(resumed, retained.lock());
+  EXPECT_GT(next_lease, lease);
+  EXPECT_EQ(input::testing::raw_hid_generation(resumed), 7);
+  reservation.terminate();
+}
+
+TEST_F(InputRetainedSessionTest, FreshReservationCannotDestroyAnIdleDesktopTablet) {
+  std::uint64_t lease = 0;
+  auto first = allocate("plank-desktop", lease);
+  ASSERT_TRUE(input::testing::handle_raw_hid(first, make_raw_hid_device_frame(7)));
+  input::reset(first, lease);
+  proc::proc_t reservation;
+  ASSERT_EQ(reservation.running(), 0);
+  ASSERT_EQ(reservation.execute(proc::desktop_app_id), 0);
+  std::uint64_t next_lease = 0;
+  auto resumed = allocate("plank-desktop", next_lease);
+  EXPECT_EQ(first, resumed);
+  EXPECT_EQ(input::testing::raw_hid_generation(resumed), 7);
+  reservation.terminate();
+}
+
+TEST_F(InputRetainedSessionTest, DesktopShutdownReleasesInputAfterLastStreamReference) {
+  std::uint64_t lease = 0;
+  auto first = allocate("plank-desktop", lease);
+  input::reset(first, lease);
+  ASSERT_NO_FATAL_FAILURE(drain_tasks());
+  std::weak_ptr<input::input_t> retained = first;
+  sessions.clear();
+  first.reset();
+  ASSERT_FALSE(retained.expired());
+  input::testing::set_platform_input({});
+  EXPECT_TRUE(retained.expired());
 }
 
 TEST_F(InputRetainedSessionTest, DisconnectReleasesNormalizedPenWithoutViewport) {

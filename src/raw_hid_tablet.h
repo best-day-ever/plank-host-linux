@@ -1,6 +1,6 @@
 /**
  * @file src/raw_hid_tablet.h
- * @brief Session-scoped raw HID tablet redirection.
+ * @brief Desktop-owned raw HID tablet redirection with per-stream transport bindings.
  */
 #pragma once
 #include "raw_hid_contact.h"
@@ -22,7 +22,7 @@ namespace raw_hid {
   bool available();
 
   /**
-   * @brief Owns virtual HID interfaces created for one streaming session.
+   * @brief Owns virtual HID interfaces retained across desktop stream connections.
    */
   class tablet_t {
   public:
@@ -34,7 +34,7 @@ namespace raw_hid {
     explicit tablet_t(feedback_queue_t feedback_queue);
 
     /**
-     * @brief Destroy all virtual interfaces owned by this session.
+     * @brief Destroy all virtual interfaces owned by this tablet redirector.
      */
     ~tablet_t();
 

@@ -1302,7 +1302,8 @@ namespace stream {
       }
       BOOST_LOG(debug) << "Waiting for control to end..."sv;
       session.controlEnd.view();
-      // Reset input on session stop to avoid stuck repeated keys
+      // Release held input, but retain desktop-owned device identities for
+      // later connections even when no stream reservation remains.
       BOOST_LOG(debug) << "Resetting Input..."sv;
       input::reset(session.input, session.input_connection_id);
 
@@ -1340,11 +1341,9 @@ namespace stream {
       // If this is the last session, invoke the platform callbacks
       if (--running_sessions == 0) {
         bool revert_display_config {config::video.dd.config_revert_on_disconnect};
-        if (proc::proc.running()) {
-        } else {
+        if (!proc::proc.running()) {
           // We have no app running and also no clients anymore.
           revert_display_config = true;
-          input::terminate_retained_input();
         }
 
         if (revert_display_config) {

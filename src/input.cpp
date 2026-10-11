@@ -221,7 +221,7 @@ namespace input {
     std::unique_ptr<platf::client_input_t> client_context;  ///< Client context.
 
     safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event;  ///< Touch port event.
-    std::unique_ptr<raw_hid::tablet_t> raw_hid_tablet;  ///< Exact client tablet owned by this stream session.
+    std::unique_ptr<raw_hid::tablet_t> raw_hid_tablet;  ///< Exact client tablet retained for this desktop worker.
     bool raw_hid_owns_tablet;  ///< Whether exact UHID endpoints suppress the normalized pen fallback.
     std::atomic<std::uint64_t> connection_id;  ///< Most recent stream lease bound to this retained state.
 
@@ -262,7 +262,7 @@ namespace input {
    */
   struct retained_input_state_t {
     std::mutex mutex;  ///< Synchronizes retained session access across transport threads.
-    retained_input_map_t inputs;  ///< Paused input sessions keyed by the internal desktop identity.
+    retained_input_map_t inputs;  ///< Desktop input devices, independent of stream reservation lifetime.
   };
 
   /**
@@ -1515,8 +1515,8 @@ namespace input {
     pen.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
     pen.toolType = LI_TOOL_TYPE_UNKNOWN;
     platf::pen_update(input->client_context.get(), {}, pen);
-    // Keep the host UHID/XInput endpoints stable while this retained session
-    // is resumable. The replacement transport must re-present the same USB
+    // Keep the host UHID/XInput endpoints stable across stream reservations.
+    // The replacement transport must re-present the same USB
     // identity and descriptors before tablet reports are accepted again.
     input->raw_hid_tablet->suspend();
   }
@@ -1529,31 +1529,22 @@ namespace input {
     reset_input_state(input, connection_id);
   }
 
-  void terminate_retained_input() {
-    retained_input_map_t inputs;
-    {
-      auto &state = retained_input_state();
-      std::lock_guard lock {state.mutex};
-      state.inputs.swap(inputs);
-    }
-
-  }
-
-  void terminate_retained_input(const std::string_view session_id) {
-    std::shared_ptr<input_t> input;
-    {
-      auto &state = retained_input_state();
-      std::lock_guard lock {state.mutex};
-      const auto iter = state.inputs.find(session_id);
-      if (iter == state.inputs.end()) {
-        return;
+  namespace {
+    /**
+     * @brief Release desktop-owned devices after the input workers have stopped.
+     *
+     * This is subsystem shutdown, never stream/reservation cleanup. Destroy
+     * devices outside the storage lock and before releasing the platform backend.
+     */
+    void clear_desktop_input() {
+      retained_input_map_t inputs;
+      {
+        auto &state = retained_input_state();
+        std::lock_guard lock {state.mutex};
+        state.inputs.swap(inputs);
       }
-
-      input = std::move(iter->second);
-      state.inputs.erase(iter);
     }
-
-  }
+  }  // namespace
 
   /**
    * @brief RAII helper that runs shutdown cleanup when destroyed.
@@ -1564,12 +1555,7 @@ namespace input {
      * @brief Destroy the input subsystem deinitializer.
      */
     ~deinit_t() override {
-      retained_input_map_t inputs;
-      {
-        auto &state = retained_input_state();
-        std::lock_guard lock {state.mutex};
-        state.inputs.swap(inputs);
-      }
+      clear_desktop_input();
       platf_input.reset();
     }
   };
@@ -1640,7 +1626,7 @@ namespace input {
 #ifdef SUNSHINE_TESTS
   namespace testing {
     void set_platform_input(platf::input_t input) {
-      terminate_retained_input();
+      clear_desktop_input();
       platf_input = std::move(input);
     }
 
@@ -1651,6 +1637,10 @@ namespace input {
 
     std::uint16_t raw_hid_generation(const std::shared_ptr<input_t> &input) {
       return input ? input->raw_hid_tablet->active_generation() : 0;
+    }
+
+    raw_hid::tablet_t &raw_tablet(const std::shared_ptr<input_t> &input) {
+      return *input->raw_hid_tablet;
     }
 
     bool normalized_pen_enabled(const std::shared_ptr<input_t> &input) {
