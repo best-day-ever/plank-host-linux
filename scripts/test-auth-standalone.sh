@@ -6,14 +6,14 @@
 #
 #   scripts/test-auth-standalone.sh [build-dir]
 #
-# Requires third-party/lizardbyte-common and its third-party/googletest
-# submodule to be initialized (non-recursively is enough).
+# Requires the Host-owned third-party/googletest submodule to be initialized
+# (non-recursively is enough); use the same pin as the main CMake build.
 set -euo pipefail
 
 source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 build_dir=${1:-"$source_dir/cmake-build-auth"}
 cxx=${CXX:-/opt/rh/gcc-toolset-14/root/usr/bin/g++}
-gtest="$source_dir/third-party/lizardbyte-common/third-party/googletest/googletest"
+gtest="$source_dir/third-party/googletest/googletest"
 [[ -f $gtest/src/gtest-all.cc ]] || {
   echo "googletest source missing at $gtest" >&2
   exit 1
