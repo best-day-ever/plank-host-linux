@@ -24,7 +24,10 @@ struct PlankTransportNativeEndpoint {
   std::function<void(const PlankClipboardFileRecord &)> sent;
   unsigned data_timeouts = 0;
   unsigned control_timeouts = 0;
+  std::chrono::milliseconds control_delay {0};
   bool block_sends = false;
+  bool pressure_on_manifest = false;
+  unsigned send_timeouts = 0;
   std::vector<std::uint16_t> sent_types;
 };
 
@@ -48,6 +51,9 @@ extern "C" int32_t plank_transport_native_file_control_receive(
     --endpoint->control_timeouts;
     return PLANK_TRANSPORT_TIMEOUT;
   }
+  if (timeout && !endpoint->controls.empty()) {
+    std::this_thread::sleep_for(endpoint->control_delay);
+  }
   return pop(endpoint->controls, out, capacity, size, timeout);
 }
 extern "C" int32_t plank_transport_native_file_data_receive(
@@ -62,9 +68,17 @@ extern "C" int32_t plank_transport_native_file_data_receive(
 extern "C" int32_t plank_transport_native_file_control_send(
   PlankTransportNativeEndpoint *endpoint, const uint8_t *bytes, size_t size) {
   if (endpoint->block_sends) return PLANK_TRANSPORT_TIMEOUT;
+  if (endpoint->send_timeouts) {
+    --endpoint->send_timeouts;
+    return PLANK_TRANSPORT_TIMEOUT;
+  }
   PlankClipboardFileRecord record {};
   REQUIRE(plank_clipboard_file_decode(bytes, size,
     PLANK_CLIPBOARD_FILE_CONTROL_PAYLOAD_LIMIT, &record));
+  if (endpoint->pressure_on_manifest &&
+      record.type == PLANK_CLIPBOARD_FILE_OFFER_ENTRY && !endpoint->controls.empty()) {
+    return PLANK_TRANSPORT_TIMEOUT;
+  }
   endpoint->sent_types.push_back(record.type);
   if (endpoint->sent) endpoint->sent(record);
   return PLANK_TRANSPORT_OK;
@@ -94,21 +108,26 @@ static std::vector<std::uint8_t> packet(std::uint8_t identity, std::uint16_t typ
 
 /** @brief Queue a bounded one-file source manifest, optionally corrupting its sequence. */
 static void manifest(PlankTransportNativeEndpoint &endpoint, std::uint8_t id,
-  std::uint64_t size = 0, bool bad_sequence = false) {
-  PlankClipboardFileOfferBegin begin {PLANK_CLIPBOARD_FILE_CLIENT_TO_HOST, 1, 1, 1, size};
+  std::uint64_t size = 0, bool bad_sequence = false, unsigned entry_count = 1) {
+  PlankClipboardFileOfferBegin begin {PLANK_CLIPBOARD_FILE_CLIENT_TO_HOST, 1,
+    entry_count, entry_count, size * entry_count};
   std::array<std::uint8_t, PLANK_CLIPBOARD_FILE_OFFER_BEGIN_BYTES> payload {};
   REQUIRE(plank_clipboard_file_offer_begin_encode(payload.data(), &begin));
   endpoint.controls.push_back(packet(id, PLANK_CLIPBOARD_FILE_OFFER_BEGIN, 1,
     payload.data(), payload.size()));
-  PlankClipboardFileOfferEntry entry {1, 0, PLANK_CLIPBOARD_FILE_REGULAR, 0600,
-    size, 0, reinterpret_cast<const std::uint8_t *>("sample.txt"), 10};
-  std::array<std::uint8_t, 300> encoded {};
-  std::size_t encoded_size = 0;
-  REQUIRE(plank_clipboard_file_offer_entry_encode(encoded.data(), encoded.size(),
-    &entry, &encoded_size));
-  endpoint.controls.push_back(packet(id, PLANK_CLIPBOARD_FILE_OFFER_ENTRY,
-    bad_sequence ? 3 : 2, encoded.data(), encoded_size));
-  endpoint.controls.push_back(packet(id, PLANK_CLIPBOARD_FILE_OFFER_END, 3));
+  for (unsigned index = 0; index < entry_count; ++index) {
+    const std::string name = index == 0 ? "sample.txt" : "sample-" + std::to_string(index);
+    PlankClipboardFileOfferEntry entry {index + 1, 0, PLANK_CLIPBOARD_FILE_REGULAR, 0600,
+      size, 0, reinterpret_cast<const std::uint8_t *>(name.data()),
+      static_cast<std::uint16_t>(name.size())};
+    std::array<std::uint8_t, 300> encoded {};
+    std::size_t encoded_size = 0;
+    REQUIRE(plank_clipboard_file_offer_entry_encode(encoded.data(), encoded.size(),
+      &entry, &encoded_size));
+    endpoint.controls.push_back(packet(id, PLANK_CLIPBOARD_FILE_OFFER_ENTRY,
+      index + (bad_sequence ? 3 : 2), encoded.data(), encoded_size));
+  }
+  endpoint.controls.push_back(packet(id, PLANK_CLIPBOARD_FILE_OFFER_END, entry_count + 2));
 }
 
 /** @brief Queue a valid terminal referencing the active sink materialization. */
@@ -163,6 +182,50 @@ static void crossed_offers() {
   REQUIRE(host.offer.receive_sequence == 3 && !host.failed);
   REQUIRE(endpoint.sent_types.empty());
   REQUIRE(endpoint.controls.empty());
+}
+
+/** @brief A Host source must drain the losing manifest before its own flow window reopens. */
+static void crossed_manifest_backpressure() {
+  PlankTransportNativeEndpoint endpoint;
+  inbox_t inbox;
+  wire_t host(&endpoint, {}, inbox, 30ms);
+  std::array<std::uint8_t, 16> host_id {9};
+  host.start_source(host_id, 9);
+  manifest(endpoint, 1, 0, false, 128);
+  REQUIRE(endpoint.controls.size() > 64);
+  endpoint.pressure_on_manifest = true;
+  // The valid foreign drain exceeds the original Host idle interval overall,
+  // while each individual receive keeps making progress within that interval.
+  endpoint.control_delay = 1ms;
+  REQUIRE(host.send_control(PLANK_CLIPBOARD_FILE_OFFER_BEGIN, 0, nullptr, 0));
+  REQUIRE(host.send_control(PLANK_CLIPBOARD_FILE_OFFER_ENTRY, 0, nullptr, 0));
+  REQUIRE(host.send_control(PLANK_CLIPBOARD_FILE_OFFER_END, 0, nullptr, 0));
+  REQUIRE(endpoint.controls.empty() && !host.failed);
+  REQUIRE(host.offer.receive_sequence == 1 && host.offer.send_sequence == 4);
+  REQUIRE((endpoint.sent_types == std::vector<std::uint16_t> {
+    PLANK_CLIPBOARD_FILE_OFFER_BEGIN, PLANK_CLIPBOARD_FILE_OFFER_ENTRY,
+    PLANK_CLIPBOARD_FILE_OFFER_END}));
+  endpoint.controls.push_back(packet(9, PLANK_CLIPBOARD_FILE_OFFER_ACK, 1));
+  std::vector<std::uint8_t> storage;
+  const auto ack = host.control(storage);
+  REQUIRE(ack && ack->type == PLANK_CLIPBOARD_FILE_OFFER_ACK);
+}
+
+/** @brief Backpressured sends must leave future Host responses for sequence validation later. */
+static void backpressure_defers_response() {
+  PlankTransportNativeEndpoint endpoint;
+  inbox_t inbox;
+  wire_t host(&endpoint, {}, inbox, 30ms);
+  std::array<std::uint8_t, 16> host_id {9};
+  host.start_source(host_id, 9);
+  endpoint.send_timeouts = 1;
+  endpoint.controls.push_back(packet(9, PLANK_CLIPBOARD_FILE_OFFER_ACK, 1));
+  REQUIRE(host.send_control(PLANK_CLIPBOARD_FILE_OFFER_END, 0, nullptr, 0));
+  REQUIRE(host.offer.receive_sequence == 1 && inbox.control);
+  std::vector<std::uint8_t> storage;
+  const auto ack = host.control(storage);
+  REQUIRE(ack && ack->type == PLANK_CLIPBOARD_FILE_OFFER_ACK);
+  REQUIRE(host.offer.receive_sequence == 2 && !inbox.control);
 }
 
 /** @brief Build peer replies that preserve the actual randomized Host offer identity. */
@@ -377,6 +440,8 @@ int main() {
   try {
     for (const auto &[name, test] : std::vector<std::pair<const char *, void (*)()>> {
       {"crossed offers", crossed_offers},
+      {"crossed manifests under send backpressure", crossed_manifest_backpressure},
+      {"backpressure defers future responses", backpressure_defers_response},
       {"complete source collision and local failure", source_collision_and_failure},
       {"cross-lane completion", cross_lane_completion},
       {"source cancel during DATA", cancel_during_data},

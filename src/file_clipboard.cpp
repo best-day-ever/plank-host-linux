@@ -321,25 +321,8 @@ namespace stream::file_clipboard {
           if (!record) continue;
           if (matches(*record)) return accept(*record);
           if (new_offer(*record)) {
-            if (source && !collision_drained) {
-              // A Windows source yields to the Host offer and retries its paste
-              // after receiving it. Consume its already queued manifest without
-              // acknowledging or cancelling the losing offer.
-              PlankClipboardFileOfferBegin begin {};
-              if (plank_clipboard_file_offer_begin_decode(
-                    record->payload, record->payload_size, &begin) &&
-                  begin.direction == PLANK_CLIPBOARD_FILE_CLIENT_TO_HOST) {
-                wire_t competing(endpoint, stop_token, inbox, idle_timeout);
-                competing.adopt(*record);
-                collision_drained = true;
-                if (parse_manifest(competing, storage)) {
-                  progress();
-                  continue;
-                }
-                failed = true;
-                return std::nullopt;
-              }
-            }
+            if (drain_competing(*record, storage)) continue;
+            if (failed) return std::nullopt;
             defer(storage);
             failed = true;
           }
@@ -439,6 +422,33 @@ namespace stream::file_clipboard {
         progress();
       }
 
+      /**
+       * @brief Validate and drain one losing Client manifest without advancing Host sequence.
+       * @param record Candidate foreign OFFER_BEGIN with storage-backed payload.
+       * @param storage Receive buffer reusable while consuming its bounded manifest.
+       * @return True after a valid crossed manifest was completely drained.
+       */
+      bool drain_competing(const PlankClipboardFileRecord &record,
+                           std::vector<std::uint8_t> &storage) {
+        if (!source || collision_drained || matches(record) || !new_offer(record)) return false;
+        PlankClipboardFileOfferBegin begin {};
+        if (!plank_clipboard_file_offer_begin_decode(
+              record.payload, record.payload_size, &begin) ||
+            begin.direction != PLANK_CLIPBOARD_FILE_CLIENT_TO_HOST) return false;
+        // A Windows source yields to the Host offer and retries its paste
+        // after receiving it. Consume its already queued manifest without
+        // acknowledging or cancelling the losing offer.
+        wire_t competing(endpoint, stop_token, inbox, idle_timeout);
+        competing.adopt(record);
+        collision_drained = true;
+        if (!parse_manifest(competing, storage)) {
+          failed = true;
+          return false;
+        }
+        progress();
+        return true;
+      }
+
       /** @brief Preserve a record for the next phase or offer. */
       void defer(std::vector<std::uint8_t> &storage) {
         inbox.control = std::move(storage);
@@ -508,9 +518,8 @@ namespace stream::file_clipboard {
           std::memcpy(record.data() + PLANK_CLIPBOARD_FILE_HEADER_BYTES, payload, size);
         }
         // Error reporting after a failed offer also needs a finite send budget.
-        const auto deadline = last_activity + idle_timeout;
         while (!stop_token.stop_requested() && !inbox.disconnected &&
-               std::chrono::steady_clock::now() < deadline) {
+               std::chrono::steady_clock::now() - last_activity < idle_timeout) {
           const auto result = content ?
             plank_transport_native_file_data_send(endpoint, record.data(), record.size()) :
             plank_transport_native_file_control_send(endpoint, record.data(), record.size());
@@ -521,6 +530,22 @@ namespace stream::file_clipboard {
           if (result != PLANK_TRANSPORT_TIMEOUT) {
             inbox.disconnected = true;
             return false;
+          }
+          if (source && !collision_drained && !inbox.control) {
+            // Both sources can fill their flow-control windows before either
+            // finishes its manifest. Host wins by draining the Client source
+            // while its own send is backpressured, then resumes this record.
+            std::vector<std::uint8_t> storage;
+            if (auto incoming = read(storage, 0, false)) {
+              if (!drain_competing(*incoming, storage)) {
+                if (failed) return false;
+                if (matches(*incoming) || new_offer(*incoming)) {
+                  // A future response is validated only in the receiving phase.
+                  defer(storage);
+                }
+              }
+            }
+            if (failed) return false;
           }
           std::this_thread::sleep_for(2ms);
         }
