@@ -31,7 +31,7 @@
 #include <unistd.h>
 #include <vector>
 
-#include "logging.h"
+#include "src/logging.h"
 
 namespace stream::file_clipboard {
   namespace {
@@ -261,51 +261,245 @@ namespace stream::file_clipboard {
       bool valid = false;
     };
 
+    /** @brief Keep deferred control records and connection state across failed offers. */
+    struct inbox_t {
+      std::optional<std::vector<std::uint8_t>> control;  ///< Next phase or next offer record.
+      bool disconnected = false;  ///< Native transport is no longer usable.
+    };
+
+    class wire_t;
+    bool parse_manifest(wire_t &wire, std::vector<std::uint8_t> &storage);
+
+    /** @brief A bounded, session-scoped PCF2 offer exchange. */
     class wire_t {
     public:
-      wire_t(PlankTransportNativeEndpoint *endpoint, std::stop_token stop_token)
-          : endpoint(endpoint), stop_token(stop_token) {}
+      /**
+       * @brief Bind an offer exchange to the worker's persistent inbox.
+       * @param endpoint Authenticated native transport.
+       * @param stop_token Session cancellation.
+       * @param inbox Deferred records shared across offer recovery.
+       * @param idle_timeout Maximum time without successful offer traffic.
+       */
+      wire_t(PlankTransportNativeEndpoint *endpoint, std::stop_token stop_token,
+             inbox_t &inbox, std::chrono::milliseconds idle_timeout = 60s)
+          : endpoint(endpoint), stop_token(stop_token), inbox(inbox),
+            idle_timeout(idle_timeout) {}
 
+      /** @brief Find a new offer, discarding residual records from failed transfers. */
       std::optional<PlankClipboardFileRecord> first(
         std::vector<std::uint8_t> &storage,
         std::uint32_t timeout_ms = 100
       ) {
-        auto record = receive_control_unchecked(storage, timeout_ms);
-        if (!record) return std::nullopt;
-        if (record->type != PLANK_CLIPBOARD_FILE_OFFER_BEGIN ||
-            record->sequence != 1) {
-          failed = true;
-          return std::nullopt;
-        }
-        std::memcpy(offer.id.data(), record->offer_id, offer.id.size());
-        offer.epoch = record->session_epoch;
-        offer.receive_sequence = 2;
+        // No new DATA is legal before a READ_REQUEST. Clear residual old chunks
+        // so an abandoned transfer cannot fill the independent data queue.
+        std::vector<std::uint8_t> stale;
+        read(stale, 0, true);
+        failed = false;
+        auto record = read(storage, timeout_ms, false);
+        if (!record || record->type != PLANK_CLIPBOARD_FILE_OFFER_BEGIN ||
+            record->sequence != 1) return std::nullopt;
+        adopt(*record);
         return record;
       }
 
+      /** @brief Initialize an outgoing Host offer with a fresh identity. */
       void start_source(const std::array<std::uint8_t, 16> &id, std::uint64_t epoch) {
         offer = {};
         offer.id = id;
         offer.epoch = epoch;
+        source = true;
+        progress();
       }
 
+      /** @brief Read the next control record, resolving crossed offers in Host's favor. */
       std::optional<PlankClipboardFileRecord> control(
         std::vector<std::uint8_t> &storage,
         std::uint32_t timeout_ms = 100
       ) {
-        return receive(storage, timeout_ms, false);
+        while (active()) {
+          auto record = read(storage, timeout_ms, false);
+          if (!record) continue;
+          if (matches(*record)) return accept(*record);
+          if (new_offer(*record)) {
+            if (source && !collision_drained) {
+              // A Windows source yields to the Host offer and retries its paste
+              // after receiving it. Consume its already queued manifest without
+              // acknowledging or cancelling the losing offer.
+              PlankClipboardFileOfferBegin begin {};
+              if (plank_clipboard_file_offer_begin_decode(
+                    record->payload, record->payload_size, &begin) &&
+                  begin.direction == PLANK_CLIPBOARD_FILE_CLIENT_TO_HOST) {
+                wire_t competing(endpoint, stop_token, inbox, idle_timeout);
+                competing.adopt(*record);
+                collision_drained = true;
+                if (parse_manifest(competing, storage)) {
+                  progress();
+                  continue;
+                }
+                failed = true;
+                return std::nullopt;
+              }
+            }
+            defer(storage);
+            failed = true;
+          }
+          // Old offer responses can remain on the reliable queue after abort.
+          // They do not advance this offer's sequence or inactivity deadline.
+        }
+        return std::nullopt;
       }
 
+      /** @brief Wait for DATA while observing terminal controls on the other lane. */
       std::optional<PlankClipboardFileRecord> data(
         std::vector<std::uint8_t> &storage,
         std::uint32_t timeout_ms = 100
       ) {
-        return receive(storage, timeout_ms, true);
+        while (active()) {
+          if (auto record = read(storage, timeout_ms, true)) {
+            if (matches(*record)) return accept(*record);
+          }
+          if (failed) break;
+          if (inbox.control) continue;
+          std::vector<std::uint8_t> control_storage;
+          if (auto record = read(control_storage, 0, false)) {
+            if (matches(*record)) {
+              if (record->type == PLANK_CLIPBOARD_FILE_CANCEL ||
+                  record->type == PLANK_CLIPBOARD_FILE_ERROR) {
+                PlankClipboardFileTerminal terminal {};
+                if (!plank_clipboard_file_terminal_decode(
+                      record->payload, record->payload_size, &terminal) ||
+                    terminal.materialization_id != materialization ||
+                    record->sequence < offer.receive_sequence) {
+                  failed = true;
+                  break;
+                }
+                // A terminal ends the whole offer even if DATA with a lower
+                // sequence remains in flight on the independently queued lane.
+                offer.receive_sequence = record->sequence + 1;
+                progress();
+                storage = std::move(control_storage);
+                plank_clipboard_file_decode(storage.data(), storage.size(),
+                  PLANK_CLIPBOARD_FILE_CONTROL_PAYLOAD_LIMIT, &*record);
+                return record;
+              }
+              // ENTRY_COMPLETE can overtake DATA across independent queues.
+              // Validate its sequence only when the control phase consumes it.
+              defer(control_storage);
+            } else if (new_offer(*record)) {
+              defer(control_storage);
+              failed = true;
+            }
+          }
+        }
+        return std::nullopt;
       }
 
+      /** @brief Send a sequenced control record with a bounded backpressure wait. */
       bool send_control(std::uint16_t type, std::uint32_t flags,
                         const std::uint8_t *payload, std::size_t size) {
-        if (size > PLANK_CLIPBOARD_FILE_CONTROL_PAYLOAD_LIMIT) return false;
+        return send(type, flags, payload, size, false);
+      }
+
+      /** @brief Send a sequenced data record with a bounded backpressure wait. */
+      bool send_data(const std::uint8_t *payload, std::size_t size) {
+        return send(PLANK_CLIPBOARD_FILE_DATA, 0, payload, size, true);
+      }
+
+      offer_t offer;  ///< Active offer identity, sequence, and manifest.
+      std::uint64_t materialization = 0;  ///< Expected sink materialization for terminals.
+      bool failed = false;  ///< This offer must be abandoned, not the whole worker.
+
+    private:
+      /** @brief Reset inactivity only after useful offer traffic. */
+      void progress() { last_activity = std::chrono::steady_clock::now(); }
+
+      /** @brief Check cancellation, connection state, and the inactivity deadline. */
+      bool active() {
+        if (inbox.disconnected ||
+            std::chrono::steady_clock::now() - last_activity >= idle_timeout) failed = true;
+        return !failed && !inbox.disconnected && !stop_token.stop_requested();
+      }
+
+      /** @brief Test the active offer identity independently of its sequence. */
+      bool matches(const PlankClipboardFileRecord &record) const {
+        return std::memcmp(record.offer_id, offer.id.data(), offer.id.size()) == 0 &&
+               record.session_epoch == offer.epoch;
+      }
+
+      /** @brief Recognize a potential resynchronization boundary. */
+      static bool new_offer(const PlankClipboardFileRecord &record) {
+        return record.type == PLANK_CLIPBOARD_FILE_OFFER_BEGIN && record.sequence == 1;
+      }
+
+      /** @brief Initialize a sink without disturbing a concurrent source identity. */
+      void adopt(const PlankClipboardFileRecord &record) {
+        std::memcpy(offer.id.data(), record.offer_id, offer.id.size());
+        offer.epoch = record.session_epoch;
+        offer.receive_sequence = 2;
+        progress();
+      }
+
+      /** @brief Preserve a record for the next phase or offer. */
+      void defer(std::vector<std::uint8_t> &storage) {
+        inbox.control = std::move(storage);
+      }
+
+      /** @brief Validate one selected lane's sequence after demultiplexing. */
+      std::optional<PlankClipboardFileRecord> accept(const PlankClipboardFileRecord &record) {
+        if (record.sequence != offer.receive_sequence) {
+          failed = true;
+          return std::nullopt;
+        }
+        ++offer.receive_sequence;
+        progress();
+        return record;
+      }
+
+      /** @brief Receive one native record without advancing any offer sequence. */
+      std::optional<PlankClipboardFileRecord> read(
+        std::vector<std::uint8_t> &storage, std::uint32_t timeout_ms, bool content
+      ) {
+        if (stop_token.stop_requested() || inbox.disconnected) return std::nullopt;
+        const auto payload_limit = content ?
+          PLANK_CLIPBOARD_FILE_DATA_PREFIX_BYTES + PLANK_CLIPBOARD_FILE_DATA_BYTES :
+          PLANK_CLIPBOARD_FILE_CONTROL_PAYLOAD_LIMIT;
+        if (!content && inbox.control) {
+          storage = std::move(*inbox.control);
+          inbox.control.reset();
+        } else {
+          storage.resize(PLANK_CLIPBOARD_FILE_HEADER_BYTES + payload_limit);
+          std::size_t size = 0;
+          const auto result = content ?
+            plank_transport_native_file_data_receive(
+              endpoint, storage.data(), storage.size(), &size, timeout_ms
+            ) :
+            plank_transport_native_file_control_receive(
+              endpoint, storage.data(), storage.size(), &size, timeout_ms
+            );
+          if (result == PLANK_TRANSPORT_TIMEOUT) return std::nullopt;
+          if (result != PLANK_TRANSPORT_OK) {
+            inbox.disconnected = true;
+            failed = true;
+            return std::nullopt;
+          }
+          storage.resize(size);
+        }
+        PlankClipboardFileRecord record {};
+        if (!plank_clipboard_file_decode(storage.data(), storage.size(),
+              static_cast<std::uint32_t>(payload_limit), &record)) {
+          failed = true;
+          return std::nullopt;
+        }
+        return record;
+      }
+
+      /** @brief Encode and send a record, bounded by the same wire inactivity limit. */
+      bool send(std::uint16_t type, std::uint32_t flags,
+                const std::uint8_t *payload, std::size_t size, bool content) {
+        const auto limit = content ?
+          PLANK_CLIPBOARD_FILE_DATA_PREFIX_BYTES + PLANK_CLIPBOARD_FILE_DATA_BYTES :
+          PLANK_CLIPBOARD_FILE_CONTROL_PAYLOAD_LIMIT;
+        if (size > limit) return false;
         std::vector<std::uint8_t> record(PLANK_CLIPBOARD_FILE_HEADER_BYTES + size);
         if (!plank_clipboard_file_header(record.data(), record.size(), type, flags,
               static_cast<std::uint32_t>(size), offer.id.data(), offer.epoch,
@@ -313,104 +507,34 @@ namespace stream::file_clipboard {
         if (size != 0) {
           std::memcpy(record.data() + PLANK_CLIPBOARD_FILE_HEADER_BYTES, payload, size);
         }
-        while (!stop_token.stop_requested()) {
-          const auto result = plank_transport_native_file_control_send(
-            endpoint, record.data(), record.size()
-          );
-          if (result == PLANK_TRANSPORT_OK) return true;
-          if (result != PLANK_TRANSPORT_TIMEOUT) return false;
+        // Error reporting after a failed offer also needs a finite send budget.
+        const auto deadline = last_activity + idle_timeout;
+        while (!stop_token.stop_requested() && !inbox.disconnected &&
+               std::chrono::steady_clock::now() < deadline) {
+          const auto result = content ?
+            plank_transport_native_file_data_send(endpoint, record.data(), record.size()) :
+            plank_transport_native_file_control_send(endpoint, record.data(), record.size());
+          if (result == PLANK_TRANSPORT_OK) {
+            progress();
+            return true;
+          }
+          if (result != PLANK_TRANSPORT_TIMEOUT) {
+            inbox.disconnected = true;
+            return false;
+          }
           std::this_thread::sleep_for(2ms);
         }
+        failed = true;
         return false;
       }
 
-      bool send_data(const std::uint8_t *payload, std::size_t size) {
-        if (size > PLANK_CLIPBOARD_FILE_DATA_PREFIX_BYTES +
-                     PLANK_CLIPBOARD_FILE_DATA_BYTES) return false;
-        std::vector<std::uint8_t> record(PLANK_CLIPBOARD_FILE_HEADER_BYTES + size);
-        if (!plank_clipboard_file_header(record.data(), record.size(),
-              PLANK_CLIPBOARD_FILE_DATA, 0, static_cast<std::uint32_t>(size),
-              offer.id.data(), offer.epoch, offer.send_sequence++)) return false;
-        std::memcpy(record.data() + PLANK_CLIPBOARD_FILE_HEADER_BYTES, payload, size);
-        while (!stop_token.stop_requested()) {
-          const auto result = plank_transport_native_file_data_send(
-            endpoint, record.data(), record.size()
-          );
-          if (result == PLANK_TRANSPORT_OK) return true;
-          if (result != PLANK_TRANSPORT_TIMEOUT) return false;
-          std::this_thread::sleep_for(2ms);
-        }
-        return false;
-      }
-
-      offer_t offer;
-      bool failed = false;
-
-    private:
-      std::optional<PlankClipboardFileRecord> receive_control_unchecked(
-        std::vector<std::uint8_t> &storage,
-        std::uint32_t timeout_ms
-      ) {
-        storage.resize(PLANK_CLIPBOARD_FILE_HEADER_BYTES +
-                       PLANK_CLIPBOARD_FILE_CONTROL_PAYLOAD_LIMIT);
-        std::size_t size = 0;
-        const auto result = plank_transport_native_file_control_receive(
-          endpoint, storage.data(), storage.size(), &size, timeout_ms
-        );
-        if (result == PLANK_TRANSPORT_TIMEOUT || stop_token.stop_requested()) {
-          return std::nullopt;
-        }
-        if (result != PLANK_TRANSPORT_OK) {
-          failed = true;
-          return std::nullopt;
-        }
-        storage.resize(size);
-        PlankClipboardFileRecord record {};
-        if (!plank_clipboard_file_decode(storage.data(), storage.size(),
-              PLANK_CLIPBOARD_FILE_CONTROL_PAYLOAD_LIMIT, &record)) {
-          failed = true;
-          return std::nullopt;
-        }
-        return record;
-      }
-
-      std::optional<PlankClipboardFileRecord> receive(
-        std::vector<std::uint8_t> &storage,
-        std::uint32_t timeout_ms,
-        bool content
-      ) {
-        const auto payload_limit = content ?
-          PLANK_CLIPBOARD_FILE_DATA_PREFIX_BYTES + PLANK_CLIPBOARD_FILE_DATA_BYTES :
-          PLANK_CLIPBOARD_FILE_CONTROL_PAYLOAD_LIMIT;
-        storage.resize(PLANK_CLIPBOARD_FILE_HEADER_BYTES + payload_limit);
-        std::size_t size = 0;
-        const auto result = content ?
-          plank_transport_native_file_data_receive(
-            endpoint, storage.data(), storage.size(), &size, timeout_ms
-          ) :
-          plank_transport_native_file_control_receive(
-            endpoint, storage.data(), storage.size(), &size, timeout_ms
-          );
-        if (result == PLANK_TRANSPORT_TIMEOUT) return std::nullopt;
-        if (result != PLANK_TRANSPORT_OK) {
-          failed = true;
-          return std::nullopt;
-        }
-        storage.resize(size);
-        PlankClipboardFileRecord record {};
-        if (!plank_clipboard_file_decode(storage.data(), storage.size(),
-              static_cast<std::uint32_t>(payload_limit), &record) ||
-            std::memcmp(record.offer_id, offer.id.data(), offer.id.size()) != 0 ||
-            record.session_epoch != offer.epoch ||
-            record.sequence != offer.receive_sequence++) {
-          failed = true;
-          return std::nullopt;
-        }
-        return record;
-      }
-
-      PlankTransportNativeEndpoint *endpoint;
-      std::stop_token stop_token;
+      PlankTransportNativeEndpoint *endpoint;  ///< Authenticated transport.
+      std::stop_token stop_token;  ///< Session cancellation.
+      inbox_t &inbox;  ///< Worker-owned recovery state.
+      std::chrono::milliseconds idle_timeout;  ///< Maximum inactive wire interval.
+      std::chrono::steady_clock::time_point last_activity = std::chrono::steady_clock::now();  ///< Last useful traffic.
+      bool source = false;  ///< Host sources win crossed offers.
+      bool collision_drained = false;  ///< At most one competing manifest per source offer.
     };
 
     bool parse_manifest(wire_t &wire, std::vector<std::uint8_t> &storage) {
@@ -424,9 +548,12 @@ namespace stream::file_clipboard {
       std::set<std::string> paths;
       std::uint64_t total_bytes = 0;
       std::uint32_t top_level = 0;
+      std::size_t manifest_bytes = PLANK_CLIPBOARD_FILE_OFFER_BEGIN_BYTES;
       for (std::uint32_t index = 0; index < wire.offer.begin.entry_count; ++index) {
         auto record = wire.control(storage);
         if (!record || record->type != PLANK_CLIPBOARD_FILE_OFFER_ENTRY) return false;
+        manifest_bytes += record->payload_size;
+        if (manifest_bytes > PLANK_CLIPBOARD_FILE_MAX_MANIFEST_BYTES) return false;
         PlankClipboardFileOfferEntry decoded {};
         if (!plank_clipboard_file_offer_entry_decode(
               record->payload, record->payload_size, &decoded) ||
@@ -502,6 +629,7 @@ namespace stream::file_clipboard {
 
     bool send_offer(std::stop_token stop_token,
                     PlankTransportNativeEndpoint *endpoint,
+                    inbox_t &inbox,
                     const std::vector<std::string> &uris,
                     std::uint64_t generation) {
       if (uris.empty() || uris.size() > PLANK_CLIPBOARD_FILE_MAX_TOP_LEVEL) return false;
@@ -520,7 +648,7 @@ namespace stream::file_clipboard {
       if (RAND_bytes(id.data(), id.size()) != 1 ||
           RAND_bytes(reinterpret_cast<unsigned char *>(&epoch), sizeof(epoch)) != 1 ||
           !epoch) return false;
-      wire_t wire(endpoint, stop_token);
+      wire_t wire(endpoint, stop_token, inbox);
       wire.start_source(id, epoch);
       wire.offer.entries = entries;
       for (std::size_t index = 0; index < entries.size(); ++index) {
@@ -537,6 +665,26 @@ namespace stream::file_clipboard {
       if (!plank_clipboard_file_offer_begin_encode(begin.data(), &wire.offer.begin) ||
           !wire.send_control(PLANK_CLIPBOARD_FILE_OFFER_BEGIN, 0,
                              begin.data(), begin.size())) return false;
+      // Every local source failure must wake the peer's DATA/control wait.
+      // The terminal is scoped after BEGIN so no phantom offer is created.
+      bool transferred = false;
+      std::uint64_t materialization = 0;
+      struct source_terminal_t {
+        wire_t &wire;  ///< Offer being served.
+        bool &transferred;  ///< Suppress cancellation after successful readiness.
+        std::uint64_t &materialization;  ///< Zero before the peer materializes.
+        /** @brief Cancel any partially served source offer on early return. */
+        ~source_terminal_t() {
+          if (transferred) return;
+          PlankClipboardFileTerminal terminal {
+            materialization, PLANK_CLIPBOARD_FILE_REASON_SOURCE_UNAVAILABLE, 0
+          };
+          std::array<std::uint8_t, PLANK_CLIPBOARD_FILE_TERMINAL_BYTES> payload {};
+          if (plank_clipboard_file_terminal_encode(payload.data(), &terminal)) {
+            wire.send_control(PLANK_CLIPBOARD_FILE_CANCEL, 0, payload.data(), payload.size());
+          }
+        }
+      } terminal {wire, transferred, materialization};
       for (const auto &entry : entries) {
         std::array<std::uint8_t,
           PLANK_CLIPBOARD_FILE_OFFER_ENTRY_PREFIX_BYTES +
@@ -556,7 +704,6 @@ namespace stream::file_clipboard {
 
       std::vector<std::uint8_t> storage;
       bool acknowledged = false;
-      std::uint64_t materialization = 0;
       while (!stop_token.stop_requested() && !materialization) {
         const auto record = wire.control(storage);
         if (!record) {
@@ -660,6 +807,7 @@ namespace stream::file_clipboard {
         if (record->type == PLANK_CLIPBOARD_FILE_TRANSFER_READY &&
             plank_clipboard_file_materialization_decode(
               record->payload, record->payload_size, &ready) && ready == materialization) {
+          transferred = true;
           BOOST_LOG(info) << "PLANK Host file clipboard materialized: "sv
                           << entries.size() << " entries, "sv << total_bytes << " bytes"sv;
           return true;
@@ -738,6 +886,7 @@ namespace stream::file_clipboard {
         return false;
       }
 
+      wire.materialization = materialization;
       std::vector<std::uint8_t> data_storage;
       for (const auto &entry : wire.offer.entries) {
         if (entry.kind != PLANK_CLIPBOARD_FILE_REGULAR) continue;
@@ -867,10 +1016,11 @@ namespace stream::file_clipboard {
     if (endpoint == nullptr ||
         (!client_to_host_allowed(mode) && !host_to_client_allowed(mode))) return;
     std::uint64_t generation = 0;
-    while (!stop_token.stop_requested()) {
+    inbox_t inbox;
+    while (!stop_token.stop_requested() && !inbox.disconnected) {
       if (host_to_client_allowed(mode) && take_files) {
         if (auto files = take_files()) {
-          if (!send_offer(stop_token, endpoint, *files, ++generation) &&
+          if (!send_offer(stop_token, endpoint, inbox, *files, ++generation) &&
               !stop_token.stop_requested()) {
             BOOST_LOG(warning) << "PLANK Host file clipboard offer failed"sv;
           }
@@ -881,19 +1031,17 @@ namespace stream::file_clipboard {
         std::this_thread::sleep_for(25ms);
         continue;
       }
-      wire_t wire(endpoint, stop_token);
+      wire_t wire(endpoint, stop_token, inbox);
       std::vector<std::uint8_t> storage;
       if (!wire.first(storage, 25)) {
         if (wire.failed) {
-          BOOST_LOG(warning) << "PLANK file clipboard receiver stopped after protocol failure"sv;
-          return;
+          BOOST_LOG(warning) << "PLANK file clipboard skipped invalid residual record"sv;
         }
         continue;
       }
       if (!receive_offer(stop_token, wire, storage, publish_files) &&
           !stop_token.stop_requested()) {
-        BOOST_LOG(warning) << "PLANK file clipboard receiver stopped after transfer failure"sv;
-        return;
+        BOOST_LOG(warning) << "PLANK file clipboard transfer failed; awaiting next offer"sv;
       }
     }
   }
