@@ -176,7 +176,7 @@ namespace input {
   static std::unordered_map<key_press_id_t, unsigned> key_press {};
   static std::uint64_t key_repeat_generation {};  ///< Invalidates callbacks already dequeued when repeat is cancelled.
   static input_t *key_repeat_owner {};  ///< Participant whose keyboard repeat task is active.
-  static std::array<std::uint8_t, 5> mouse_press {};
+  static std::array<std::uint8_t, BUTTON_X2 + 1> mouse_press {};
 
   static platf::input_t platf_input;
   /**
@@ -219,7 +219,7 @@ namespace input {
     // Keep track of alt+ctrl+shift key combo
     int shortcutFlags;  ///< Shortcut flags.
     std::unordered_map<key_press_id_t, bool> held_keys;  ///< Keys held by this participant only.
-    std::array<bool, 5> held_mouse {};  ///< Mouse buttons held by this participant only.
+    std::array<bool, BUTTON_X2 + 1> held_mouse {};  ///< Mouse buttons held by this participant only.
 
     bool left_alt_pressed = false;  ///< Tracks whether the left Alt key is currently pressed.
     bool right_alt_pressed = false;  ///< Tracks whether the right Alt key is currently pressed.
@@ -684,7 +684,8 @@ namespace input {
 
     auto release = util::endian::little(packet->header.magic) == MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5;
     auto button = util::endian::big(packet->button);
-    if (button > 0 && button < mouse_press.size()) {
+    if (button <= 0 || button >= mouse_press.size()) return;
+    {
       if (input->held_mouse[button] == !release) return;
       input->held_mouse[button] = !release;
       if (!release) {

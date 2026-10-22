@@ -663,3 +663,20 @@ TEST_F(InputRetainedSessionTest, GuestAllocationNeverNudgesOwnersPointer) {
   EXPECT_EQ(input::testing::client_context(guest), nullptr);
   EXPECT_FALSE(input::testing::normalized_pen_enabled(guest));
 }
+
+TEST_F(InputRetainedSessionTest, GuestExtraMouseButtonReleaseCannotReleaseOwnersHold) {
+  std::uint64_t owner_lease, guest_lease;
+  auto owner = allocate("owner-extra", owner_lease);
+  auto guest = allocate("guest-extra", guest_lease);
+  drain_tasks();
+  input::testing::handle_mouse_button(owner, BUTTON_X2, false);
+  const auto pressed = mouse->submit_count();
+  input::testing::handle_mouse_button(guest, BUTTON_X2, true);
+  EXPECT_EQ(mouse->submit_count(), pressed);
+  input::testing::handle_mouse_button(guest, BUTTON_X2, false);
+  input::reset(guest, guest_lease);
+  EXPECT_EQ(mouse->submit_count(), pressed);
+  input::reset(owner, owner_lease);
+  EXPECT_EQ(mouse->submit_count(), pressed + 1);
+  EXPECT_FALSE(mouse->last_submitted_event().pressed);
+}
