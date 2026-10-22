@@ -198,13 +198,15 @@ namespace input {
      *
      * @param touch_port_event Event carrying the active touch port.
      * @param raw_hid_feedback_queue Queue used for raw tablet control requests.
+     * @param prepare_desktop Whether this owner input may create a normalized pen device.
      */
     input_t(
       safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event,
-      raw_hid::feedback_queue_t raw_hid_feedback_queue
+      raw_hid::feedback_queue_t raw_hid_feedback_queue,
+      bool prepare_desktop
     ):
         shortcutFlags {},
-        client_context {platf::allocate_client_input_context(platf_input)},
+        client_context {prepare_desktop ? platf::allocate_client_input_context(platf_input) : nullptr},
         touch_port_event {std::move(touch_port_event)},
         raw_hid_tablet {std::make_unique<raw_hid::tablet_t>(std::move(raw_hid_feedback_queue))},
         raw_hid_owns_tablet {false},
@@ -1544,7 +1546,7 @@ namespace input {
     platf::pen_input_t pen {};
     pen.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
     pen.toolType = LI_TOOL_TYPE_UNKNOWN;
-    platf::pen_update(input->client_context.get(), {}, pen);
+    if (input->client_context) platf::pen_update(input->client_context.get(), {}, pen);
     // Keep the host UHID/XInput endpoints stable across stream reservations.
     // The replacement transport must re-present the same USB
     // identity and descriptors before tablet reports are accepted again.
@@ -1636,7 +1638,8 @@ namespace input {
       } else {
         input = std::make_shared<input_t>(
           mail->event<input::touch_port_t>(mail::touch_port),
-          mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback)
+          mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback),
+          prepare_desktop
         );
         state.inputs.try_emplace(std::move(session_id), input);
       }

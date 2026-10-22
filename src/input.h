@@ -71,7 +71,7 @@ namespace input {
    * @param mail Mailbox used to exchange messages with worker threads.
    * @param session_id Internal desktop identity shared by launch and resume connections.
    * @param connection_id Receives the lease identifying this stream binding.
-   * @param prepare_desktop Whether to normalize Num Lock and nudge the pointer (owner only).
+   * @param prepare_desktop Whether to create pen devices, normalize Num Lock, and nudge the pointer (owner only).
    * @return Shared input state bound to the stream mailbox.
    */
   std::shared_ptr<input_t> alloc(safe::mail_t mail, std::string session_id, std::uint64_t &connection_id, bool prepare_desktop = true);

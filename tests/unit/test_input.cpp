@@ -660,4 +660,6 @@ TEST_F(InputRetainedSessionTest, GuestAllocationNeverNudgesOwnersPointer) {
   auto guest = input::alloc(std::make_shared<safe::mail_raw_t>(), "guest-no-nudge", lease, false);
   sessions.emplace_back(guest, lease);
   EXPECT_FALSE(task_pool.next());
+  EXPECT_EQ(input::testing::client_context(guest), nullptr);
+  EXPECT_FALSE(input::testing::normalized_pen_enabled(guest));
 }
