@@ -189,6 +189,10 @@ namespace plank::display {
 
   /**
    * @brief The boot MetaMode: every physical output left to right, virtual heads off.
+   *
+   * Native auto-selection uses the unfiltered preferred size. Older inventories
+   * fall back to a known explicit mode. Returns empty if an output's width is
+   * unknown and another physical output must be positioned after it.
    */
   std::string boot_metamode(const inventory_t &inventory);
 

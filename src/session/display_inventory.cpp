@@ -579,8 +579,9 @@ namespace plank::display {
       physical.display_name = sanitize_display_name(name);
       physical.modes = sixty_hertz_modes(*output, limits.min_width, limits.min_height);
       for (const auto &mode : output->modes) {
-        if (!mode.preferred) continue;
+        if (!mode.preferred || mode.width <= 0 || mode.height <= 0) continue;
         const auto preferred = plank::arrangement::mode_name(mode.width, mode.height);
+        physical.native = preferred;
         if (std::find(physical.modes.begin(), physical.modes.end(), preferred) !=
             physical.modes.end()) {
           physical.preferred = preferred;
@@ -595,8 +596,8 @@ namespace plank::display {
       inventory.physical.push_back(std::move(physical));
     }
     std::set<std::string> candidate_connectors;
+    std::vector<inventory_output_t> candidates;
     for (const auto &device : ordered) {
-      if (inventory.virtual_candidates.size() >= maximum_virtual_heads) break;
       const auto *output = randr_output(device);
       if (output == nullptr || output->signal_format != "DisplayPort" ||
           physical_names.contains(device.dfp) || device.connector.empty() ||
@@ -606,19 +607,35 @@ namespace plank::display {
         continue;
       }
       candidate_connectors.insert(device.connector);
-      inventory.virtual_candidates.push_back({device, {}, {}, {}, {}});
+      candidates.push_back({device, {}, {}, {}, {}});
+    }
+
+    // A physical connector may change while this X server keeps the same
+    // CustomEDID reservations. Check the running PLANK EDIDs instead of
+    // invalidating every reservation when the physical fingerprint changes.
+    // Reserved heads also precede newly freed ports in the candidate list.
+    if (overlay && startup_policy == "hybrid") {
+      for (const auto &dfp : overlay->virtual_dfps) {
+        if (inventory.virtual_candidates.size() >= maximum_virtual_heads) break;
+        const auto found = std::find_if(candidates.begin(), candidates.end(), [&](const auto &candidate) {
+          const auto *output = randr_output(candidate.device);
+          return candidate.device.dfp == dfp && output && edid_manufacturer(output->edid) == "PLK";
+        });
+        if (found == candidates.end()) continue;
+        inventory.virtual_candidates.push_back(std::move(*found));
+        candidates.erase(found);
+      }
+      inventory.virtual_heads = static_cast<int>(inventory.virtual_candidates.size());
+      if (inventory.virtual_heads > 0) {
+        inventory.screen_virtual_width = overlay->virtual_width;
+        inventory.screen_virtual_height = overlay->virtual_height;
+      }
+    }
+    for (auto &candidate : candidates) {
+      if (inventory.virtual_candidates.size() >= maximum_virtual_heads) break;
+      inventory.virtual_candidates.push_back(std::move(candidate));
     }
     inventory.fingerprint = inventory_fingerprint(inventory);
-    if (overlay && startup_policy == "hybrid" && overlay->fingerprint == inventory.fingerprint) {
-      std::size_t heads = 0;
-      while (heads < overlay->virtual_dfps.size() && heads < inventory.virtual_candidates.size() &&
-             overlay->virtual_dfps[heads] == inventory.virtual_candidates[heads].device.dfp) {
-        ++heads;
-      }
-      inventory.virtual_heads = static_cast<int>(heads);
-      inventory.screen_virtual_width = overlay->virtual_width;
-      inventory.screen_virtual_height = overlay->virtual_height;
-    }
     return inventory;
   }
 
@@ -651,6 +668,7 @@ namespace plank::display {
       line(prefix + "display_name", output.display_name);
       line(prefix + "edid_sha256", output.edid_sha256);
       line(prefix + "preferred", output.preferred);
+      line(prefix + "native", output.native);
       line(prefix + "modes", join_modes(output.modes));
     }
     line("virtual_candidate_count", std::to_string(inventory.virtual_candidates.size()));
@@ -745,13 +763,17 @@ namespace plank::display {
       const auto name = take(prefix + "display_name");
       const auto edid = take(prefix + "edid_sha256");
       const auto preferred = take(prefix + "preferred");
+      const auto native = take(prefix + "native");
       const auto modes = take(prefix + "modes");
       if (!device || !name || !valid_display_name(*name) || !edid ||
           (!edid->empty() && !lower_hex(*edid, 64)) || !preferred || !modes ||
-          !valid_mode_list(*modes)) {
+          !valid_mode_list(*modes) ||
+          (native && !native->empty() && !plank::arrangement::parse_mode_name(*native))) {
         return std::nullopt;
       }
       inventory_output_t output {*device, *name, *edid, *preferred, split_modes(*modes)};
+      // Older version-1 caches do not record the unfiltered preferred size.
+      output.native = native.value_or("");
       if (!output.preferred.empty() &&
           std::find(output.modes.begin(), output.modes.end(), output.preferred) == output.modes.end()) {
         return std::nullopt;

@@ -346,3 +346,36 @@ TEST(DisplayMetaMode, RestsOnThePhysicalOutputs) {
   EXPECT_TRUE(display::rest_needed(*other, inventory, true));
   EXPECT_EQ(display::physical_mode_token("3840x2160"), "3840x2160");
 }
+
+TEST(DisplayMetaMode, BootUsesNativeWidthRatherThanTheSixtyHertzCarrier) {
+  auto inventory = fleet_inventory();
+  auto second = inventory.physical[0];
+  second.device = {"DFP-5", "DPY-5", "DP-4", "Connector-0"};
+  second.native = "1920x1080";
+  inventory.physical[0].native = "2560x1440";
+  inventory.physical[0].preferred = "1920x1080";
+  inventory.physical.push_back(second);
+  EXPECT_EQ(display::boot_metamode(inventory),
+            "DPY-4: nvidia-auto-select +0+0, DPY-5: nvidia-auto-select +2560+0, "
+            "DPY-0: NULL, DPY-2: NULL, DPY-6: NULL");
+}
+
+TEST(DisplayMetaMode, BootDoesNotGuessTheWidthOfAnUnknownAutoSelectedMode) {
+  auto inventory = fleet_inventory();
+  auto second = inventory.physical[0];
+  second.device = {"DFP-5", "DPY-5", "DP-4", "Connector-0"};
+  inventory.physical[0].native.clear();
+  inventory.physical[0].preferred = "1920x1080";
+  inventory.physical.push_back(second);
+  EXPECT_EQ(display::boot_metamode(inventory),
+            "DPY-4: 1920x1080 +0+0, DPY-5: nvidia-auto-select +1920+0, "
+            "DPY-0: NULL, DPY-2: NULL, DPY-6: NULL");
+
+  inventory.physical[0].preferred.clear();
+  EXPECT_TRUE(display::boot_metamode(inventory).empty());
+  inventory.physical.erase(inventory.physical.begin());
+  inventory.physical[0].native.clear();
+  inventory.physical[0].preferred.clear();
+  EXPECT_EQ(display::boot_metamode(inventory),
+            "DPY-5: nvidia-auto-select +0+0, DPY-0: NULL, DPY-2: NULL, DPY-6: NULL");
+}

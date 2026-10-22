@@ -313,12 +313,21 @@ namespace plank::display {
 
   std::string boot_metamode(const inventory_t &inventory) {
     std::string metamode;
-    int x = 0;
-    for (const auto &output : inventory.physical) {
+    std::int64_t x = 0;
+    for (std::size_t index = 0; index < inventory.physical.size(); ++index) {
+      const auto &output = inventory.physical[index];
+      auto size = plank::arrangement::parse_mode_name(output.native);
+      std::string mode = "nvidia-auto-select";
+      if (!size) {
+        size = plank::arrangement::parse_mode_name(output.preferred);
+        if (size) mode = physical_mode_token(output.preferred);
+      }
+      // An unknown last output can auto-select without positioning anything
+      // after it. Never guess its width when another output follows.
+      if (!size && index + 1 < inventory.physical.size()) return {};
       if (!metamode.empty()) metamode += ", ";
-      metamode += output.device.dpy + ": nvidia-auto-select +" + std::to_string(x) + "+0";
-      const auto size = plank::arrangement::parse_mode_name(output.preferred);
-      x += size ? size->first : 1920;
+      metamode += output.device.dpy + ": " + mode + " +" + std::to_string(x) + "+0";
+      if (size && index + 1 < inventory.physical.size()) x += size->first;
     }
     const auto heads = std::min<std::size_t>(
       static_cast<std::size_t>(std::max(inventory.virtual_heads, 0)), inventory.virtual_candidates.size()

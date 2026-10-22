@@ -167,6 +167,7 @@ TEST(DisplayInventory, ClassifiesThePanelAndPicksFreeDisplayPortHeads) {
   EXPECT_EQ(panel.device.randr, "DP-4");
   EXPECT_EQ(panel.display_name, "Built-in display");
   EXPECT_EQ(panel.preferred, "1920x1080");
+  EXPECT_EQ(panel.native, "1920x1080");
   EXPECT_EQ(panel.modes, std::vector<std::string> {"1920x1080"});
   EXPECT_EQ(panel.edid_sha256.size(), 64U);
   // DisplayPort DFPs on connectors the panel does not use, one per connector.
@@ -183,6 +184,29 @@ TEST(DisplayInventory, ClassifiesThePanelAndPicksFreeDisplayPortHeads) {
                                         "1:0:0", "580.159.04", "physical", std::nullopt));
   EXPECT_FALSE(display::build_inventory(devices(), screen("display/xrandr-laptop.txt"),
                                         "PCI:1:0:0", "580.159.04", "headless", std::nullopt));
+}
+
+TEST(DisplayInventory, KeepsNativeTimingSeparateFromTheRemoteCarrier) {
+  auto high_refresh = screen("display/xrandr-laptop.txt");
+  auto &panel = high_refresh.outputs[5];
+  panel.modes = {
+    {"2560x1440_165", 2560, 1440, 165000, false, false, true, true},
+    {"1920x1080_60", 1920, 1080, 60000, false, false, false, false},
+  };
+  const auto inventory = display::build_inventory(
+    devices(), high_refresh, "PCI:1:0:0", "580.159.04", "physical", std::nullopt
+  );
+  ASSERT_TRUE(inventory);
+  ASSERT_EQ(inventory->physical.size(), 1U);
+  EXPECT_EQ(inventory->physical[0].native, "2560x1440");
+  EXPECT_EQ(inventory->physical[0].preferred, "1920x1080");
+  EXPECT_EQ(inventory->physical[0].modes, std::vector<std::string> {"1920x1080"});
+  const auto capabilities = display::capabilities_from_inventory(*inventory, {}, false);
+  EXPECT_EQ(capabilities.physical_outputs[0].preferred, "1920x1080");
+  EXPECT_EQ(capabilities.physical_outputs[0].modes, std::vector<std::string> {"1920x1080"});
+  const auto cached = display::parse_inventory(display::inventory_message(*inventory));
+  ASSERT_TRUE(cached);
+  EXPECT_EQ(cached->physical[0].native, "2560x1440");
 }
 
 TEST(DisplayInventory, PlankEdidsAreNeverPhysical) {
@@ -207,10 +231,11 @@ TEST(DisplayInventory, PlankEdidsAreNeverPhysical) {
   EXPECT_EQ(reserved->screen_virtual_height, 8192);
   EXPECT_EQ(display::build_inventory(devices(), hybrid, "PCI:1:0:0", "580.159.04", "hybrid",
                                      overlay_for(*base, 2))->virtual_heads, 2);
+  // The running EDIDs still prove these reservations if physical facts changed.
   auto stale = overlay_for(*base, 3);
   stale.fingerprint = std::string(64, '0');
   EXPECT_EQ(display::build_inventory(devices(), hybrid, "PCI:1:0:0", "580.159.04", "hybrid",
-                                     stale)->virtual_heads, 0);
+                                     stale)->virtual_heads, 3);
   EXPECT_EQ(display::build_inventory(devices(), hybrid, "PCI:1:0:0", "580.159.04", "physical",
                                      overlay_for(*base, 3))->virtual_heads, 0);
 
@@ -234,12 +259,62 @@ TEST(DisplayInventory, PlankEdidsAreNeverPhysical) {
                                      std::nullopt)->fingerprint, base->fingerprint);
 }
 
+TEST(DisplayInventory, KeepsRunningReservationsWhenPhysicalConnectorsChange) {
+  const auto hybrid = screen("display/xrandr-hybrid.txt");
+  const auto base = display::build_inventory(
+    devices(), hybrid, "PCI:1:0:0", "580.159.04", "hybrid", std::nullopt
+  );
+  ASSERT_TRUE(base);
+  const auto overlay = overlay_for(*base, 3);
+  for (const auto disconnected : {"HDMI-0", "DP-4"}) {
+    auto changed = hybrid;
+    for (auto &output : changed.outputs) {
+      if (output.name != disconnected) continue;
+      output.connected = false;
+      output.non_desktop = false;
+      output.edid.clear();
+    }
+    const auto inventory = display::build_inventory(
+      devices(), changed, "PCI:1:0:0", "580.159.04", "hybrid", overlay
+    );
+    ASSERT_TRUE(inventory) << disconnected;
+    EXPECT_NE(inventory->fingerprint, base->fingerprint);
+    EXPECT_EQ(inventory->virtual_heads, 3);
+    EXPECT_EQ(inventory->screen_virtual_width, 16384);
+    EXPECT_EQ(inventory->screen_virtual_height, 8192);
+    ASSERT_EQ(inventory->virtual_candidates.size(), 3U);
+    EXPECT_EQ(inventory->virtual_candidates[0].device.dfp, "DFP-0");
+    EXPECT_EQ(inventory->virtual_candidates[1].device.dfp, "DFP-2");
+    EXPECT_EQ(inventory->virtual_candidates[2].device.dfp, "DFP-6");
+    const auto cached = display::parse_inventory(display::inventory_message(*inventory));
+    ASSERT_TRUE(cached);
+    EXPECT_EQ(cached->virtual_heads, 3);
+  }
+}
+
+TEST(DisplayInventory, AnOverlayAloneDoesNotProveRunningVirtualHeads) {
+  const auto hybrid = screen("display/xrandr-hybrid.txt");
+  const auto base = display::build_inventory(
+    devices(), hybrid, "PCI:1:0:0", "580.159.04", "hybrid", std::nullopt
+  );
+  ASSERT_TRUE(base);
+  const auto overlay = overlay_for(*base, 3);
+  const auto without_plank_edids = display::build_inventory(
+    devices(), screen("display/xrandr-laptop.txt"), "PCI:1:0:0", "580.159.04", "hybrid", overlay
+  );
+  ASSERT_TRUE(without_plank_edids);
+  EXPECT_EQ(without_plank_edids->virtual_heads, 0);
+  EXPECT_EQ(without_plank_edids->screen_virtual_width, 0);
+  EXPECT_EQ(without_plank_edids->screen_virtual_height, 0);
+}
+
 TEST(DisplayInventory, CacheRoundTripsAndFailsClosed) {
   const auto inventory = fleet_inventory();
   const auto message = display::inventory_message(inventory);
   EXPECT_TRUE(message.starts_with("# Generated by PLANK; do not edit.\nversion=1\n"));
   EXPECT_NE(message.find("\nphysical_1_dfp=DFP-4\n"), std::string::npos);
   EXPECT_NE(message.find("\nphysical_1_display_name=MEC-O-3-H\n"), std::string::npos);
+  EXPECT_NE(message.find("\nphysical_1_native=3840x2160\n"), std::string::npos);
   EXPECT_NE(message.find("\nvirtual_candidate_3_dfp=DFP-6\n"), std::string::npos);
   EXPECT_NE(message.find("\nscreen_virtual=16384x8192\n"), std::string::npos);
   EXPECT_NE(message.find("\nvirtual_heads=3\n"), std::string::npos);
@@ -262,6 +337,20 @@ TEST(DisplayInventory, CacheRoundTripsAndFailsClosed) {
   EXPECT_FALSE(display::parse_inventory(replace("# Generated", "# Written")));
   EXPECT_FALSE(display::parse_inventory(replace("physical_1_display_name=MEC-O-3-H",
                                                 "physical_1_display_name=$(reboot)")));
+  EXPECT_FALSE(display::parse_inventory(
+    replace("physical_1_native=3840x2160", "physical_1_native=0x2160")
+  ));
+  EXPECT_FALSE(display::parse_inventory(
+    replace("physical_1_native=3840x2160", "physical_1_native=invalid")
+  ));
+  const auto older = display::parse_inventory(replace("physical_1_native=3840x2160\n", ""));
+  ASSERT_TRUE(older);
+  EXPECT_TRUE(older->physical[0].native.empty());
+  const auto unknown_native = display::parse_inventory(
+    replace("physical_1_native=3840x2160", "physical_1_native=")
+  );
+  ASSERT_TRUE(unknown_native);
+  EXPECT_TRUE(unknown_native->physical[0].native.empty());
   EXPECT_FALSE(display::read_inventory("/nonexistent/display-inventory"));
 }
 
