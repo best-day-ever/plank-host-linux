@@ -88,6 +88,7 @@ namespace plank::display {
     std::string edid_sha256;  ///< EDID hash (physical outputs), or empty.
     std::string preferred;  ///< Preferred 60 Hz mode (physical outputs).
     std::vector<std::string> modes;  ///< 60 Hz progressive modes, area then width descending.
+    std::string native {};  ///< Unfiltered preferred size driven by `nvidia-auto-select`, or empty.
   };
 
   /**
@@ -164,7 +165,7 @@ namespace plank::display {
   /** @brief Serialise the inventory as the cache's `key=value` lines. */
   std::string inventory_message(const inventory_t &inventory);
 
-  /** @brief Parse the cache strictly, including its fingerprint. */
+  /** @brief Parse the cache strictly; older version-1 caches may omit native sizes. */
   std::optional<inventory_t> parse_inventory(std::string_view text);
 
   /** @brief Read the root-owned 0600 cache. */

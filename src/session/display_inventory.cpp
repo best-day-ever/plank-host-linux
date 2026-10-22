@@ -579,8 +579,9 @@ namespace plank::display {
       physical.display_name = sanitize_display_name(name);
       physical.modes = sixty_hertz_modes(*output, limits.min_width, limits.min_height);
       for (const auto &mode : output->modes) {
-        if (!mode.preferred) continue;
+        if (!mode.preferred || mode.width <= 0 || mode.height <= 0) continue;
         const auto preferred = plank::arrangement::mode_name(mode.width, mode.height);
+        physical.native = preferred;
         if (std::find(physical.modes.begin(), physical.modes.end(), preferred) !=
             physical.modes.end()) {
           physical.preferred = preferred;
@@ -651,6 +652,7 @@ namespace plank::display {
       line(prefix + "display_name", output.display_name);
       line(prefix + "edid_sha256", output.edid_sha256);
       line(prefix + "preferred", output.preferred);
+      line(prefix + "native", output.native);
       line(prefix + "modes", join_modes(output.modes));
     }
     line("virtual_candidate_count", std::to_string(inventory.virtual_candidates.size()));
@@ -745,13 +747,17 @@ namespace plank::display {
       const auto name = take(prefix + "display_name");
       const auto edid = take(prefix + "edid_sha256");
       const auto preferred = take(prefix + "preferred");
+      const auto native = take(prefix + "native");
       const auto modes = take(prefix + "modes");
       if (!device || !name || !valid_display_name(*name) || !edid ||
           (!edid->empty() && !lower_hex(*edid, 64)) || !preferred || !modes ||
-          !valid_mode_list(*modes)) {
+          !valid_mode_list(*modes) ||
+          (native && !native->empty() && !plank::arrangement::parse_mode_name(*native))) {
         return std::nullopt;
       }
       inventory_output_t output {*device, *name, *edid, *preferred, split_modes(*modes)};
+      // Older version-1 caches do not record the unfiltered preferred size.
+      output.native = native.value_or("");
       if (!output.preferred.empty() &&
           std::find(output.modes.begin(), output.modes.end(), output.preferred) == output.modes.end()) {
         return std::nullopt;
