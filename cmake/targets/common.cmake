@@ -165,6 +165,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             "${CMAKE_SOURCE_DIR}/src/plank_arrangement.h"
             "${CMAKE_SOURCE_DIR}/src/session/display_inventory.cpp"
             "${CMAKE_SOURCE_DIR}/src/session/display_inventory.h"
+            "${CMAKE_SOURCE_DIR}/src/session/display_lifecycle.h"
             "${CMAKE_SOURCE_DIR}/src/session/display_metamode.cpp"
             "${CMAKE_SOURCE_DIR}/src/session/display_metamode.h"
             "${CMAKE_SOURCE_DIR}/src/session/display_qualify.cpp"
