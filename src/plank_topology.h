@@ -46,6 +46,7 @@ namespace plank::topology {
   // only a physical or hybrid startup with a valid display inventory has it.
   constexpr std::uint32_t feature_display_arrangement = 0x8000000;
   constexpr std::uint32_t feature_virtual_primary_connector = 0x10000000;
+  constexpr std::uint32_t feature_collaboration = 0x20000000;  ///< Owner-approved shared desktop streams.
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
   constexpr std::uint32_t feature_platform_clipboard_sync = feature_clipboard_sync;
   constexpr std::uint32_t feature_platform_file_clipboard = feature_file_clipboard;
@@ -77,7 +78,8 @@ namespace plank::topology {
     feature_platform_clipboard_sync |
     feature_nvfbc_nvenc_420 |
     feature_notch_safe_laptop_modes |
-    feature_virtual_primary_connector;
+    feature_virtual_primary_connector |
+    feature_collaboration;
 
   // The optional connector index applies only to negotiated virtual-startup
   // sessions; existing and physical layouts keep their established ordering.

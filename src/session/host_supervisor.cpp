@@ -2505,7 +2505,29 @@ int main(int argc, char **argv) {
           std::string_view {message.data(), static_cast<std::size_t>(size)}
         ) : std::nullopt;
         const auto active = plank::session::active_seat0_graphical_session();
-        if (!request) {
+        if (std::string_view {message.data(), static_cast<std::size_t>(size)} == "PLANK-COLLABORATION-UI-1") {
+          // The worker requests only this fixed program. PID 1 supplies the
+          // desktop UID; the unprivileged media worker gains no setuid caps.
+          if (active && active->id == worker.session_id && active->session_class == "user" && active->uid != 0) {
+            const auto account = account_for_uid(active->uid);
+            const auto environment = plank::session::discover_environment(*active);
+            if (account && environment) {
+              const std::vector<std::string> arguments {
+                "--quiet", "--collect", "--service-type=exec",
+                "--unit=plank-collaboration-" + std::to_string(worker.generation),
+                "--uid=" + std::to_string(account->uid), "--gid=" + std::to_string(account->gid),
+                "--property=NoNewPrivileges=yes", "--property=CapabilityBoundingSet=",
+                "--property=RestrictAddressFamilies=AF_UNIX", "--property=ProtectSystem=strict",
+                "--setenv=HOME=" + account->home, "--setenv=DISPLAY=" + environment->display,
+                "--setenv=XAUTHORITY=" + environment->xauthority,
+                "--setenv=XDG_RUNTIME_DIR=" + environment->runtime_directory,
+                "--setenv=DBUS_SESSION_BUS_ADDRESS=" + environment->dbus_address,
+                "--", "/usr/bin/python3", "-I", "/usr/share/plank/collaboration-ui.py"
+              };
+              run_bounded_command(systemd_run_path, arguments, std::chrono::seconds {5});
+            }
+          }
+        } else if (!request) {
           std::cerr << "Rejected malformed PLANK display transition request\n";
         } else if (!active || active->id != worker.session_id ||
                    (active->session_class == "user" &&

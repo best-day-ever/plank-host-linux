@@ -184,6 +184,7 @@ namespace session_stream {
     int status {PLANK_TRANSPORT_SETUP_STATUS_INTERNAL_ERROR};
     std::string message;
     nlohmann::json response;
+    std::shared_ptr<stream::session_t> session;  ///< Retained until native setup response has been delivered.
   };
 
   std::optional<std::uint32_t> negotiated_video_format_for_mode(
@@ -445,6 +446,15 @@ namespace session_stream {
     }
     const auto &opus = audio::stream_configs[audio_index];
 
+    if (launch_session->collaboration) {
+      std::lock_guard permission_lock {launch_session->collaboration->mutex};
+      const auto permission = launch_session->collaboration->permission.load();
+      if (permission != plank::collaboration::permission_t::view && permission != plank::collaboration::permission_t::control) {
+        result.status = PLANK_TRANSPORT_SETUP_STATUS_INVALID_REQUEST;
+        result.message = "Collaboration approval was revoked";
+        return result;
+      }
+    }
     auto stream_session = stream::session::alloc(config, *launch_session);
     server.insert(stream_session);
     if (stream::session::start(*stream_session, {})) {
@@ -454,9 +464,11 @@ namespace session_stream {
       return result;
     }
 
+    result.session = stream_session;
     result.status = PLANK_TRANSPORT_SETUP_STATUS_OK;
     const auto host_feature_flags =
-      static_cast<std::uint32_t>(platf::get_capabilities() |
+      static_cast<std::uint32_t>((platf::get_capabilities() &
+        (launch_session->collaboration ? ~(platf::platform_caps::raw_hid_tablet | platf::platform_caps::raw_hid_focus_suspend | platf::platform_caps::pen_touch) : ~0U)) |
                                  platf::platform_caps::dynamic_video_bitrate |
                                  platf::platform_caps::encoder_target_ack);
     result.response = {
@@ -485,8 +497,14 @@ namespace session_stream {
   }
 
   void process_native_launch(const std::shared_ptr<launch_session_t> &launch_session) {
+    bool started = false;
     auto complete_launch = util::fail_guard([&]() {
       if (launch_session) {
+        if (launch_session->collaboration && !started) {
+          auto &consent = plank::collaboration::registry();
+          std::lock_guard lock {consent.mutex};
+          consent.ended(launch_session->collaboration);
+        }
         server.session_complete(launch_session->id);
       }
     });
@@ -555,6 +573,10 @@ namespace session_stream {
         plank_transport_native_data_send(endpoint, packet.data(), response_size) !=
           PLANK_TRANSPORT_OK) {
       BOOST_LOG(error) << "Unable to return native session negotiation result"sv;
+      if (start_result.session) stream::session::stop(*start_result.session);
+    } else if (start_result.session) {
+      stream::session::notify_negotiated(*start_result.session);
+      started = true;
     }
   }
 

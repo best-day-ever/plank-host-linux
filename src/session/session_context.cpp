@@ -1104,6 +1104,34 @@ namespace plank::session {
     return active ? std::optional<uid_t> {active->uid} : std::nullopt;
   }
 
+  std::optional<uid_t> unlocked_desktop_owner() {
+    const auto active = attached_active_user_session();
+    if (!active) return std::nullopt;
+    sd_bus *raw_bus = nullptr;
+    if (sd_bus_open_system(&raw_bus) < 0 || !raw_bus) return std::nullopt;
+    std::unique_ptr<sd_bus, decltype(&sd_bus_flush_close_unref)> bus {raw_bus, &sd_bus_flush_close_unref};
+    sd_bus_set_method_call_timeout(bus.get(), 500000);
+    sd_bus_error error = SD_BUS_ERROR_NULL;
+    sd_bus_message *reply = nullptr;
+    const int result = sd_bus_call_method(bus.get(), "org.freedesktop.login1", "/org/freedesktop/login1",
+      "org.freedesktop.login1.Manager", "GetSession", &error, &reply, "s", active->id.c_str());
+    const char *path = nullptr;
+    int locked = 1;
+    const bool unlocked = result >= 0 && sd_bus_message_read(reply, "o", &path) >= 0 && path &&
+      sd_bus_get_property_trivial(bus.get(), "org.freedesktop.login1", path,
+        "org.freedesktop.login1.Session", "LockedHint", &error, SD_BUS_TYPE_BOOLEAN, &locked) >= 0 && !locked;
+    sd_bus_message_unref(reply); sd_bus_error_free(&error);
+    return unlocked ? std::optional<uid_t> {active->uid} : std::nullopt;
+  }
+
+  bool request_collaboration_ui() {
+    if (!unlocked_desktop_owner()) return false;
+    constexpr std::string_view message = "PLANK-COLLABORATION-UI-1";
+    std::lock_guard lock {supervisor_descriptor_mutex};
+    return supervisor_descriptor >= 0 && send(supervisor_descriptor, message.data(), message.size(), MSG_NOSIGNAL) ==
+      static_cast<ssize_t>(message.size());
+  }
+
   bool terminate_attached_user_session(uid_t owner_uid) {
     const auto active = attached_active_user_session();
     if (!active || active->uid != owner_uid) return false;
