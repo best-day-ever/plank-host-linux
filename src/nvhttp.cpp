@@ -1761,6 +1761,10 @@ namespace nvhttp {
     auto capture = active && owner_capture_generation == desktop.generation ? owner_capture : local_desktop_capture();
     if (!capture) { tree.put("root.<xmlattr>.status_code", 503); tree.put("root.<xmlattr>.status_message", "The owner's desktop capture is unavailable"); return; }
     auto guest = make_launch_session(capture->host_audio, args);
+    if ((guest->plank_feature_flags & plank::topology::feature_collaboration) == 0) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Collaboration protocol negotiation is required"); return;
+    }
     if (active && (guest->capture_source != capture->capture_source || guest->encoder_backend != capture->encoder_backend)) {
       tree.put("root.<xmlattr>.status_code", 409); tree.put("root.<xmlattr>.status_message", "Collaboration must use the owner's capture source and encoder backend"); return;
     }
@@ -1771,6 +1775,9 @@ namespace nvhttp {
     guest->plank_protocol_version = protocol; guest->encoding_mode = guest_encoding;
     if (!active) { guest->capture_source = guest_source; guest->encoder_backend = guest_backend; }
     guest->file_clipboard_mode = "off"; guest->plank_display_lease = false; guest->collaboration = consent->lease;
+    const auto guest_topology = output_topology_json();
+    guest->collaboration_desktop_width = guest_topology["desktop"].value("width", 0);
+    guest->collaboration_desktop_height = guest_topology["desktop"].value("height", 0);
     guest->authentication_session.reset(); guest->plank_transport_endpoint.reset();
     if (!validate_capture_source(*guest, tree) || !validate_encoder_backend(*guest, tree) || !validate_transport_mtu(*guest, tree)) return;
     if (!active && !video::select_encoder_backend_for_session(guest->encoder_backend)) { tree.put("root.<xmlattr>.status_code", 503); return; }

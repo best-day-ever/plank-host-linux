@@ -241,6 +241,10 @@ namespace session_stream {
       config.monitor.desktop_width = desktop.width;
       config.monitor.desktop_height = desktop.height;
     }
+    if (launch_session->collaboration) {
+      config.monitor.desktop_width = launch_session->collaboration_desktop_width;
+      config.monitor.desktop_height = launch_session->collaboration_desktop_height;
+    }
     config.monitor.output_name = launch_session->span_desktop ?
       std::string {} : launch_session->output_name;
     config.monitor.encoder_backend = launch_session->encoder_backend;
