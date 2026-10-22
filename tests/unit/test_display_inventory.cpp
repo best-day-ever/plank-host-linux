@@ -231,10 +231,11 @@ TEST(DisplayInventory, PlankEdidsAreNeverPhysical) {
   EXPECT_EQ(reserved->screen_virtual_height, 8192);
   EXPECT_EQ(display::build_inventory(devices(), hybrid, "PCI:1:0:0", "580.159.04", "hybrid",
                                      overlay_for(*base, 2))->virtual_heads, 2);
+  // The running EDIDs still prove these reservations if physical facts changed.
   auto stale = overlay_for(*base, 3);
   stale.fingerprint = std::string(64, '0');
   EXPECT_EQ(display::build_inventory(devices(), hybrid, "PCI:1:0:0", "580.159.04", "hybrid",
-                                     stale)->virtual_heads, 0);
+                                     stale)->virtual_heads, 3);
   EXPECT_EQ(display::build_inventory(devices(), hybrid, "PCI:1:0:0", "580.159.04", "physical",
                                      overlay_for(*base, 3))->virtual_heads, 0);
 
@@ -256,6 +257,55 @@ TEST(DisplayInventory, PlankEdidsAreNeverPhysical) {
                                      std::nullopt)->fingerprint, base->fingerprint);
   EXPECT_NE(display::build_inventory(devices(), hybrid, "PCI:1:0:0", "580.126.09", "hybrid",
                                      std::nullopt)->fingerprint, base->fingerprint);
+}
+
+TEST(DisplayInventory, KeepsRunningReservationsWhenPhysicalConnectorsChange) {
+  const auto hybrid = screen("display/xrandr-hybrid.txt");
+  const auto base = display::build_inventory(
+    devices(), hybrid, "PCI:1:0:0", "580.159.04", "hybrid", std::nullopt
+  );
+  ASSERT_TRUE(base);
+  const auto overlay = overlay_for(*base, 3);
+  for (const auto disconnected : {"HDMI-0", "DP-4"}) {
+    auto changed = hybrid;
+    for (auto &output : changed.outputs) {
+      if (output.name != disconnected) continue;
+      output.connected = false;
+      output.non_desktop = false;
+      output.edid.clear();
+    }
+    const auto inventory = display::build_inventory(
+      devices(), changed, "PCI:1:0:0", "580.159.04", "hybrid", overlay
+    );
+    ASSERT_TRUE(inventory) << disconnected;
+    EXPECT_NE(inventory->fingerprint, base->fingerprint);
+    EXPECT_EQ(inventory->virtual_heads, 3);
+    EXPECT_EQ(inventory->screen_virtual_width, 16384);
+    EXPECT_EQ(inventory->screen_virtual_height, 8192);
+    ASSERT_EQ(inventory->virtual_candidates.size(), 3U);
+    EXPECT_EQ(inventory->virtual_candidates[0].device.dfp, "DFP-0");
+    EXPECT_EQ(inventory->virtual_candidates[1].device.dfp, "DFP-2");
+    EXPECT_EQ(inventory->virtual_candidates[2].device.dfp, "DFP-6");
+    const auto cached = display::parse_inventory(display::inventory_message(*inventory));
+    ASSERT_TRUE(cached);
+    EXPECT_EQ(cached->virtual_heads, 3);
+  }
+}
+
+TEST(DisplayInventory, AnOverlayAloneDoesNotProveRunningVirtualHeads) {
+  const auto hybrid = screen("display/xrandr-hybrid.txt");
+  const auto base = display::build_inventory(
+    devices(), hybrid, "PCI:1:0:0", "580.159.04", "hybrid", std::nullopt
+  );
+  ASSERT_TRUE(base);
+  const auto overlay = overlay_for(*base, 3);
+  const auto without_plank_edids = display::build_inventory(
+    devices(), screen("display/xrandr-laptop.txt"), "PCI:1:0:0", "580.159.04", "hybrid", overlay
+  );
+  ASSERT_TRUE(without_plank_edids);
+  EXPECT_EQ(without_plank_edids->virtual_heads, 0);
+  EXPECT_EQ(without_plank_edids->screen_virtual_width, 0);
+  EXPECT_EQ(without_plank_edids->screen_virtual_height, 0);
 }
 
 TEST(DisplayInventory, CacheRoundTripsAndFailsClosed) {

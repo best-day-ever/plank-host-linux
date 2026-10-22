@@ -596,8 +596,8 @@ namespace plank::display {
       inventory.physical.push_back(std::move(physical));
     }
     std::set<std::string> candidate_connectors;
+    std::vector<inventory_output_t> candidates;
     for (const auto &device : ordered) {
-      if (inventory.virtual_candidates.size() >= maximum_virtual_heads) break;
       const auto *output = randr_output(device);
       if (output == nullptr || output->signal_format != "DisplayPort" ||
           physical_names.contains(device.dfp) || device.connector.empty() ||
@@ -607,19 +607,35 @@ namespace plank::display {
         continue;
       }
       candidate_connectors.insert(device.connector);
-      inventory.virtual_candidates.push_back({device, {}, {}, {}, {}});
+      candidates.push_back({device, {}, {}, {}, {}});
+    }
+
+    // A physical connector may change while this X server keeps the same
+    // CustomEDID reservations. Check the running PLANK EDIDs instead of
+    // invalidating every reservation when the physical fingerprint changes.
+    // Reserved heads also precede newly freed ports in the candidate list.
+    if (overlay && startup_policy == "hybrid") {
+      for (const auto &dfp : overlay->virtual_dfps) {
+        if (inventory.virtual_candidates.size() >= maximum_virtual_heads) break;
+        const auto found = std::find_if(candidates.begin(), candidates.end(), [&](const auto &candidate) {
+          const auto *output = randr_output(candidate.device);
+          return candidate.device.dfp == dfp && output && edid_manufacturer(output->edid) == "PLK";
+        });
+        if (found == candidates.end()) continue;
+        inventory.virtual_candidates.push_back(std::move(*found));
+        candidates.erase(found);
+      }
+      inventory.virtual_heads = static_cast<int>(inventory.virtual_candidates.size());
+      if (inventory.virtual_heads > 0) {
+        inventory.screen_virtual_width = overlay->virtual_width;
+        inventory.screen_virtual_height = overlay->virtual_height;
+      }
+    }
+    for (auto &candidate : candidates) {
+      if (inventory.virtual_candidates.size() >= maximum_virtual_heads) break;
+      inventory.virtual_candidates.push_back(std::move(candidate));
     }
     inventory.fingerprint = inventory_fingerprint(inventory);
-    if (overlay && startup_policy == "hybrid" && overlay->fingerprint == inventory.fingerprint) {
-      std::size_t heads = 0;
-      while (heads < overlay->virtual_dfps.size() && heads < inventory.virtual_candidates.size() &&
-             overlay->virtual_dfps[heads] == inventory.virtual_candidates[heads].device.dfp) {
-        ++heads;
-      }
-      inventory.virtual_heads = static_cast<int>(heads);
-      inventory.screen_virtual_width = overlay->virtual_width;
-      inventory.screen_virtual_height = overlay->virtual_height;
-    }
     return inventory;
   }
 

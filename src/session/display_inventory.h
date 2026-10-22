@@ -150,6 +150,8 @@ namespace plank::display {
    * A connected output whose EDID manufacturer is `PLK` is virtual; every
    * other connected output is physical. Candidates are DisplayPort DFPs on
    * connectors no physical output uses, one per connector, at most three.
+   * Running heads with PLANK EDIDs retain the overlay's reservation order
+   * even when the physical inventory fingerprint changes.
    *
    * @return The inventory with its fingerprint, or no value when the inputs do not match.
    */
