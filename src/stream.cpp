@@ -910,6 +910,7 @@ namespace stream {
     auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
 #ifdef PLANK_TRANSPORT
     std::array<std::uint8_t, PLANK_TRANSPORT_CONTROL_MAX_PACKET_SIZE> control_packet;
+    using collaboration_permission_frame_t = std::array<std::uint8_t, PLANK_TRANSPORT_CONTROL_HEADER_SIZE + sizeof(std::uint32_t)>;  ///< Keep template commas outside KITTY_WHILE_LOOP arguments.
 #endif
 
     while (!shutdown_event->peek() && !broadcast_shutdown_event->peek()) {
@@ -970,7 +971,7 @@ namespace stream {
             }
             if (effective != session->last_collaboration_permission) {
               const std::uint32_t value = effective;
-              std::array<std::uint8_t, PLANK_TRANSPORT_CONTROL_HEADER_SIZE + sizeof(value)> frame {};
+              collaboration_permission_frame_t frame {};
               std::size_t size = 0;
               auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(session->plank_transport_endpoint.get());
               if (plank_transport_control_encode(PLANK_TRANSPORT_CONTROL_COLLABORATION_PERMISSION,
