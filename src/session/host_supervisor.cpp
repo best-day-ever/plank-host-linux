@@ -3,6 +3,7 @@
  * @brief Boot-time PLANK graphical-session worker supervisor.
  */
 #include "display_inventory.h"
+#include "display_lifecycle.h"
 #include "display_metamode.h"
 #include "display_qualify.h"
 #include "greeter_recovery.h"
@@ -1295,6 +1296,36 @@ namespace {
     return report;
   }
 
+  /**
+   * @brief Restore a released/expired lease, retaining failed recovery for a bounded retry.
+   * @param lease Owned snapshot; cleared only after exact restore or its session vanished.
+   * @param session Current active graphical session, if available.
+   * @param environment Current active session environment, if available.
+   * @param inventory Best available physical fallback inventory.
+   */
+  void release_arrangement_lease(
+    std::optional<arrangement_lease_t> &lease,
+    const std::optional<plank::session::descriptor_t> &session,
+    const std::optional<plank::session::environment_t> &environment,
+    const std::optional<plank::display::inventory_t> &inventory
+  ) {
+    if (!lease) return;
+    if (session && environment && session->id == lease->session_id) {
+      const auto restored = restore_arrangement_lease(*lease, *session, *environment, inventory);
+      if (restored.exact()) {
+        lease.reset();
+        return;
+      }
+    } else if (lease_session_vanished(lease->session_id)) {
+      clear_runtime_display_state();
+      lease.reset();
+      std::clog << "Discarded a PLANK arrangement after its X server session ended\n";
+      return;
+    }
+    plank::display::retry_display_recovery(*lease, std::chrono::steady_clock::now());
+    std::cerr << "PLANK arrangement recovery remains owned; retrying in 30 seconds\n";
+  }
+
   /** A plan for a canonical arrangement, or why the host cannot present it. */
   struct prepared_arrangement_t {
     std::optional<plank::display::arrangement_plan_t> plan;
@@ -1318,6 +1349,7 @@ namespace {
   /** What an apply achieved. */
   struct apply_report_t {
     std::string reason;  ///< Empty on success.
+    plank::display::display_change_effect_t effect {plank::display::display_change_effect_t::unchanged};  ///< Actual rollback/ownership result.
     int attempts {};  ///< MetaMode attempts made.
     std::optional<plank::display::randr_screen_t> screen;  ///< xrandr state at the last verify.
     std::optional<restore_report_t> restore;  ///< The restore after a failure.
@@ -1387,67 +1419,92 @@ namespace {
     lease.session_id = session.id;
     lease.display = environment.display;
 
-    // Record the snapshot before anything changes, so a crash at any later
-    // point leaves a record the supervisor restores from.
-    if (!record.write(arrangement_state_message(lease))) {
-      report.reason = "state_failed";
-      return report;
-    }
-    const auto failed = [&](std::string reason) {
-      report.reason = std::move(reason);
-      report.restore = restore_arrangement_lease(lease, session, environment, inventory, record);
-      return report;
-    };
-    if (!run_bounded_user_command(
-          xrandr_path, plank::display::prepare_visibility_arguments(plan),
-          lease_command_timeout, *account, environment
-        )) {
-      return failed("visibility_prepare_failed");
-    }
-    if (!settle_randr(*account, environment)) {
-      std::cerr << "PLANK outputs did not settle within three seconds; applying the arrangement anyway\n";
-    }
-    bool live = false;
-    for (int attempt = 0; attempt < 2 && !live; ++attempt) {
-      report.attempts = attempt + 1;
-      if (!assign_metamode(plan.metamode, *account, environment)) continue;
-      const auto finalize = plank::display::finalize_visibility_arguments(plan, hide_unused_physical_outputs);
-      if (!finalize.empty() && !run_bounded_user_command(
-            xrandr_path, finalize, lease_command_timeout, *account, environment
-          )) {
-        return failed("visibility_finalize_failed");
-      }
-      run_bounded_user_command(
-        xrandr_path, {"--output", plan.primary, "--primary"}, lease_command_timeout, *account,
-        environment
-      );
-      settle_randr(*account, environment);
-      report.screen = capture_randr(*account, environment);
-      live = report.screen && plank::display::arrangement_live(*report.screen, plan);
-      if (!live) std::cerr << "PLANK display arrangement did not verify (attempt " << attempt + 1 << ")\n";
-    }
-    if (!live) return failed("verify_failed");
+    // Record before mutation. Propagate the actual rollback effect to every
+    // caller so a failed carry/re-acquire cannot erase recovery authority.
+    const auto result = plank::display::recorded_display_change(
+      [&] { return record.write(arrangement_state_message(lease)); },
+      [&]() -> std::string {
+        if (!run_bounded_user_command(
+              xrandr_path, plank::display::prepare_visibility_arguments(plan),
+              lease_command_timeout, *account, environment)) {
+          return "visibility_prepare_failed";
+        }
+        if (!settle_randr(*account, environment)) {
+          std::cerr << "PLANK outputs did not settle within three seconds; applying the arrangement anyway\n";
+        }
+        bool live = false;
+        for (int attempt = 0; attempt < 2 && !live; ++attempt) {
+          report.attempts = attempt + 1;
+          if (!assign_metamode(plan.metamode, *account, environment)) continue;
+          const auto finalize = plank::display::finalize_visibility_arguments(plan, hide_unused_physical_outputs);
+          if (!finalize.empty() && !run_bounded_user_command(
+                xrandr_path, finalize, lease_command_timeout, *account, environment)) {
+            return "visibility_finalize_failed";
+          }
+          run_bounded_user_command(
+            xrandr_path, {"--output", plan.primary, "--primary"}, lease_command_timeout, *account,
+            environment);
+          settle_randr(*account, environment);
+          report.screen = capture_randr(*account, environment);
+          live = report.screen && plank::display::arrangement_live(*report.screen, plan);
+          if (!live) std::cerr << "PLANK display arrangement did not verify (attempt " << attempt + 1 << ")\n";
+        }
+        return live ? std::string {} : "verify_failed";
+      },
+      [&] {
+        report.restore = restore_arrangement_lease(lease, session, environment, inventory, record);
+        return report.restore->exact();
+      });
+    report.reason = result.reason;
+    report.effect = result.effect;
     return report;
   }
 
   /**
-   * The supervisor's lease path: plan, then apply, recorded in display-state.
-   *
-   * @return An empty string on success, else a short failure reason.
+   * @brief Plan and apply a recorded arrangement without discarding its rollback result.
+   * @param lease Attempted lease and original snapshot.
+   * @param session Authorized X session.
+   * @param environment Authorized X/DBus environment.
+   * @param inventory Current session inventory.
+   * @param retained Previous same-server snapshot, if already leased.
+   * @return Reason and actual transaction effect (including failures before mutation).
    */
-  std::string apply_arrangement_lease(
+  apply_report_t apply_arrangement_lease(
     arrangement_lease_t &lease,
     const plank::session::descriptor_t &session,
     const plank::session::environment_t &environment,
     const plank::display::inventory_t &inventory,
     const arrangement_lease_t *retained
   ) {
-    if (!account_for_uid(session.uid)) return "unavailable";
+    if (!account_for_uid(session.uid)) return {"unavailable"};
     const auto prepared = prepare_arrangement(lease.request, inventory);
-    if (!prepared.plan) return prepared.reason;
+    if (!prepared.plan) return {prepared.reason};
     return apply_arrangement_plan(
-      lease, *prepared.plan, session, environment, inventory, retained, runtime_lease_record()
-    ).reason;
+      lease, *prepared.plan, session, environment, inventory, retained, runtime_lease_record());
+  }
+
+  /**
+   * @brief Recreate an owned recovery snapshot from a validated root-only record.
+   * @param state Validated persisted display state.
+   * @return Original owner, output visibility and pre-session MetaMode.
+   */
+  arrangement_lease_t lease_from_state(const plank::session::runtime_display_state_2_t &state) {
+    arrangement_lease_t lease;
+    lease.uid = state.lease_uid;
+    lease.session_id = state.session_id;
+    lease.display = state.display;
+    lease.origin = state.origin;
+    lease.layout = state.layout;
+    lease.mode_1 = state.mode_1;
+    lease.mode_2 = state.mode_2;
+    lease.request = state.request;
+    lease.primary_before = state.primary_before;
+    lease.outputs = state.outputs;
+    lease.snapshot.assignment = state.snapshot;
+    if (const auto parsed = plank::display::parse_current_metamode(":: " + state.snapshot)) {
+      lease.snapshot = *parsed;
+    }
+    return lease;
   }
 
   /** Recover a supervisor-owned STATE-2 left by a previous supervisor on the same X server. */
@@ -1462,17 +1519,7 @@ namespace {
       std::clog << "Discarded a stale PLANK display arrangement from an X server that has ended\n";
       return true;
     }
-    arrangement_lease_t lease;
-    lease.uid = state.lease_uid;
-    lease.session_id = state.session_id;
-    lease.display = state.display;
-    lease.request = state.request;
-    lease.primary_before = state.primary_before;
-    lease.outputs = state.outputs;
-    lease.snapshot.assignment = state.snapshot;
-    if (const auto parsed = plank::display::parse_current_metamode(":: " + state.snapshot)) {
-      lease.snapshot = *parsed;
-    }
+    const auto lease = lease_from_state(state);
     const auto restored = restore_arrangement_lease(
       lease, session, environment, plank::display::read_inventory(), record
     );
@@ -2042,13 +2089,7 @@ int main(int argc, char **argv) {
       const auto selected = plank::session::active_seat0_graphical_session();
       const auto environment = selected && selected->id == arrangement_lease->session_id ?
         plank::session::discover_environment(*selected) : std::nullopt;
-      if (selected && environment) {
-        restore_arrangement_lease(*arrangement_lease, *selected, *environment, inventory);
-      } else {
-        clear_runtime_display_state();
-        std::cerr << "PLANK display arrangement lease expired after its X server disappeared\n";
-      }
-      arrangement_lease.reset();
+      release_arrangement_lease(arrangement_lease, selected, environment, inventory);
     }
 
     if (pending_display_request &&
@@ -2113,6 +2154,7 @@ int main(int argc, char **argv) {
           const auto qualification_lock = lock_qualification_record(true, 1);
           const auto previous_qualification = qualification_lock.descriptor >= 0 ?
             read_descriptor(qualification_lock.descriptor, 16U * 1024U) : std::nullopt;
+          apply_report_t applied;
           if (qualification_lock.descriptor < 0 || !previous_qualification ||
               !previous_qualification->empty()) {
             reason = "busy";
@@ -2125,7 +2167,8 @@ int main(int argc, char **argv) {
               reason = "restore_pending";
             }
             if (reason.empty()) {
-              reason = apply_arrangement_lease(lease, *selected, *environment, *inventory, retained);
+              applied = apply_arrangement_lease(lease, *selected, *environment, *inventory, retained);
+              reason = applied.reason;
             }
           }
           if (qualification_lock.descriptor >= 0) close(qualification_lock.descriptor);
@@ -2134,13 +2177,16 @@ int main(int argc, char **argv) {
               // Applying can take several seconds; the setup deadline starts now.
               lease.deadline = std::chrono::steady_clock::now() + std::chrono::seconds {45};
             }
-            arrangement_lease = std::move(lease);
+            plank::display::reconcile_display_change(
+              arrangement_lease, std::move(lease), applied.effect, std::chrono::steady_clock::now());
             clear_transition();
             std::clog << "PLANK display arrangement applied for UID " << request_uid << ": "
                       << arrangement_lease->request << '\n';
-          } else if (retained != nullptr) {
-            // The failed re-acquire restored the original snapshot.
-            arrangement_lease.reset();
+          } else {
+            // A refusal before mutation leaves the previous owner/deadline
+            // untouched. Failed rollback adopts the recorded snapshot for retry.
+            plank::display::reconcile_display_change(
+              arrangement_lease, std::move(lease), applied.effect, std::chrono::steady_clock::now());
           }
         }
         if (!reason.empty()) {
@@ -2331,24 +2377,33 @@ int main(int argc, char **argv) {
           recover_stale_runtime_state = false;
         }
         if (stale_arrangement) {
-          recover_stale_arrangement(*stale_arrangement, *selected, *environment);
+          if (!recover_stale_arrangement(*stale_arrangement, *selected, *environment)) {
+            arrangement_lease = lease_from_state(*stale_arrangement);
+            plank::display::retry_display_recovery(*arrangement_lease, std::chrono::steady_clock::now());
+          }
           stale_arrangement.reset();
         }
 
         if (arrangement_startup && inventory_session_id != selected->id) {
           // Record the display inventory of every new X server before its
           // worker starts; the worker builds display_capabilities from it.
-          inventory = capture_inventory(*account, *environment, startup_policy);
-          inventory_session_id = selected->id;
-          if (inventory && write_inventory(*inventory)) {
+          const bool published = plank::display::publish_session_inventory(
+            inventory, inventory_session_id, selected->id,
+            [&] { return capture_inventory(*account, *environment, startup_policy); },
+            [&](const auto &observed) { return write_inventory(observed); });
+          if (published) {
             std::clog << "PLANK display inventory: " << inventory->physical.size()
                       << " physical output(s), " << inventory->virtual_heads << " of "
                       << inventory->virtual_candidates.size() << " virtual head(s) reserved\n";
           } else {
             std::cerr << "Unable to record the PLANK display inventory for session "
-                      << selected->id << '\n';
+                      << selected->id << "; retrying before worker launch\n";
+            next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {2};
+            continue;
           }
-          if (hybrid_startup && inventory && inventory->virtual_heads > 0) {
+          if (hybrid_startup && inventory && inventory->virtual_heads > 0 &&
+              (!arrangement_lease || arrangement_lease->session_id != selected->id) &&
+              !qualification_live) {
             hide_virtual_heads(*inventory, *selected, *account, *environment);
           }
           if (hybrid_startup && inventory && selected->session_class == "greeter" &&
@@ -2372,28 +2427,30 @@ int main(int argc, char **argv) {
         }
 
         if (arrangement_lease && arrangement_lease->session_id != selected->id) {
-          // GDM to user: the new X server gets the lease on a fresh snapshot.
-          std::string reason = "session_ended";
-          if (selected->session_class == "user" && selected->uid == arrangement_lease->uid &&
+          // Carry into a fresh user X server with its own original snapshot.
+          apply_report_t applied {"session_ended"};
+          auto carried = *arrangement_lease;
+          if (selected->session_class == "user" && selected->uid == carried.uid &&
               inventory && inventory_session_id == selected->id) {
-            auto carried = *arrangement_lease;
-            reason = apply_arrangement_lease(carried, *selected, *environment, *inventory, nullptr);
-            if (reason.empty()) {
-              // The greeter stream ended at handoff. The new desktop has no
-              // stream until its worker confirms activation; bound this lease
-              // so a failed reconnect cannot leave the local screen hidden.
+            applied = apply_arrangement_lease(carried, *selected, *environment, *inventory, nullptr);
+            if (applied.reason.empty()) {
               carried.active = false;
-              carried.deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds {30};
-              arrangement_lease = std::move(carried);
-              std::clog << "Carried the PLANK display arrangement into user session "
-                        << selected->id << '\n';
+              carried.deadline = std::chrono::steady_clock::now() + std::chrono::seconds {30};
+              std::clog << "Carried the PLANK display arrangement into user session " << selected->id << '\n';
             }
           }
-          if (!reason.empty()) {
+          if (applied.effect == plank::display::display_change_effect_t::unchanged) {
+            // No new-server record was written. Only the old server's state
+            // is discarded; never clear a failed new-server rollback record.
             clear_runtime_display_state();
             arrangement_lease.reset();
-            std::clog << "Discarded the PLANK display arrangement (" << reason << ")\n";
+          } else {
+            plank::display::reconcile_display_change(
+              arrangement_lease, std::move(carried), applied.effect, std::chrono::steady_clock::now());
+          }
+          if (!applied.reason.empty()) {
+            std::clog << "PLANK display arrangement carry failed (" << applied.reason << ")"
+                      << (arrangement_lease ? "; recovery remains owned\n" : "; no live lease remains\n");
           }
         }
 
@@ -2566,13 +2623,7 @@ int main(int argc, char **argv) {
           if (arrangement_lease && arrangement_lease->uid == request->account_uid) {
             const auto environment = active->id == arrangement_lease->session_id ?
               plank::session::discover_environment(*active) : std::nullopt;
-            if (environment) {
-              restore_arrangement_lease(*arrangement_lease, *active, *environment, inventory);
-            } else {
-              clear_runtime_display_state();
-              std::cerr << "Released a PLANK display arrangement after its X server disappeared\n";
-            }
-            arrangement_lease.reset();
+            release_arrangement_lease(arrangement_lease, active, environment, inventory);
           }
         } else if (!pending_display_request) {
           pending_display_request = *request;
@@ -2640,11 +2691,7 @@ int main(int argc, char **argv) {
     const auto environment = selected &&
       selected->id == arrangement_lease->session_id ?
         plank::session::discover_environment(*selected) : std::nullopt;
-    if (selected && environment) {
-      restore_arrangement_lease(*arrangement_lease, *selected, *environment, inventory);
-    } else {
-      clear_runtime_display_state();
-    }
+    release_arrangement_lease(arrangement_lease, selected, environment, inventory);
   }
   clear_transition();
   stop_worker(worker);

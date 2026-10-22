@@ -151,6 +151,7 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/auth/web_auth.h"
         "${CMAKE_SOURCE_DIR}/src/session/display_inventory.cpp"
         "${CMAKE_SOURCE_DIR}/src/session/display_inventory.h"
+        "${CMAKE_SOURCE_DIR}/src/session/display_lifecycle.h"
         "${CMAKE_SOURCE_DIR}/src/session/display_metamode.cpp"
         "${CMAKE_SOURCE_DIR}/src/session/display_metamode.h"
         "${CMAKE_SOURCE_DIR}/src/session/display_qualify.cpp"
