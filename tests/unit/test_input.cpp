@@ -84,6 +84,7 @@ namespace {
       ASSERT_NE(context.runtime, nullptr);
       ASSERT_NE(context.mouse, nullptr);
       mouse = context.mouse.get();
+      keyboard = context.keyboard.get();
       input::testing::set_platform_input(std::move(platform_input));
     }
 
@@ -134,6 +135,7 @@ namespace {
       }
     }
 
+    lvh::Keyboard *keyboard = nullptr;  ///< Observable fake keyboard, owned by the platform backend.
     lvh::Mouse *mouse = nullptr;  ///< Observable fake mouse, owned by the platform backend.
     std::vector<std::pair<std::shared_ptr<input::input_t>, std::uint64_t>> sessions;  ///< Leases released at teardown.
   };
@@ -595,4 +597,86 @@ TEST_F(InputRetainedSessionTest, NormalizedPenReleasesRetainedRawTabletEndpoints
 
   EXPECT_TRUE(input::testing::normalized_pen_enabled(session));
   EXPECT_EQ(input::testing::raw_hid_generation(session), 0);
+}
+
+TEST_F(InputRetainedSessionTest, GuestDisconnectDoesNotReleaseOwnersSharedKeyOrButton) {
+  std::uint64_t owner_lease, guest_lease;
+  auto owner = allocate("owner-multi", owner_lease);
+  auto guest = allocate("guest-multi", guest_lease);
+  drain_tasks();
+  input::testing::handle_keyboard(owner, 0x41, false);
+  input::testing::handle_mouse_button(owner, 1, false);
+  const auto key_pressed = keyboard->submit_count();
+  const auto mouse_pressed = mouse->submit_count();
+  input::testing::handle_keyboard(guest, 0x41, false);
+  input::testing::handle_mouse_button(guest, 1, false);
+  EXPECT_EQ(keyboard->submit_count(), key_pressed);
+  EXPECT_EQ(mouse->submit_count(), mouse_pressed);
+  input::reset(guest, guest_lease);
+  EXPECT_EQ(keyboard->submit_count(), key_pressed);
+  EXPECT_EQ(mouse->submit_count(), mouse_pressed);
+  input::reset(owner, owner_lease);
+  EXPECT_EQ(keyboard->submit_count(), key_pressed + 1);
+  EXPECT_EQ(mouse->submit_count(), mouse_pressed + 1);
+}
+
+TEST_F(InputRetainedSessionTest, GuestUnsolicitedReleaseCannotReleaseOwnerInput) {
+  std::uint64_t owner_lease, guest_lease;
+  auto owner = allocate("owner-unsolicited", owner_lease);
+  auto guest = allocate("guest-unsolicited", guest_lease);
+  drain_tasks();
+  input::testing::handle_keyboard(owner, 0x41, false);
+  input::testing::handle_mouse_button(owner, 1, false);
+  const auto keys = keyboard->submit_count(); const auto buttons = mouse->submit_count();
+  input::testing::handle_keyboard(guest, 0x41, true);
+  input::testing::handle_mouse_button(guest, 1, true);
+  EXPECT_EQ(keyboard->submit_count(), keys);
+  EXPECT_EQ(mouse->submit_count(), buttons);
+}
+
+TEST_F(InputRetainedSessionTest, StaleGuestRepeatCannotRunAfterGuestReset) {
+  using namespace std::literals;
+  std::uint64_t owner_lease, guest_lease;
+  auto owner = allocate("owner-repeat", owner_lease);
+  auto guest = allocate("guest-repeat", guest_lease);
+  drain_tasks();
+  const auto previous = config::input.key_repeat_delay;
+  auto restore = util::fail_guard([&]() { config::input.key_repeat_delay = previous; });
+  config::input.key_repeat_delay = 1ms;
+  input::testing::handle_keyboard(owner, 0x41, false);
+  input::testing::handle_keyboard(guest, 0x41, false);
+  std::this_thread::sleep_for(5ms);
+  auto queued_repeat = task_pool.pop();
+  ASSERT_TRUE(queued_repeat);
+  input::reset(guest, guest_lease);
+  const auto keys = keyboard->submit_count();
+  (*queued_repeat)->run();
+  EXPECT_EQ(keyboard->submit_count(), keys);
+  EXPECT_FALSE(task_pool.pop());
+}
+
+TEST_F(InputRetainedSessionTest, GuestAllocationNeverNudgesOwnersPointer) {
+  std::uint64_t lease;
+  auto guest = input::alloc(std::make_shared<safe::mail_raw_t>(), "guest-no-nudge", lease, false);
+  sessions.emplace_back(guest, lease);
+  EXPECT_FALSE(task_pool.next());
+  EXPECT_EQ(input::testing::client_context(guest), nullptr);
+  EXPECT_FALSE(input::testing::normalized_pen_enabled(guest));
+}
+
+TEST_F(InputRetainedSessionTest, GuestExtraMouseButtonReleaseCannotReleaseOwnersHold) {
+  std::uint64_t owner_lease, guest_lease;
+  auto owner = allocate("owner-extra", owner_lease);
+  auto guest = allocate("guest-extra", guest_lease);
+  drain_tasks();
+  input::testing::handle_mouse_button(owner, BUTTON_X2, false);
+  const auto pressed = mouse->submit_count();
+  input::testing::handle_mouse_button(guest, BUTTON_X2, true);
+  EXPECT_EQ(mouse->submit_count(), pressed);
+  input::testing::handle_mouse_button(guest, BUTTON_X2, false);
+  input::reset(guest, guest_lease);
+  EXPECT_EQ(mouse->submit_count(), pressed);
+  input::reset(owner, owner_lease);
+  EXPECT_EQ(mouse->submit_count(), pressed + 1);
+  EXPECT_FALSE(mouse->last_submitted_event().pressed);
 }

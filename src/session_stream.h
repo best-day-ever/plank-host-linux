@@ -15,6 +15,7 @@
 
 // local includes
 #include "plank_arrangement.h"
+#include "session/collaboration.h"
 
 namespace session_stream {
   /**
@@ -55,6 +56,9 @@ namespace session_stream {
     bool plank_display_lease {};  ///< Whether this stream owns a temporary physical-display layout.
     uid_t plank_display_lease_uid {};  ///< PAM account that owns the temporary display lease.
 
+    int collaboration_desktop_width {};  ///< Guest absolute input reference is always the full owner desktop.
+    int collaboration_desktop_height {};  ///< Full owner desktop height for guest absolute input.
+    std::shared_ptr<plank::collaboration::lease_t> collaboration;  ///< Owner-approved guest permission, empty for the owner.
     std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained by PLANK streams.
     std::shared_ptr<void> plank_transport_endpoint;  ///< Experimental QUIC data-plane lifetime.
   };

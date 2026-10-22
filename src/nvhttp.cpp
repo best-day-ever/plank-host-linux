@@ -67,6 +67,7 @@
 #include "session/display_metamode.h"
 #include "session/greeter_signin.h"
 #include "session/session_context.h"
+#include "session/collaboration.h"
 #include "plank_arrangement.h"
 #include "plank_arrangement_json.h"
 #include "plank_topology.h"
@@ -517,6 +518,8 @@ namespace nvhttp {
   /// Account whose streams are running; meaningful only while a stream or launch is active.
   /// Guarded by session_start_mutex, like every launch/resume decision.
   std::optional<uid_t> streaming_account_uid;
+  std::shared_ptr<session_stream::launch_session_t> owner_capture;  ///< Immutable capture snapshot; never a display request.
+  std::uint64_t owner_capture_generation {};  ///< Attachment generation of the capture snapshot.
 
   std::string account_name(uid_t uid) {
     std::vector<char> buffer(16384);
@@ -580,6 +583,7 @@ namespace nvhttp {
       owner + " is signed in on this workstation");
     tree.put("root.PlankDesktopOwner", owner);
     tree.put("root.PlankDesktopSignOut", std::string {sign_out});
+    tree.put("root.PlankCollaborationAvailable", plank::session::unlocked_desktop_owner() ? 1 : 0);
   }
 
   /**
@@ -610,18 +614,31 @@ namespace nvhttp {
       return refuse();
     }
 
+    const auto collaboration_grant = get_arg(args, "plankCollaboration", "");
+    if (!collaboration_grant.empty()) {
+      const auto owner = plank::session::unlocked_desktop_owner();
+      if (!owner || *owner == *uid) return refuse();
+      auto &state = plank::collaboration::registry();
+      std::lock_guard lock {state.mutex};
+      for (const auto &entry : state.requests()) {
+        if (entry->grant == collaboration_grant && entry->guest == *uid &&
+            entry->desktop == plank::collaboration::desktop_t {*owner, plank::session::desktop_generation()} &&
+            std::chrono::steady_clock::now() < entry->deadline && !entry->lease->claimed &&
+            (entry->lease->permission == plank::collaboration::permission_t::view ||
+             entry->lease->permission == plank::collaboration::permission_t::control)) return uid;
+      }
+      return refuse();
+    }
     const bool stream_active = session_stream::session_count() > 0 ||
                                session_stream::launch_session_pending();
     if (stream_active && streaming_account_uid && *streaming_account_uid != *uid) {
-      web_auth->cancel(token);
       BOOST_LOG(warning) << "Refusing PLANK stream: another account is connected to this workstation"sv;
       workstation_in_use(tree, result_key, account_name(*streaming_account_uid), "connected"sv);
       return std::nullopt;
     }
     if (plank::session::supervisor_attests_account_for_active_seat0(*uid)) return uid;
 
-    const auto owner = config::sunshine.desktop_handoff ?
-      plank::session::attached_desktop_owner() : std::nullopt;
+    const auto owner = plank::session::attached_desktop_owner();
     if (!owner || *owner == *uid) {
       web_auth->cancel(token);
       BOOST_LOG(warning) << "Rejecting PLANK stream for an account that is not authorized for the active desktop"sv;
@@ -629,11 +646,10 @@ namespace nvhttp {
     }
     const auto owner_account = account_name(*owner);
     if (stream_active) {
-      web_auth->cancel(token);
       workstation_in_use(tree, result_key, owner_account, "connected"sv);
       return std::nullopt;
     }
-    if (get_arg(args, "plankSignOutDesktop", "0") != "1"sv ||
+    if (!config::sunshine.desktop_handoff || get_arg(args, "plankSignOutDesktop", "0") != "1"sv ||
         get_arg(args, "plankSignOutOwner", "") != owner_account) {
       // The token stays valid so the Client can confirm the sign-out without a new login.
       BOOST_LOG(info) << "PLANK workstation is signed in to another account; offering sign-out"sv;
@@ -1632,6 +1648,163 @@ namespace nvhttp {
     return launch_session;
   }
 
+  /** @brief Resolve the account behind a live peer-bound PAM token without consuming it. */
+  std::optional<uid_t> collaboration_account(const req_https_t &request) {
+    const auto identity = web_auth ? web_auth->identity(bearer_token(request), authentication_peer(request)) : std::nullopt;
+    return identity ? plank::auth::account_uid(*identity) : std::nullopt;
+  }
+
+  /** @brief Describe capture without executing any display acquire/configure/release path. */
+  nlohmann::json collaboration_capture_json(const session_stream::launch_session_t &capture) {
+    return {{"width", capture.width}, {"height", capture.height}, {"fps", capture.fps},
+      {"capture_source", capture.capture_source}, {"encoder_backend", capture.encoder_backend},
+      {"encoding_mode", capture.encoding_mode}, {"display_arrangement", capture.display_arrangement},
+      {"display_mode", capture.display_mode}, {"output_id", capture.output_id}, {"host_layout", capture.host_layout}};
+  }
+
+  /** @brief Read a local-only owner's existing desktop; does not own or change its layout. */
+  std::shared_ptr<session_stream::launch_session_t> local_desktop_capture() {
+    const auto topology = output_topology_json();
+    if (!topology.contains("desktop")) return {};
+    const auto &desktop = topology["desktop"];
+    auto capture = std::make_shared<session_stream::launch_session_t>();
+    capture->width = desktop.value("width", 0); capture->height = desktop.value("height", 0);
+    capture->fps = 60; capture->host_audio = true; capture->span_desktop = true; capture->display_mode = "scaled-span";
+    capture->host_layout = topology["layout"].value("kind", "physical");
+    capture->capture_source = "nvfbc"; capture->encoder_backend = "nvenc-direct";
+    capture->encoding_mode = "h264-8-444-nvenc";
+    capture->topology_generation = topology.value("generation", "");
+    return capture->width > 0 && capture->height > 0 ? capture : nullptr;
+  }
+
+  /** @brief Handle authenticated consent requests, status, owner decisions, and cancellation. */
+  void collaboration_http(const resp_https_t &response, const req_https_t &request) {
+    std::scoped_lock start_lock {session_start_mutex};
+    const auto uid = collaboration_account(request);
+    const auto owner = plank::session::unlocked_desktop_owner();
+    if (!uid || !owner) {
+      write_auth_json(response, SimpleWeb::StatusCode::client_error_forbidden, {{"state", "unavailable"}}); return;
+    }
+    const plank::collaboration::desktop_t desktop {*owner, plank::session::desktop_generation()};
+    auto &state = plank::collaboration::registry();
+    std::lock_guard lock {state.mutex};
+    if (request->path == "/plank/collaboration/request") {
+      const auto body = read_auth_json(request);
+      if (!body.is_object()) { write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request, {{"state", "invalid-request"}}); return; }
+      state.refresh(&desktop, state.ui_connected, std::chrono::steady_clock::now());
+      const auto item = state.add(*uid, account_name(*uid), desktop,
+        plank::auth::secure_random_hex(32), plank::auth::secure_random_hex(32), std::chrono::steady_clock::now());
+      if (!item) { write_auth_json(response, SimpleWeb::StatusCode::client_error_conflict, {{"state", "unavailable"}}); return; }
+      write_auth_json(response, SimpleWeb::StatusCode::success_ok,
+        {{"request_id", item->id}, {"state", plank::collaboration::permission_name(item->lease->permission)}, {"expires_in", 120}}); return;
+    }
+    const auto args = request->parse_query_string();
+    auto body = request->method == "GET" ? nlohmann::json::object() : read_auth_json(request);
+    if (!body.is_object()) { write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request, {{"state", "invalid-request"}}); return; }
+    if ((body.contains("request_id") && !body["request_id"].is_string()) ||
+        (body.contains("permission") && !body["permission"].is_string())) {
+      write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request, {{"state", "invalid-request"}}); return;
+    }
+    const auto id = request->method == "GET" ? get_arg(args, "request_id", "") : body.value("request_id", std::string {});
+    if (id.size() > 64) { write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request, {{"state", "invalid-request"}}); return; }
+    const auto item = state.find(id, *uid);
+    if (request->path == "/plank/collaboration/status" && id.empty() && *uid == *owner) {
+      nlohmann::json result {{"requests", nlohmann::json::array()}};
+      for (const auto &entry : state.requests()) if (entry->desktop == desktop) result["requests"].push_back({
+        {"request_id", entry->id}, {"guest_name", entry->guest_name}, {"state", plank::collaboration::permission_name(entry->lease->permission)}});
+      write_auth_json(response, SimpleWeb::StatusCode::success_ok, result); return;
+    }
+    if (!item || item->desktop != desktop) { write_auth_json(response, SimpleWeb::StatusCode::client_error_not_found, {{"state", "revoked"}}); return; }
+    if (request->path == "/plank/collaboration/decision" || request->path == "/plank/collaboration/revoke") {
+      const auto permission = request->path.ends_with("/revoke") ? "revoke" : body.value("permission", std::string {});
+      const auto value = permission == "view" ? plank::collaboration::permission_t::view :
+        permission == "control" ? plank::collaboration::permission_t::control : permission == "deny" ? plank::collaboration::permission_t::denied :
+        plank::collaboration::permission_t::revoked;
+      if (!state.ui_connected || (permission != "view" && permission != "control" && permission != "deny" && permission != "revoke") ||
+          !state.decide(id, *uid, desktop, value)) {
+        write_auth_json(response, SimpleWeb::StatusCode::client_error_forbidden, {{"state", "denied"}}); return;
+      }
+    } else if (request->path == "/plank/collaboration/cancel") {
+      if (item->guest != *uid) { write_auth_json(response, SimpleWeb::StatusCode::client_error_forbidden, {{"state", "denied"}}); return; }
+      state.ended(item->lease);
+    }
+    nlohmann::json result {{"request_id", item->id}, {"state", plank::collaboration::permission_name(item->lease->permission)}};
+    if ((item->lease->permission == plank::collaboration::permission_t::view || item->lease->permission == plank::collaboration::permission_t::control) && item->guest == *uid && !item->lease->claimed) {
+      const bool active = session_stream::has_stream_session();
+      auto capture = active && owner_capture_generation == desktop.generation ? owner_capture : local_desktop_capture();
+      if (!capture) { write_auth_json(response, SimpleWeb::StatusCode::server_error_service_unavailable, {{"state", "unavailable"}}); return; }
+      result["grant"] = item->grant; result["capture"] = collaboration_capture_json(*capture);
+      result["capture"]["backend_locked"] = active;
+      result["topology"] = output_topology_json();
+    }
+    write_auth_json(response, SimpleWeb::StatusCode::success_ok, result);
+  }
+
+  /** @brief Launch a guest solely from owner consent and a read-only capture snapshot. */
+  void launch_collaborator(const req_https_t &request, const args_t &args, uid_t uid, pt::ptree &tree) {
+    using namespace plank::collaboration;
+    tree.put("root.gamesession", 0);
+    const auto owner = plank::session::unlocked_desktop_owner();
+    if (!owner || session_stream::launch_session_pending()) {
+      tree.put("root.<xmlattr>.status_code", 409); tree.put("root.<xmlattr>.status_message", "The workstation is changing sessions; retry collaboration"); return;
+    }
+    const desktop_t desktop {*owner, plank::session::desktop_generation()};
+    std::shared_ptr<request_t> consent;
+    {
+      auto &state = registry(); std::lock_guard lock {state.mutex};
+      if (state.ui_connected) consent = state.claim(get_arg(args, "plankCollaboration", ""), uid, desktop, std::chrono::steady_clock::now());
+    }
+    if (!consent) { tree.put("root.<xmlattr>.status_code", 403); tree.put("root.<xmlattr>.status_message", "Collaboration approval expired or was revoked"); return; }
+    bool accepted = false;
+    auto failed = util::fail_guard([&]() { if (!accepted) { auto &state = registry(); std::lock_guard lock {state.mutex}; state.ended(consent->lease); } });
+    const bool active = session_stream::has_stream_session();
+    auto capture = active && owner_capture_generation == desktop.generation ? owner_capture : local_desktop_capture();
+    if (!capture) { tree.put("root.<xmlattr>.status_code", 503); tree.put("root.<xmlattr>.status_message", "The owner's desktop capture is unavailable"); return; }
+    auto guest = make_launch_session(capture->host_audio, args);
+    if ((guest->plank_feature_flags & plank::topology::feature_collaboration) == 0) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Collaboration protocol negotiation is required"); return;
+    }
+    if (active && (guest->capture_source != capture->capture_source || guest->encoder_backend != capture->encoder_backend)) {
+      tree.put("root.<xmlattr>.status_code", 409); tree.put("root.<xmlattr>.status_message", "Collaboration must use the owner's capture source and encoder backend"); return;
+    }
+    const auto guest_encoding = guest->encoding_mode; const auto guest_source = guest->capture_source; const auto guest_backend = guest->encoder_backend;
+    const auto id = guest->id; const auto appid = guest->appid; const auto mtu = guest->quic_udp_payload_mtu; const auto flags = guest->plank_feature_flags; const auto protocol = guest->plank_protocol_version;
+    *guest = *capture;
+    guest->id = id; guest->appid = appid; guest->quic_udp_payload_mtu = mtu; guest->plank_feature_flags = flags & ~(plank::topology::feature_clipboard_sync | plank::topology::feature_file_clipboard);
+    guest->plank_protocol_version = protocol; guest->encoding_mode = guest_encoding;
+    if (!active) { guest->capture_source = guest_source; guest->encoder_backend = guest_backend; }
+    guest->file_clipboard_mode = "off"; guest->plank_display_lease = false; guest->collaboration = consent->lease;
+    const auto guest_topology = output_topology_json();
+    guest->collaboration_desktop_width = guest_topology["desktop"].value("width", 0);
+    guest->collaboration_desktop_height = guest_topology["desktop"].value("height", 0);
+    guest->authentication_session.reset(); guest->plank_transport_endpoint.reset();
+    if (!validate_capture_source(*guest, tree) || !validate_encoder_backend(*guest, tree) || !validate_transport_mtu(*guest, tree)) return;
+    if (!active && !video::select_encoder_backend_for_session(guest->encoder_backend)) { tree.put("root.<xmlattr>.status_code", 503); return; }
+    guest->authentication_session = claim_authentication_session(request);
+    if (!guest->authentication_session) { tree.put("root.<xmlattr>.status_code", 401); return; }
+    if (proc::proc.running() == 0 && proc::proc.execute(guest->appid) != 0) { tree.put("root.<xmlattr>.status_code", 500); return; }
+    if (!start_plank_transport_data_plane(*guest, tree)) return;
+    {
+      std::lock_guard permission_lock {consent->lease->mutex};
+      const auto permission = consent->lease->permission.load();
+      if (permission != permission_t::view && permission != permission_t::control) {
+        tree.put("root.<xmlattr>.status_code", 403); return;
+      }
+      consent->lease->revoke_transport = [endpoint = guest->plank_transport_endpoint]() {
+        plank_transport_native_endpoint_stop(static_cast<PlankTransportNativeEndpoint *>(endpoint.get()));
+      };
+    }
+    if (!active) { owner_capture = std::make_shared<session_stream::launch_session_t>(*guest); owner_capture->collaboration.reset(); owner_capture->authentication_session.reset(); owner_capture->plank_transport_endpoint.reset(); owner_capture_generation = desktop.generation; }
+    tree.put("root.<xmlattr>.status_code", 200); tree.put("root.gamesession", 1);
+    tree.put("root.PlankWorkerInstance", worker_instance_id()); tree.put("root.PlankCaptureSource", guest->capture_source);
+    tree.put("root.PlankEncoderBackend", guest->encoder_backend); tree.put("root.PlankEncodingMode", guest->encoding_mode);
+    tree.put("root.PlankClipboardSync", 0); tree.put("root.PlankFileClipboardMode", "off");
+    tree.put("root.PlankEffectiveFeatureFlags", guest->plank_feature_flags);
+    tree.put("root.PlankCollaborationPermission", permission_name(consent->lease->permission));
+    session_stream::launch_session_raise(guest); accepted = true;
+  }
+
   template<class T>
   struct tunnel;
 
@@ -1674,7 +1847,11 @@ namespace nvhttp {
     BOOST_LOG(debug) << " [--] "sv;
 
     for (auto &[name, val] : request->parse_query_string()) {
-      BOOST_LOG(debug) << name << " -- " << val;
+      if (boost::iequals(name, "plankCollaboration")) {
+        BOOST_LOG(debug) << name << " -- <redacted>"sv;
+      } else {
+        BOOST_LOG(debug) << name << " -- " << val;
+      }
     }
 
     BOOST_LOG(debug) << " [--] "sv;
@@ -1948,6 +2125,11 @@ namespace nvhttp {
       return;
     }
 
+    if (!get_arg(args, "plankCollaboration", "").empty()) {
+      launch_collaborator(request, args, *authenticated_uid, tree);
+      return;
+    }
+
     const auto takeover_requested = session_takeover_requested(args);
     if (!takeover_requested) {
       tree.put("root.gamesession", 0);
@@ -2075,6 +2257,9 @@ namespace nvhttp {
     tree.put("root.PlankClipboardSync",
              (launch_session->plank_feature_flags & plank::topology::feature_clipboard_sync) != 0 ? 1 : 0);
 
+    owner_capture = std::make_shared<session_stream::launch_session_t>(*launch_session);
+    owner_capture->authentication_session.reset(); owner_capture->plank_transport_endpoint.reset();
+    owner_capture_generation = plank::session::desktop_generation();
     session_stream::launch_session_raise(launch_session);
     complete_desktop_login(*authenticated_uid);
 
@@ -2108,6 +2293,10 @@ namespace nvhttp {
     });
 
     auto args = request->parse_query_string();
+    if (!get_arg(args, "plankCollaboration", "").empty()) {
+      tree.put("root.resume", 0); tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Collaboration joins require a fresh launch and consent"); return;
+    }
     const auto authenticated_uid = admit_desktop_stream(request, args, tree, "root.resume");
     if (!authenticated_uid) {
       return;
@@ -2229,6 +2418,9 @@ namespace nvhttp {
     tree.put("root.PlankClipboardSync",
              (launch_session->plank_feature_flags & plank::topology::feature_clipboard_sync) != 0 ? 1 : 0);
 
+    owner_capture = std::make_shared<session_stream::launch_session_t>(*launch_session);
+    owner_capture->authentication_session.reset(); owner_capture->plank_transport_endpoint.reset();
+    owner_capture_generation = plank::session::desktop_generation();
     session_stream::launch_session_raise(launch_session);
     complete_desktop_login(*authenticated_uid);
   }
@@ -2265,6 +2457,7 @@ namespace nvhttp {
     https_server.default_resource["GET"] = not_found<SunshineHTTPS>;
     https_server.resource["^/serverinfo$"]["GET"] = serverinfo<SunshineHTTPS>;
     plank::auth::auth_executor_t authentication;
+    plank::collaboration::ui_t collaboration_ui;
     auto dispatch_auth = [&authentication, &https_server](auto handler) {
       return [&authentication, &https_server, handler](auto response, auto request) {
         const auto peer = authentication_peer(request);
@@ -2284,6 +2477,13 @@ namespace nvhttp {
     };
     https_server.resource["^/plank/auth/start$"]["POST"] = dispatch_auth(auth_start);
     https_server.resource["^/plank/auth/respond$"]["POST"] = dispatch_auth(auth_respond);
+    for (const auto *path : {"request", "decision", "revoke", "cancel", "status"}) {
+      const auto route = std::string {"^/plank/collaboration/"} + path + "$";
+      const auto method = std::string_view {path} == "status" ? "GET" : "POST";
+      https_server.resource[route][method] = [](auto response, auto request) {
+        if (require_authentication(response, request)) collaboration_http(response, request);
+      };
+    }
     https_server.resource["^/plank/topology$"]["GET"] = [](auto resp, auto req) {
       if (require_authentication(resp, req)) {
         output_topology(resp, req);

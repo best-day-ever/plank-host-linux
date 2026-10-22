@@ -144,6 +144,7 @@ namespace stream {
       std::size_t clipboard_next = 0; ///< First chunk not yet accepted by transport.
     } control;  ///< Native Host-to-Client event queues.
 
+    std::shared_ptr<plank::collaboration::lease_t> collaboration;  ///< Mutable owner-approved guest permission.
     std::string input_session_id;  ///< Internal desktop key retaining input devices across resume.
     bool plank_display_lease {};  ///< Whether this stream owns the temporary physical-display layout.
     uid_t plank_display_lease_uid {};  ///< PAM account that owns the display lease.
@@ -153,6 +154,8 @@ namespace stream {
     safe::mail_raw_t::event_t<bool> shutdown_event;  ///< Event raised when the stream should shut down.
     safe::signal_t controlEnd;  ///< Signal raised when the control channel exits.
 
+    std::atomic_bool negotiated {};  ///< The native setup response precedes every asynchronous event.
+    int last_collaboration_permission {-1};  ///< Last reliable effective permission delivered to this guest.
     std::atomic<session::state_e> state;  ///< Current lifecycle state observed by stream workers.
   };
 
@@ -349,7 +352,7 @@ namespace stream {
   }
 
   bool clipboard_sync_enabled(const session_t *session) {
-    return session != nullptr &&
+    return session != nullptr && !session->collaboration &&
       (session->plank_feature_flags & plank::topology::feature_clipboard_sync) != 0;
   }
 
@@ -907,6 +910,7 @@ namespace stream {
     auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
 #ifdef PLANK_TRANSPORT
     std::array<std::uint8_t, PLANK_TRANSPORT_CONTROL_MAX_PACKET_SIZE> control_packet;
+    using collaboration_permission_frame_t = std::array<std::uint8_t, PLANK_TRANSPORT_CONTROL_HEADER_SIZE + sizeof(std::uint32_t)>;  ///< Keep template commas outside KITTY_WHILE_LOOP arguments.
 #endif
 
     while (!shutdown_event->peek() && !broadcast_shutdown_event->peek()) {
@@ -919,6 +923,15 @@ namespace stream {
 
           auto session = *pos;
 #ifdef PLANK_TRANSPORT
+          if (session->collaboration) {
+            bool revoked = false;
+            {
+              std::lock_guard permission_lock {session->collaboration->mutex};
+              const auto permission = session->collaboration->permission.load();
+              revoked = permission != plank::collaboration::permission_t::view && permission != plank::collaboration::permission_t::control;
+            }
+            if (revoked) session::stop(*session);
+          }
           drain_plank_transport_control(session, control_packet);
 #endif
           if (session->state.load(std::memory_order_acquire) == session::state_e::STOPPING) {
@@ -946,6 +959,28 @@ namespace stream {
             }
           }
 #endif
+
+          if (!session->negotiated.load(std::memory_order_acquire)) { ++pos; continue; }
+          if (session->collaboration) {
+            int effective = 0;
+            {
+              std::lock_guard permission_lock {session->collaboration->mutex};
+              const auto permission = session->collaboration->permission.load();
+              effective = permission == plank::collaboration::permission_t::control && !session->collaboration->input_suspended ? 2 :
+                permission == plank::collaboration::permission_t::view || permission == plank::collaboration::permission_t::control ? 1 : 0;
+            }
+            if (effective != session->last_collaboration_permission) {
+              const std::uint32_t value = effective;
+              collaboration_permission_frame_t frame {};
+              std::size_t size = 0;
+              auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(session->plank_transport_endpoint.get());
+              if (plank_transport_control_encode(PLANK_TRANSPORT_CONTROL_COLLABORATION_PERMISSION,
+                    &value, 1, frame.data(), frame.size(), &size) != 0 ||
+                  plank_transport_native_data_send(endpoint, frame.data(), size) != PLANK_TRANSPORT_OK) {
+                session::stop(*session);
+              } else session->last_collaboration_permission = effective;
+            }
+          }
 
           if (!session->cursorThread.joinable()) {
             session->cursorThread = std::jthread(localCursorThread, session);
@@ -1334,6 +1369,15 @@ namespace stream {
         session::stop(*session);
         return;
       }
+      std::unique_lock<std::mutex> permission_lock;
+      if (session->collaboration) {
+        permission_lock = std::unique_lock {session->collaboration->mutex};
+        // Only normalized keyboard, mouse and text are part of control.
+        // Raw HID, clipboard, files, camera and microphone are never guest entitlements.
+        if (session->collaboration->permission != plank::collaboration::permission_t::control ||
+            session->collaboration->input_suspended || type < PLANK_TRANSPORT_INPUT_ABSOLUTE_MOUSE ||
+            type > PLANK_TRANSPORT_INPUT_UTF8_TEXT) continue;
+      }
       if (type == PLANK_TRANSPORT_INPUT_CLIPBOARD_OFFER) {
         if (!handle_client_clipboard_offer(
               session, payload.data(), payload_size)) {
@@ -1355,6 +1399,10 @@ namespace stream {
 
   namespace session {
     std::atomic_uint running_sessions;  ///< Running sessions.
+    std::atomic_uint owner_sessions;  ///< Owner streams only; guests never postpone owner-disconnect locking.
+    std::mutex display_cleanup_mutex;  ///< Serializes shared display lease cleanup.
+    std::optional<uid_t> display_lease_owner;  ///< Retain lease owner until the final stream drains.
+    bool owner_in_group {};  ///< Whether any primary owner stream configured this stream group.
     /// Delay before lock_on_disconnect locks the desktop, absorbing reconnects and takeovers.
     constexpr std::chrono::milliseconds lock_on_disconnect_grace {5000};
 
@@ -1376,6 +1424,11 @@ namespace stream {
         return;
       }
 
+      if (!session.collaboration) {
+        auto &consent = plank::collaboration::registry();
+        std::lock_guard lock {consent.mutex};
+        consent.revoke_all();
+      }
       session.shutdown_event->raise(true);
       session.cursorThread.request_stop();
       session.clipboardThread.request_stop();
@@ -1392,6 +1445,10 @@ namespace stream {
 #else
       (void) termination_reason;
 #endif
+    }
+
+    void notify_negotiated(session_t &session) {
+      session.negotiated.store(true, std::memory_order_release);
     }
 
     void notify_desktop_handoff(session_t &session) {
@@ -1451,7 +1508,24 @@ namespace stream {
       // Release held input, but retain desktop-owned device identities for
       // later connections even when no stream reservation remains.
       BOOST_LOG(debug) << "Resetting Input..."sv;
-      input::reset(session.input, session.input_connection_id);
+      if (session.collaboration) {
+        {
+          std::lock_guard permission_lock {session.collaboration->mutex};
+          session.collaboration->release_input = {};
+          session.collaboration->revoke_transport = {};
+          session.collaboration->permission = plank::collaboration::permission_t::revoked;
+          input::reset(session.input, session.input_connection_id);
+        }
+        input::forget(session.input_session_id);
+      } else {
+        input::reset(session.input, session.input_connection_id);
+        --owner_sessions;
+        if (config::sunshine.lock_on_disconnect && session.authentication_session) {
+          plank::session::schedule_attached_session_lock(lock_on_disconnect_grace, []() {
+            return owner_sessions.load() == 0 && !session_stream::launch_session_pending();
+          });
+        }
+      }
 
 #ifdef PLANK_TRANSPORT
       if (session.plank_transport_endpoint) {
@@ -1486,29 +1560,22 @@ namespace stream {
 
       // If this is the last session, invoke the platform callbacks
       if (--running_sessions == 0) {
+        std::lock_guard cleanup_lock {display_cleanup_mutex};
         bool revert_display_config {config::video.dd.config_revert_on_disconnect};
         if (!proc::proc.running()) {
           // We have no app running and also no clients anymore.
           revert_display_config = true;
         }
 
-        if (revert_display_config) {
+        if (owner_in_group && revert_display_config) {
           display_device::revert_configuration();
         }
+        owner_in_group = false;
 
         platf::streaming_will_stop();
-        if (config::sunshine.lock_on_disconnect && session.authentication_session) {
-          // The final authenticated stream is gone. Lock the captured user
-          // desktop unless its owner reconnects (or takes over) within the
-          // grace period; only the desktop owner can launch a new stream.
-          plank::session::schedule_attached_session_lock(lock_on_disconnect_grace, []() {
-            return running_sessions.load() == 0 && !session_stream::launch_session_pending();
-          });
-        }
-        if (session.plank_display_lease) {
-          const auto released = plank::session::release_display_lease(
-            session.plank_display_lease_uid
-          );
+        if (display_lease_owner) {
+          const auto released = plank::session::release_display_lease(*display_lease_owner);
+          display_lease_owner.reset();
           if (released != plank::session::display_request_status::submitted) {
             BOOST_LOG(error) << "Unable to submit the temporary PLANK display-lease release"sv;
           }
@@ -1528,11 +1595,17 @@ namespace stream {
         return -1;
       }
 
-      session.input = input::alloc(session.mail, session.input_session_id, session.input_connection_id);
-
+      session.input = input::alloc(session.mail, session.input_session_id, session.input_connection_id, !session.collaboration);
       session.broadcast_ref = broadcast.ref();
       if (!session.broadcast_ref) {
+        if (session.collaboration) input::forget(session.input_session_id);
         return -1;
+      }
+      if (session.collaboration) {
+        std::lock_guard permission_lock {session.collaboration->mutex};
+        session.collaboration->release_input = [guest_input = session.input, lease = session.input_connection_id]() mutable {
+          input::reset(guest_input, lease);
+        };
       }
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
@@ -1554,6 +1627,12 @@ namespace stream {
 
       session.state.store(state_e::RUNNING, std::memory_order_relaxed);
 
+      if (!session.collaboration) {
+        ++owner_sessions;
+        std::lock_guard cleanup_lock {display_cleanup_mutex};
+        owner_in_group = true;
+        if (session.plank_display_lease) display_lease_owner = session.plank_display_lease_uid;
+      }
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
         platf::streaming_will_start();
@@ -1573,7 +1652,8 @@ namespace stream {
       session->shutdown_event = mail->event<bool>(mail::shutdown);
       // One controlling stream per graphical worker. Retain its input devices
       // across reconnect/takeover without a caller-controlled client identifier.
-      session->input_session_id = "plank-desktop";
+      session->collaboration = launch_session.collaboration;
+      session->input_session_id = session->collaboration ? "plank-guest-" + std::to_string(launch_session.id) : "plank-desktop";
       session->plank_display_lease = launch_session.plank_display_lease;
       session->plank_display_lease_uid =
         launch_session.plank_display_lease_uid;

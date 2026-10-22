@@ -3106,7 +3106,8 @@ namespace video {
    * @return Constructed port object.
    */
   input::touch_port_t make_port(platf::display_t *display, const config_t &config) {
-    if (!config.capture_regions.empty() && config.desktop_width > 0 && config.desktop_height > 0) {
+    if (config.desktop_width > 0 && config.desktop_height > 0) {
+      // Packed captures and collaboration use full-desktop input coordinates.
       // A packed capture rearranges only the video. A client presenting it
       // in separate windows sends pointer and touch positions in desktop
       // coordinates with the desktop bounding box as the reference size, so

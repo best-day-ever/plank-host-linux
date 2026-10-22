@@ -83,6 +83,8 @@ namespace stream {
      */
     void stop(session_t &session, std::uint32_t termination_reason);
     void notify_desktop_handoff(session_t &session);
+    /** @brief Permit session events only after the native setup response has been sent. */
+    void notify_negotiated(session_t &session);
     /**
      * @brief Wait for worker threads owned by the session to exit.
      *

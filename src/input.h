@@ -37,6 +37,9 @@ namespace input {
    */
   void reset(std::shared_ptr<input_t> &input, std::uint64_t connection_id);
 
+  /** @brief Discard a disconnected guest's ephemeral input state; owner devices stay retained. */
+  void forget(const std::string &session_id);
+
   /**
    * @brief Queue a raw input message for platform passthrough.
    */
@@ -68,9 +71,10 @@ namespace input {
    * @param mail Mailbox used to exchange messages with worker threads.
    * @param session_id Internal desktop identity shared by launch and resume connections.
    * @param connection_id Receives the lease identifying this stream binding.
+   * @param prepare_desktop Whether to create pen devices, normalize Num Lock, and nudge the pointer (owner only).
    * @return Shared input state bound to the stream mailbox.
    */
-  std::shared_ptr<input_t> alloc(safe::mail_t mail, std::string session_id, std::uint64_t &connection_id);
+  std::shared_ptr<input_t> alloc(safe::mail_t mail, std::string session_id, std::uint64_t &connection_id, bool prepare_desktop = true);
 
 #ifdef SUNSHINE_TESTS
   namespace testing {

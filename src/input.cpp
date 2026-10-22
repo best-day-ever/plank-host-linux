@@ -173,8 +173,10 @@ namespace input {
   // lease changes and cleanup explicitly; a generation check alone is not a
   // barrier against a new connection attaching while cleanup is in progress.
   static std::mutex input_state_mutex;
-  static std::unordered_map<key_press_id_t, bool> key_press {};
-  static std::array<std::uint8_t, 5> mouse_press {};
+  static std::unordered_map<key_press_id_t, unsigned> key_press {};
+  static std::uint64_t key_repeat_generation {};  ///< Invalidates callbacks already dequeued when repeat is cancelled.
+  static input_t *key_repeat_owner {};  ///< Participant whose keyboard repeat task is active.
+  static std::array<std::uint8_t, BUTTON_X2 + 1> mouse_press {};
 
   static platf::input_t platf_input;
   /**
@@ -196,13 +198,15 @@ namespace input {
      *
      * @param touch_port_event Event carrying the active touch port.
      * @param raw_hid_feedback_queue Queue used for raw tablet control requests.
+     * @param prepare_desktop Whether this owner input may create a normalized pen device.
      */
     input_t(
       safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event,
-      raw_hid::feedback_queue_t raw_hid_feedback_queue
+      raw_hid::feedback_queue_t raw_hid_feedback_queue,
+      bool prepare_desktop
     ):
         shortcutFlags {},
-        client_context {platf::allocate_client_input_context(platf_input)},
+        client_context {prepare_desktop ? platf::allocate_client_input_context(platf_input) : nullptr},
         touch_port_event {std::move(touch_port_event)},
         raw_hid_tablet {std::make_unique<raw_hid::tablet_t>(std::move(raw_hid_feedback_queue))},
         raw_hid_owns_tablet {false},
@@ -214,6 +218,8 @@ namespace input {
 
     // Keep track of alt+ctrl+shift key combo
     int shortcutFlags;  ///< Shortcut flags.
+    std::unordered_map<key_press_id_t, bool> held_keys;  ///< Keys held by this participant only.
+    std::array<bool, BUTTON_X2 + 1> held_mouse {};  ///< Mouse buttons held by this participant only.
 
     bool left_alt_pressed = false;  ///< Tracks whether the left Alt key is currently pressed.
     bool right_alt_pressed = false;  ///< Tracks whether the right Alt key is currently pressed.
@@ -678,13 +684,15 @@ namespace input {
 
     auto release = util::endian::little(packet->header.magic) == MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5;
     auto button = util::endian::big(packet->button);
-    if (button > 0 && button < mouse_press.size()) {
-      if (mouse_press[button] != release) {
-        // button state is already what we want
-        return;
+    if (button <= 0 || button >= mouse_press.size()) return;
+    {
+      if (input->held_mouse[button] == !release) return;
+      input->held_mouse[button] = !release;
+      if (!release) {
+        if (mouse_press[button]++ != 0) return;
+      } else {
+        if (mouse_press[button] == 0 || --mouse_press[button] != 0) return;
       }
-
-      mouse_press[button] = !release;
     }
     // PLANK sends explicit button transitions. Preserve their order without
     // delaying left releases or synthesizing right clicks between transitions.
@@ -813,17 +821,16 @@ namespace input {
    * @param flags Bit flags that modify the requested operation.
    * @param synthetic_modifiers Synthetic modifiers.
    */
-  void repeat_key(uint16_t key_code, uint8_t flags, uint8_t synthetic_modifiers) {
+  void repeat_key(std::weak_ptr<input_t> weak_input, std::uint64_t connection,
+                  std::uint64_t generation, uint16_t key_code, uint8_t flags, uint8_t synthetic_modifiers) {
     std::lock_guard lock {input_state_mutex};
-    // If key no longer pressed, stop repeating
-    if (!key_press[make_kpid(key_code, flags)]) {
-      key_press_repeat_id = nullptr;
-      return;
-    }
-
+    const auto input = weak_input.lock();
+    // Cancellation also invalidates tasks already dequeued or waiting on the input lock.
+    if (!input || key_repeat_owner != input.get() || key_repeat_generation != generation ||
+        input->connection_id.load() != connection || !input->held_keys[make_kpid(key_code, flags)]) return;
     send_key_and_modifiers(key_code, false, flags, synthetic_modifiers);
-
-    key_press_repeat_id = task_pool.pushDelayed(repeat_key, config::input.key_repeat_period, key_code, flags, synthetic_modifiers).task_id;
+    key_press_repeat_id = task_pool.pushDelayed(repeat_key, config::input.key_repeat_period,
+      weak_input, connection, generation, key_code, flags, synthetic_modifiers).task_id;
   }
 
   /**
@@ -880,7 +887,8 @@ namespace input {
       }
     }
 
-    auto &pressed = key_press[make_kpid(keyCode, packet->flags)];
+    const auto key_id = make_kpid(keyCode, packet->flags);
+    auto &pressed = input->held_keys[key_id];
     if (!pressed) {
       if (!release) {
         // A new key has been pressed down, we need to check for key combo's
@@ -894,7 +902,11 @@ namespace input {
         }
 
         if (config::input.key_repeat_delay.count() > 0) {
-          key_press_repeat_id = task_pool.pushDelayed(repeat_key, config::input.key_repeat_delay, keyCode, packet->flags, synthetic_modifiers).task_id;
+          key_repeat_owner = input.get();
+          const auto repeat_generation = ++key_repeat_generation;
+          key_press_repeat_id = task_pool.pushDelayed(repeat_key, config::input.key_repeat_delay,
+            std::weak_ptr<input_t> {input}, input->connection_id.load(), repeat_generation,
+            keyCode, packet->flags, synthetic_modifiers).task_id;
         }
       } else {
         // Already released
@@ -907,9 +919,14 @@ namespace input {
 
     pressed = !release;
 
-    send_key_and_modifiers(keyCode, release, packet->flags, synthetic_modifiers);
-
     update_shortcutFlags(&input->shortcutFlags, map_keycode(keyCode), release);
+    auto &owners = key_press[key_id];
+    if (!release) {
+      if (owners++ != 0) return;
+    } else {
+      if (owners == 0 || --owners != 0) return;
+    }
+    send_key_and_modifiers(keyCode, release, packet->flags, synthetic_modifiers);
   }
 
   /**
@@ -1503,18 +1520,34 @@ namespace input {
    * @param input Retained stream input state to reset.
    */
   void reset_input_state(const std::shared_ptr<input_t> &input, const std::uint64_t connection_id) {
-    if (input->connection_id.load() != connection_id) {
+    if (!input || input->connection_id.load() != connection_id) {
       BOOST_LOG(debug) << "Skipping stale input reset for connection "sv << connection_id;
       return;
     }
 
-    task_pool.cancel(key_press_repeat_id);
-    reset_mouse_buttons();
-    reset_keyboard_keys();
+    if (key_repeat_owner == input.get()) {
+      task_pool.cancel(key_press_repeat_id);
+      key_repeat_owner = nullptr;
+      ++key_repeat_generation;
+    }
+    for (std::size_t button = 0; button < input->held_mouse.size(); ++button) {
+      if (input->held_mouse[button]) {
+        input->held_mouse[button] = false;
+        if (mouse_press[button] > 0 && --mouse_press[button] == 0) platf::button_mouse(platf_input, button, true);
+      }
+    }
+    for (auto &[key, held] : input->held_keys) {
+      if (held) {
+        held = false;
+        auto &owners = key_press[key];
+        if (owners > 0 && --owners == 0) platf::keyboard_update(platf_input, vk_from_kpid(key) & 0x00FF, true, flags_from_kpid(key));
+      }
+    }
+    input->shortcutFlags = 0; input->left_alt_pressed = false; input->right_alt_pressed = false;
     platf::pen_input_t pen {};
     pen.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
     pen.toolType = LI_TOOL_TYPE_UNKNOWN;
-    platf::pen_update(input->client_context.get(), {}, pen);
+    if (input->client_context) platf::pen_update(input->client_context.get(), {}, pen);
     // Keep the host UHID/XInput endpoints stable across stream reservations.
     // The replacement transport must re-present the same USB
     // identity and descriptors before tablet reports are accepted again.
@@ -1527,6 +1560,12 @@ namespace input {
   void reset(std::shared_ptr<input_t> &input, const std::uint64_t connection_id) {
     std::lock_guard lock {input_state_mutex};
     reset_input_state(input, connection_id);
+  }
+
+  void forget(const std::string &session_id) {
+    auto &state = retained_input_state();
+    std::lock_guard lock {state.mutex};
+    state.inputs.erase(session_id);
   }
 
   namespace {
@@ -1586,7 +1625,7 @@ namespace input {
   /**
    * @brief Allocate and initialize platform input state for a stream.
    */
-  std::shared_ptr<input_t> alloc(safe::mail_t mail, std::string session_id, std::uint64_t &connection_id) {
+  std::shared_ptr<input_t> alloc(safe::mail_t mail, std::string session_id, std::uint64_t &connection_id, bool prepare_desktop) {
     std::lock_guard state_lock {input_state_mutex};
     std::shared_ptr<input_t> input;
     bool resumed = false;
@@ -1600,7 +1639,8 @@ namespace input {
       } else {
         input = std::make_shared<input_t>(
           mail->event<input::touch_port_t>(mail::touch_port),
-          mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback)
+          mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback),
+          prepare_desktop
         );
         state.inputs.try_emplace(std::move(session_id), input);
       }
@@ -1622,6 +1662,7 @@ namespace input {
       rebind_input(input, mail);
     }
 
+    if (!prepare_desktop) return input;
     if (!enable_num_lock()) {
       BOOST_LOG(debug) << "Num Lock will be enabled when the authenticated X11 desktop becomes available"sv;
     }

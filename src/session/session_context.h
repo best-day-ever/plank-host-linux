@@ -280,6 +280,12 @@ namespace plank::session {
   /** Owner of the attested active seat0 user desktop, or no value at the greeter. */
   std::optional<uid_t> attached_desktop_owner();
 
+  /** @brief Return the attested desktop owner only while logind confirms it is unlocked. */
+  std::optional<uid_t> unlocked_desktop_owner();
+
+  /** @brief Ask the root supervisor to start the fixed consent helper as the active desktop owner. */
+  bool request_collaboration_ui();
+
   /**
    * End the attested active seat0 user desktop through logind TerminateSession.
    *
