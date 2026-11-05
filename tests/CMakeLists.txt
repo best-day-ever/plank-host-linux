@@ -98,6 +98,11 @@ endif()
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
         ${CMAKE_SOURCE_DIR}/tests/*.h
         ${CMAKE_SOURCE_DIR}/tests/*.cpp)
+# This fixture replaces session_context symbols and owns /run/plank. Keep it
+# isolated from the real Host sources and run it with collaboration/run-monitor.sh
+# in a disposable Linux container instead of the ordinary test executable.
+list(REMOVE_ITEM TEST_SOURCES
+        ${CMAKE_SOURCE_DIR}/tests/collaboration/test_monitor.cpp)
 # Add macOS-specific test files only when building tests for macOS
 if (APPLE)
     file(GLOB_RECURSE MACOS_TEST_SOURCES CONFIGURE_DEPENDS
