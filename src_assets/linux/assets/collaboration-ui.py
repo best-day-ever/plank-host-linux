@@ -3,8 +3,9 @@
 
 The root worker authenticates this process with SO_PEERCRED. This fixed helper
 has no network listener, bearer token, grant, or root privileges. Closing it
-revokes all participants. Sensitive buttons appear only after the worker has
-acknowledged suspension of all collaborator input.
+revokes consent-based participants. Administrator support is independently
+authorized. Sensitive buttons appear only after the worker has acknowledged
+suspension of all collaborator input.
 """
 import json
 import os
@@ -98,21 +99,24 @@ class Consent:
             self.signature = signature
             for child in self.rows.get_children():
                 self.rows.remove(child)
-            title = Gtk.Label(label="Only you can approve access. Close this app to end sharing.")
+            title = Gtk.Label(label="You control ordinary guest access. Administrator support does not require approval.")
             title.set_line_wrap(True)
             self.rows.pack_start(title, False, False, 0)
             for item in requests:
                 box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
                 state = item.get("state", "pending")
                 name = item.get("guest_name", "Another user")
-                label = Gtk.Label(label=f"{name} — " + {
+                support = item.get("support") is True
+                label = Gtk.Label(label=f"{name} — " + ("administrator support (can interact)" if support else {
                     "pending": "requests to join your desktop", "view": "view only", "control": "can interact"
-                }.get(state, state))
+                }.get(state, state)))
                 label.set_xalign(0)
                 box.pack_start(label, False, False, 0)
                 buttons = Gtk.Box(spacing=8)
                 actions = [("Decline", "deny"), ("Allow view only", "view"), ("Allow interaction", "control")] if state == "pending" else [
                     ("View only", "view"), ("Allow interaction", "control"), ("Disconnect", "revoke")]
+                if support:
+                    actions = []
                 for text, permission in actions:
                     button = Gtk.Button(label=text)
                     button.connect("clicked", self.decide, item["request_id"], permission)

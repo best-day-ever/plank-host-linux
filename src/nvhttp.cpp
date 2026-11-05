@@ -554,6 +554,13 @@ namespace nvhttp {
                      entitlement.gr_gid) != memberships.begin() + count;
   }
 
+  /** @brief Resolve support authority from the authenticated account and explicit host policy. */
+  bool collaboration_support_authorized(uid_t uid) {
+    const auto &group = config::sunshine.collaboration_support_group;
+    // Empty means disabled here; clipboard's empty-group policy is different.
+    return plank::collaboration::support_authorized(uid, group, account_in_group);
+  }
+
   void apply_clipboard_entitlements(session_stream::launch_session_t &session, uid_t uid) {
     const bool text = account_in_group(uid, config::sunshine.clipboard_entitlement_group);
     const bool files = text && account_in_group(uid, config::sunshine.file_clipboard_entitlement_group);
@@ -1693,10 +1700,12 @@ namespace nvhttp {
       if (!body.is_object()) { write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request, {{"state", "invalid-request"}}); return; }
       state.refresh(&desktop, state.ui_connected, std::chrono::steady_clock::now());
       const auto item = state.add(*uid, account_name(*uid), desktop,
-        plank::auth::secure_random_hex(32), plank::auth::secure_random_hex(32), std::chrono::steady_clock::now());
+        plank::auth::secure_random_hex(32), plank::auth::secure_random_hex(32), std::chrono::steady_clock::now(),
+        collaboration_support_authorized(*uid));
       if (!item) { write_auth_json(response, SimpleWeb::StatusCode::client_error_conflict, {{"state", "unavailable"}}); return; }
       write_auth_json(response, SimpleWeb::StatusCode::success_ok,
-        {{"request_id", item->id}, {"state", plank::collaboration::permission_name(item->lease->permission)}, {"expires_in", 120}}); return;
+        // Preserve the request acknowledgement contract; status returns the effective permission.
+        {{"request_id", item->id}, {"state", "pending"}, {"expires_in", 120}}); return;
     }
     const auto args = request->parse_query_string();
     auto body = request->method == "GET" ? nlohmann::json::object() : read_auth_json(request);
@@ -1708,10 +1717,12 @@ namespace nvhttp {
     const auto id = request->method == "GET" ? get_arg(args, "request_id", "") : body.value("request_id", std::string {});
     if (id.size() > 64) { write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request, {{"state", "invalid-request"}}); return; }
     const auto item = state.find(id, *uid);
+    state.refresh(&desktop, state.ui_connected, std::chrono::steady_clock::now());
+    if (item && item->support && item->guest == *uid && !collaboration_support_authorized(*uid)) state.ended(item->lease);
     if (request->path == "/plank/collaboration/status" && id.empty() && *uid == *owner) {
       nlohmann::json result {{"requests", nlohmann::json::array()}};
       for (const auto &entry : state.requests()) if (entry->desktop == desktop) result["requests"].push_back({
-        {"request_id", entry->id}, {"guest_name", entry->guest_name}, {"state", plank::collaboration::permission_name(entry->lease->permission)}});
+        {"request_id", entry->id}, {"guest_name", entry->guest_name}, {"state", plank::collaboration::permission_name(entry->lease->permission)}, {"support", entry->support}});
       write_auth_json(response, SimpleWeb::StatusCode::success_ok, result); return;
     }
     if (!item || item->desktop != desktop) { write_auth_json(response, SimpleWeb::StatusCode::client_error_not_found, {{"state", "revoked"}}); return; }
@@ -1740,7 +1751,7 @@ namespace nvhttp {
     write_auth_json(response, SimpleWeb::StatusCode::success_ok, result);
   }
 
-  /** @brief Launch a guest solely from owner consent and a read-only capture snapshot. */
+  /** @brief Launch a guest from host-authorized consent/support and a read-only capture snapshot. */
   void launch_collaborator(const req_https_t &request, const args_t &args, uid_t uid, pt::ptree &tree) {
     using namespace plank::collaboration;
     tree.put("root.gamesession", 0);
@@ -1752,7 +1763,9 @@ namespace nvhttp {
     std::shared_ptr<request_t> consent;
     {
       auto &state = registry(); std::lock_guard lock {state.mutex};
-      if (state.ui_connected) consent = state.claim(get_arg(args, "plankCollaboration", ""), uid, desktop, std::chrono::steady_clock::now());
+      state.refresh(&desktop, state.ui_connected, std::chrono::steady_clock::now());
+      consent = state.claim(get_arg(args, "plankCollaboration", ""), uid, desktop, std::chrono::steady_clock::now(),
+        collaboration_support_authorized(uid));
     }
     if (!consent) { tree.put("root.<xmlattr>.status_code", 403); tree.put("root.<xmlattr>.status_message", "Collaboration approval expired or was revoked"); return; }
     bool accepted = false;
@@ -1802,6 +1815,7 @@ namespace nvhttp {
     tree.put("root.PlankClipboardSync", 0); tree.put("root.PlankFileClipboardMode", "off");
     tree.put("root.PlankEffectiveFeatureFlags", guest->plank_feature_flags);
     tree.put("root.PlankCollaborationPermission", permission_name(consent->lease->permission));
+    if (consent->support) BOOST_LOG(info) << "Collaboration support join: guest UID " << uid << ", owner UID " << *owner;
     session_stream::launch_session_raise(guest); accepted = true;
   }
 

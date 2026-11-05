@@ -74,9 +74,9 @@ class ConsentControls(unittest.TestCase):
         for patch in reversed(self.patches):
             patch.stop()
 
-    def snapshot(self, state="pending", panel_open=False):
+    def snapshot(self, state="pending", panel_open=False, support=False):
         self.channel.packet = json.dumps({"panel_open": panel_open, "requests": [{
-            "request_id": "a" * 64, "guest_name": "support", "state": state, "connected": False,
+            "request_id": "a" * 64, "guest_name": "support", "state": state, "connected": False, "support": support,
         }]}).encode()
         self.ui.receive(42, GLib.IO_IN)
 
@@ -104,6 +104,17 @@ class ConsentControls(unittest.TestCase):
         self.assertFalse(self.ui.panel.get_visible())
         self.assertFalse(self.ui.panel_acknowledged)
         self.assertEqual(self.channel.sent[-1], {"panel_open": False})
+
+    def test_support_is_visible_without_owner_permission_controls(self):
+        self.snapshot(state="control", support=True)
+        self.assertTrue(self.ui.indicator.get_visible())
+        self.assertFalse(self.ui.panel_requested)
+        self.ui.open_panel()
+        self.snapshot(state="control", panel_open=True, support=True)
+        participant = self.ui.rows.get_children()[1]
+        label, buttons = participant.get_children()
+        self.assertIn("administrator support", label.get_text())
+        self.assertEqual(buttons.get_children(), [])
 
     def test_indicator_close_and_lost_worker_close_authority_channel(self):
         self.ui.quit()
