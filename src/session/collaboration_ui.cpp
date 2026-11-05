@@ -40,24 +40,27 @@ namespace plank::collaboration {
       peer = -1; panel_open = false; peer_desktop.reset();
       auto &state = registry();
       std::lock_guard lock {state.mutex};
-      state.ui_connected = false;
-      state.revoke_all();
+      state.helper_disconnected();
     }
-    /** @brief Poll bounded local packets and publish a participant heartbeat. */
-    void run(std::stop_token stop) {
+    /** @brief Open the owner channel; lifecycle monitoring must survive a channel failure. */
+    void open_listener() {
       listener = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
       if (listener < 0) return;
       sockaddr_un address {}; address.sun_family = AF_UNIX;
       std::strncpy(address.sun_path, socket_path, sizeof(address.sun_path) - 1);
       struct stat previous {};
       if (lstat(socket_path, &previous) == 0) {
-        if (previous.st_uid != 0 || !S_ISSOCK(previous.st_mode)) { close(listener); return; }
+        if (previous.st_uid != 0 || !S_ISSOCK(previous.st_mode)) { close(listener); listener = -1; return; }
         unlink(socket_path);
       }
       if (bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 ||
           chmod(socket_path, 0666) != 0 || listen(listener, 4) != 0) {
         close(listener); listener = -1; return;
       }
+    }
+    /** @brief Monitor desktop revocation even when the owner channel cannot be opened. */
+    void run(std::stop_token stop) {
+      open_listener();
       auto heartbeat = std::chrono::steady_clock::now();
       auto requested = heartbeat - std::chrono::seconds {15};
       while (!stop.stop_requested()) {
@@ -93,7 +96,7 @@ namespace plank::collaboration {
           }
         }
         if (peer >= 0 && (!current || now - heartbeat > std::chrono::seconds {3})) disconnect();
-        bool pending = false;
+        bool needs_indicator = false;
         nlohmann::json snapshot {{"requests", nlohmann::json::array()}, {"panel_open", panel_open}};
         {
           auto &state = registry(); std::lock_guard lock {state.mutex};
@@ -102,14 +105,15 @@ namespace plank::collaboration {
           for (const auto &request : state.requests()) {
             if (!current || request->desktop != *current) continue;
             const auto permission = request->lease->permission.load();
-            pending |= permission == permission_t::pending;
+            needs_indicator |= permission == permission_t::pending ||
+                               (request->support && permission == permission_t::control);
             if (permission == permission_t::pending || permission == permission_t::view || permission == permission_t::control) {
               snapshot["requests"].push_back({{"request_id", request->id}, {"guest_name", request->guest_name},
-                                              {"state", permission_name(permission)}, {"connected", request->lease->claimed}});
+                                              {"state", permission_name(permission)}, {"connected", request->lease->claimed}, {"support", request->support}});
             }
           }
         }
-        if (pending && peer < 0 && current && now - requested >= std::chrono::seconds {10}) {
+        if (needs_indicator && peer < 0 && current && now - requested >= std::chrono::seconds {10}) {
           session::request_collaboration_ui(); requested = now;
         }
         if (peer >= 0) {
@@ -118,7 +122,11 @@ namespace plank::collaboration {
           if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) disconnect();
         }
       }
-      disconnect(); close(listener); unlink(socket_path);
+      disconnect();
+      if (listener >= 0) { close(listener); unlink(socket_path); }
+      auto &state = registry();
+      std::lock_guard lock {state.mutex};
+      state.revoke_all();
     }
   };
   ui_t::ui_t(): impl_ {std::make_unique<impl_t>()} {}
