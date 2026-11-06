@@ -211,3 +211,40 @@ TEST(CollaborationSupport, NewSupportRequestCannotUnsuspendAnOpenOwnerPanel) {
   EXPECT_FALSE(ordinary->lease->input_suspended);
   EXPECT_FALSE(support->lease->input_suspended);
 }
+
+TEST(CollaborationPolicy, WorkstationAccessSufficesWhenOwnerApprovalIsDisabled) {
+  bool consulted_group = false;
+  const auto member = [&](uid_t, const std::string &) { consulted_group = true; return false; };
+  EXPECT_TRUE(automatic_join_authorized(1002, false, "", member));
+  EXPECT_TRUE(automatic_join_authorized(1003, false, "support-admins", member));
+  EXPECT_FALSE(consulted_group);
+  EXPECT_FALSE(automatic_join_authorized(std::nullopt, false, "support-admins", member));
+}
+TEST(CollaborationPolicy, ConsentModeStillRequiresExplicitSupportMembership) {
+  const auto member = [](uid_t uid, const std::string &group) { return uid == 1002 && group == "support-admins"; };
+  EXPECT_FALSE(automatic_join_authorized(1003, true, "support-admins", member));
+  EXPECT_FALSE(automatic_join_authorized(1002, true, "", member));
+  EXPECT_FALSE(automatic_join_authorized(std::nullopt, true, "support-admins", member));
+  EXPECT_TRUE(automatic_join_authorized(1002, true, "support-admins", member));
+}
+TEST(CollaborationPolicy, AuthorizedNonAdminJoinsWithoutOwnerOrHelperAndPolicyIsRechecked) {
+  registry_t state;
+  const auto not_a_member = [](uid_t, const std::string &) { return false; };
+  const bool authorized = automatic_join_authorized(1002, false, "support-admins", not_a_member);
+  auto entry = state.add(1002, "artist", owner, "id", "grant", now, authorized);
+  ASSERT_TRUE(entry);
+  EXPECT_EQ(entry->lease->permission, permission_t::control);
+  EXPECT_FALSE(state.decide(entry->id, owner.owner, owner, permission_t::denied));
+  EXPECT_FALSE(state.decide(entry->id, owner.owner, owner, permission_t::view));
+  EXPECT_FALSE(state.decide(entry->id, owner.owner, owner, permission_t::revoked));
+  state.helper_disconnected();
+  EXPECT_EQ(entry->lease->permission, permission_t::control);
+  EXPECT_FALSE(state.claim(entry->grant, 1003, owner, now, authorized));
+  EXPECT_TRUE(state.claim(entry->grant, 1002, owner, now, authorized));
+  auto second = state.add(1003, "artist", owner, "id2", "grant2", now, authorized);
+  ASSERT_TRUE(second);
+  EXPECT_FALSE(state.claim(second->grant, 1003, owner, now,
+    automatic_join_authorized(1003, true, "support-admins", not_a_member)));
+  state.refresh(nullptr, false, now);
+  EXPECT_EQ(entry->lease->permission, permission_t::revoked);
+}

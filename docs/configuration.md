@@ -182,6 +182,24 @@ authenticated session, so it also requires `clipboard_entitlement_group`
 membership when that group is set. A failed lookup denies file transfer for
 that session. An empty value preserves the Host's existing policy.
 
+## Collaboration
+
+### collaboration_require_approval
+
+Whether a user who has already passed Host authentication and workstation access
+policy also needs the current desktop owner's approval. Defaults to `true`.
+Set `false` to grant interaction automatically on the current unlocked desktop.
+Owners cannot deny, downgrade or revoke these automatic grants. Locks, logout,
+exact desktop binding, grant expiry and guest-channel restrictions still apply.
+This setting does not grant workstation access or bypass PAM/SSSD/HBAC.
+
+### collaboration_support_group
+
+Optional OS/NSS group whose authenticated members may join without owner approval
+even when `collaboration_require_approval` is `true`. Defaults to empty (disabled).
+Group lookup failures and nonmembership never grant this exception. When approval
+is disabled for all authorized workstation users, no group lookup is required.
+
 ## Display
 
 ### startup_layout

@@ -554,11 +554,11 @@ namespace nvhttp {
                      entitlement.gr_gid) != memberships.begin() + count;
   }
 
-  /** @brief Resolve support authority from the authenticated account and explicit host policy. */
-  bool collaboration_support_authorized(uid_t uid) {
+  /** @brief Resolve the approval exemption after authenticated workstation access. */
+  bool collaboration_automatic_join_authorized(uid_t uid) {
     const auto &group = config::sunshine.collaboration_support_group;
-    // Empty means disabled here; clipboard's empty-group policy is different.
-    return plank::collaboration::support_authorized(uid, group, account_in_group);
+    return plank::collaboration::automatic_join_authorized(
+      uid, config::sunshine.collaboration_require_approval, group, account_in_group);
   }
 
   void apply_clipboard_entitlements(session_stream::launch_session_t &session, uid_t uid) {
@@ -1701,7 +1701,7 @@ namespace nvhttp {
       state.refresh(&desktop, state.ui_connected, std::chrono::steady_clock::now());
       const auto item = state.add(*uid, account_name(*uid), desktop,
         plank::auth::secure_random_hex(32), plank::auth::secure_random_hex(32), std::chrono::steady_clock::now(),
-        collaboration_support_authorized(*uid));
+        collaboration_automatic_join_authorized(*uid));
       if (!item) { write_auth_json(response, SimpleWeb::StatusCode::client_error_conflict, {{"state", "unavailable"}}); return; }
       write_auth_json(response, SimpleWeb::StatusCode::success_ok,
         // Preserve the request acknowledgement contract; status returns the effective permission.
@@ -1718,7 +1718,7 @@ namespace nvhttp {
     if (id.size() > 64) { write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request, {{"state", "invalid-request"}}); return; }
     const auto item = state.find(id, *uid);
     state.refresh(&desktop, state.ui_connected, std::chrono::steady_clock::now());
-    if (item && item->support && item->guest == *uid && !collaboration_support_authorized(*uid)) state.ended(item->lease);
+    if (item && item->support && item->guest == *uid && !collaboration_automatic_join_authorized(*uid)) state.ended(item->lease);
     if (request->path == "/plank/collaboration/status" && id.empty() && *uid == *owner) {
       nlohmann::json result {{"requests", nlohmann::json::array()}};
       for (const auto &entry : state.requests()) if (entry->desktop == desktop) result["requests"].push_back({
@@ -1765,7 +1765,7 @@ namespace nvhttp {
       auto &state = registry(); std::lock_guard lock {state.mutex};
       state.refresh(&desktop, state.ui_connected, std::chrono::steady_clock::now());
       consent = state.claim(get_arg(args, "plankCollaboration", ""), uid, desktop, std::chrono::steady_clock::now(),
-        collaboration_support_authorized(uid));
+        collaboration_automatic_join_authorized(uid));
     }
     if (!consent) { tree.put("root.<xmlattr>.status_code", 403); tree.put("root.<xmlattr>.status_message", "Collaboration approval expired or was revoked"); return; }
     bool accepted = false;
@@ -1815,7 +1815,7 @@ namespace nvhttp {
     tree.put("root.PlankClipboardSync", 0); tree.put("root.PlankFileClipboardMode", "off");
     tree.put("root.PlankEffectiveFeatureFlags", guest->plank_feature_flags);
     tree.put("root.PlankCollaborationPermission", permission_name(consent->lease->permission));
-    if (consent->support) BOOST_LOG(info) << "Collaboration support join: guest UID " << uid << ", owner UID " << *owner;
+    if (consent->support) BOOST_LOG(info) << "Collaboration policy-authorized join: guest UID " << uid << ", owner UID " << *owner;
     session_stream::launch_session_raise(guest); accepted = true;
   }
 

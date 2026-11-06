@@ -113,7 +113,7 @@ class ConsentControls(unittest.TestCase):
         self.snapshot(state="control", panel_open=True, support=True)
         participant = self.ui.rows.get_children()[1]
         label, buttons = participant.get_children()
-        self.assertIn("administrator support", label.get_text())
+        self.assertIn("support", label.get_text())  # The authenticated participant remains identifiable.
         self.assertEqual(buttons.get_children(), [])
 
     def test_indicator_close_and_lost_worker_close_authority_channel(self):

@@ -291,6 +291,7 @@ namespace config {
     std::string file_clipboard;  ///< Maximum file clipboard direction policy; off by default.
     std::string clipboard_entitlement_group;  ///< Optional OS group required for text clipboard sync.
     std::string file_clipboard_entitlement_group;  ///< Optional OS group required for file clipboard transfer.
+    bool collaboration_require_approval;  ///< Require owner consent after workstation authentication; support group may override.
     std::string collaboration_support_group;  ///< OS group allowed to join without owner consent; empty disables it.
     bool desktop_handoff;  ///< Sign PLANK logins into GDM, unlock the owner's desktop, offer sign-out of an idle owner.
   };

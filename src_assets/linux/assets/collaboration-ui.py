@@ -99,7 +99,7 @@ class Consent:
             self.signature = signature
             for child in self.rows.get_children():
                 self.rows.remove(child)
-            title = Gtk.Label(label="You control ordinary guest access. Administrator support does not require approval.")
+            title = Gtk.Label(label="Workstation policy authorizes some participants automatically. Other guests need your approval.")
             title.set_line_wrap(True)
             self.rows.pack_start(title, False, False, 0)
             for item in requests:
@@ -107,7 +107,7 @@ class Consent:
                 state = item.get("state", "pending")
                 name = item.get("guest_name", "Another user")
                 support = item.get("support") is True
-                label = Gtk.Label(label=f"{name} — " + ("administrator support (can interact)" if support else {
+                label = Gtk.Label(label=f"{name} — " + ("authorized access (can interact)" if support else {
                     "pending": "requests to join your desktop", "view": "view only", "control": "can interact"
                 }.get(state, state)))
                 label.set_xalign(0)

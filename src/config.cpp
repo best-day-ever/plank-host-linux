@@ -866,6 +866,7 @@ namespace config {
     "off",  // PLANK file clipboard policy
     "",  // no text clipboard group requirement unless configured
     "",  // no file clipboard group requirement unless configured
+    true,  // require owner consent unless workstation policy explicitly allows automatic joining
     "",  // no collaboration support override unless configured
     false,  // PLANK greeter sign-in, owner unlock and idle-owner sign-out
   };
@@ -1603,6 +1604,7 @@ namespace config {
                          "bidirectional"sv});
     string_f(vars, "clipboard_entitlement_group", sunshine.clipboard_entitlement_group);
     string_f(vars, "file_clipboard_entitlement_group", sunshine.file_clipboard_entitlement_group);
+    bool_f(vars, "collaboration_require_approval", sunshine.collaboration_require_approval);
     string_f(vars, "collaboration_support_group", sunshine.collaboration_support_group);
 
     int port = sunshine.port;
