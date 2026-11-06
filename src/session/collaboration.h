@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 #include <sys/types.h>
@@ -38,7 +39,7 @@ namespace plank::collaboration {
     uid_t guest {};  ///< Authenticated guest UID, never supplied by the client.
     std::string guest_name;  ///< OS-resolved label shown to the owner.
     desktop_t desktop;  ///< Desktop identity bound to the grant.
-    bool support {};  ///< Server-attested support entitlement, never a client-selected role.
+    bool support {};  ///< Server-attested owner-approval exemption, never a client-selected role.
     std::chrono::steady_clock::time_point deadline;  ///< Pending/grant expiry.
     std::shared_ptr<lease_t> lease {std::make_shared<lease_t>()};  ///< Live permission.
   };
@@ -78,6 +79,10 @@ namespace plank::collaboration {
   /** @brief Require explicit configuration and an affirmative authenticated-account group lookup. */
   bool support_authorized(uid_t uid, const std::string &group,
                           const std::function<bool(uid_t, const std::string &)> &member);
+  /** @brief Determine owner-approval exemption only after PAM/HBAC workstation authentication. */
+  bool automatic_join_authorized(std::optional<uid_t> authenticated_uid, bool require_approval,
+                                 const std::string &support_group,
+                                 const std::function<bool(uid_t, const std::string &)> &member);
   /** @brief Return the stable wire spelling for a permission. */
   const char *permission_name(permission_t permission);
   /** @brief Process registry shared by HTTPS, the consent UI, and native streams. */

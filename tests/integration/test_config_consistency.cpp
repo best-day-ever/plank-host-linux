@@ -118,6 +118,8 @@ TEST(ConfigConsistencyTest, RuntimeOptionsMatchPlankProductPolicy) {
     "audio_sink",
     "cert",
     "clipboard_entitlement_group",
+    "collaboration_require_approval",
+    "collaboration_support_group",
     "desktop_handoff",
     "file_state",
     "file_clipboard",
