@@ -680,3 +680,44 @@ TEST_F(InputRetainedSessionTest, GuestExtraMouseButtonReleaseCannotReleaseOwners
   EXPECT_EQ(mouse->submit_count(), pressed + 1);
   EXPECT_FALSE(mouse->last_submitted_event().pressed);
 }
+
+#ifdef PLANK_TRANSPORT
+TEST_F(InputRetainedSessionTest, NativeGuestCannotStealDragWithEqualPerParticipantLeaseNumbers) {
+  std::uint64_t owner_lease, guest_lease;
+  auto owner = allocate("native-pointer-owner", owner_lease);
+  auto guest = allocate("native-pointer-guest", guest_lease);
+  drain_tasks();
+  ASSERT_EQ(owner_lease, guest_lease); // Stream lease counters are not globally unique.
+  std::uint8_t button[] {1, PLANK_TRANSPORT_INPUT_ACTION_PRESS};
+  ASSERT_TRUE(input::native(owner, PLANK_TRANSPORT_INPUT_MOUSE_BUTTON, button, sizeof(button)));
+  const auto pressed = mouse->submit_count();
+  ASSERT_TRUE(input::native(guest, PLANK_TRANSPORT_INPUT_MOUSE_BUTTON, button, sizeof(button)));
+  EXPECT_EQ(mouse->submit_count(), pressed);
+  button[1] = PLANK_TRANSPORT_INPUT_ACTION_RELEASE;
+  ASSERT_TRUE(input::native(guest, PLANK_TRANSPORT_INPUT_MOUSE_BUTTON, button, sizeof(button)));
+  EXPECT_EQ(mouse->submit_count(), pressed);
+  input::reset(owner, owner_lease);
+  EXPECT_EQ(mouse->submit_count(), pressed + 1);
+  button[1] = PLANK_TRANSPORT_INPUT_ACTION_PRESS;
+  ASSERT_TRUE(input::native(guest, PLANK_TRANSPORT_INPUT_MOUSE_BUTTON, button, sizeof(button)));
+  EXPECT_EQ(mouse->submit_count(), pressed + 2);
+}
+TEST_F(InputRetainedSessionTest, NativeOtherKeyboardCannotModifyDragButOwnReleasesStillWork) {
+  std::uint64_t owner_lease, guest_lease;
+  auto owner = allocate("native-drag-owner", owner_lease);
+  auto guest = allocate("native-drag-guest", guest_lease);
+  drain_tasks();
+  std::uint8_t key[PLANK_TRANSPORT_INPUT_KEYBOARD_SIZE] {};
+  key[0] = 0; key[1] = 0x41; key[2] = PLANK_TRANSPORT_INPUT_ACTION_PRESS;
+  ASSERT_TRUE(input::native(guest, PLANK_TRANSPORT_INPUT_KEYBOARD, key, sizeof(key)));
+  std::uint8_t button[] {1, PLANK_TRANSPORT_INPUT_ACTION_PRESS};
+  ASSERT_TRUE(input::native(owner, PLANK_TRANSPORT_INPUT_MOUSE_BUTTON, button, sizeof(button)));
+  const auto keys = keyboard->submit_count();
+  key[1] = 0x42;
+  ASSERT_TRUE(input::native(guest, PLANK_TRANSPORT_INPUT_KEYBOARD, key, sizeof(key)));
+  EXPECT_EQ(keyboard->submit_count(), keys);
+  key[1] = 0x41; key[2] = PLANK_TRANSPORT_INPUT_ACTION_RELEASE;
+  ASSERT_TRUE(input::native(guest, PLANK_TRANSPORT_INPUT_KEYBOARD, key, sizeof(key)));
+  EXPECT_EQ(keyboard->submit_count(), keys + 1);
+}
+#endif

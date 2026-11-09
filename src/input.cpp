@@ -38,6 +38,7 @@ extern "C" {
 #include "raw_hid_tablet.h"
 #include "logging.h"
 #include "platform/common.h"
+#include "pointer_arbitration.h"
 #include "platform/virtualhid_input.h"
 #include "thread_pool.h"
 #include "utility.h"
@@ -173,6 +174,7 @@ namespace input {
   // lease changes and cleanup explicitly; a generation check alone is not a
   // barrier against a new connection attaching while cleanup is in progress.
   static std::mutex input_state_mutex;
+  static pointer_arbitration_t pointer_driver;  ///< All native streams share one real desktop mouse.
   static std::unordered_map<key_press_id_t, unsigned> key_press {};
   static std::uint64_t key_repeat_generation {};  ///< Invalidates callbacks already dequeued when repeat is cancelled.
   static input_t *key_repeat_owner {};  ///< Participant whose keyboard repeat task is active.
@@ -1373,6 +1375,10 @@ namespace input {
         if (payload_size != PLANK_TRANSPORT_INPUT_ABSOLUTE_MOUSE_SIZE) {
           return false;
         }
+        const auto width = plank_transport_input_read_u16(payload + 4);
+        const auto height = plank_transport_input_read_u16(payload + 6);
+        if (!width || !height) return false;
+        if (!pointer_driver.accept(reinterpret_cast<std::uintptr_t>(input.get()), pointer_arbitration_t::clock::now())) return true;
         NV_ABS_MOUSE_MOVE_PACKET packet {};
         packet.header.magic = util::endian::little<std::uint32_t>(MOUSE_MOVE_ABS_MAGIC);
         packet.x = util::endian::big(plank_transport_input_read_u16(payload));
@@ -1388,6 +1394,13 @@ namespace input {
              payload[1] != PLANK_TRANSPORT_INPUT_ACTION_RELEASE)) {
           return false;
         }
+        const bool pressed = payload[1] == PLANK_TRANSPORT_INPUT_ACTION_PRESS;
+        if (payload[0] < 1 || payload[0] > BUTTON_X2) return false;
+        const auto connection = reinterpret_cast<std::uintptr_t>(input.get());
+        // Releases are always delivered through per-participant held-state
+        // accounting, even if another participant now owns the pointer.
+        if (pressed && !pointer_driver.accept(connection, pointer_arbitration_t::clock::now())) return true;
+        pointer_driver.button(connection, payload[0], pressed);
         NV_MOUSE_BUTTON_PACKET packet {};
         packet.header.magic = util::endian::little<std::uint32_t>(
           payload[1] == PLANK_TRANSPORT_INPUT_ACTION_PRESS ?
@@ -1401,6 +1414,7 @@ namespace input {
         if (payload_size != PLANK_TRANSPORT_INPUT_SCROLL_SIZE) {
           return false;
         }
+        if (!pointer_driver.accept(reinterpret_cast<std::uintptr_t>(input.get()), pointer_arbitration_t::clock::now())) return true;
         NV_SCROLL_PACKET packet {};
         packet.scrollAmt1 = util::endian::big(
           static_cast<std::int16_t>(plank_transport_input_read_u16(payload))
@@ -1412,6 +1426,7 @@ namespace input {
         if (payload_size != PLANK_TRANSPORT_INPUT_SCROLL_SIZE) {
           return false;
         }
+        if (!pointer_driver.accept(reinterpret_cast<std::uintptr_t>(input.get()), pointer_arbitration_t::clock::now())) return true;
         SS_HSCROLL_PACKET packet {};
         packet.scrollAmount = util::endian::big(
           static_cast<std::int16_t>(plank_transport_input_read_u16(payload))
@@ -1425,6 +1440,8 @@ namespace input {
              payload[2] != PLANK_TRANSPORT_INPUT_ACTION_RELEASE)) {
           return false;
         }
+        if (payload[2] == PLANK_TRANSPORT_INPUT_ACTION_PRESS &&
+            pointer_driver.dragging_elsewhere(reinterpret_cast<std::uintptr_t>(input.get()))) return true;
         NV_KEYBOARD_PACKET packet {};
         packet.header.magic = util::endian::little<std::uint32_t>(
           payload[2] == PLANK_TRANSPORT_INPUT_ACTION_PRESS ?
@@ -1525,6 +1542,7 @@ namespace input {
       return;
     }
 
+    pointer_driver.release(reinterpret_cast<std::uintptr_t>(input.get()));
     if (key_repeat_owner == input.get()) {
       task_pool.cancel(key_press_repeat_id);
       key_repeat_owner = nullptr;

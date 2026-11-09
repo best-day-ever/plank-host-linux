@@ -68,13 +68,15 @@ TEST(Collaboration, LockLogoutGenerationChangeAndHelperLossRevoke) {
     EXPECT_EQ(entry->lease->permission, permission_t::revoked);
   }
 }
-TEST(Collaboration, PendingConsentAndManagementPanelSuspendEveryGuest) {
+TEST(Collaboration, PendingRequestsDoNotSuspendUntilManagementPanelOpens) {
   registry_t state;
   const auto entry = request(state);
   ASSERT_TRUE(state.decide(entry->id, 1001, owner, permission_t::control));
   state.suspend(false);
   EXPECT_FALSE(entry->lease->input_suspended);
   auto pending = request(state, 1003);
+  EXPECT_FALSE(entry->lease->input_suspended);
+  state.suspend(true);
   EXPECT_TRUE(entry->lease->input_suspended);
   ASSERT_TRUE(state.decide(pending->id, 1001, owner, permission_t::denied));
   state.suspend(false);
@@ -247,4 +249,41 @@ TEST(CollaborationPolicy, AuthorizedNonAdminJoinsWithoutOwnerOrHelperAndPolicyIs
     automatic_join_authorized(1003, true, "support-admins", not_a_member)));
   state.refresh(nullptr, false, now);
   EXPECT_EQ(entry->lease->permission, permission_t::revoked);
+}
+
+#include "src/pointer_arbitration.h"
+
+TEST(CollaborationPointer, ActiveMovementCannotBeFoughtAndRejectedMotionDoesNotRenew) {
+  input::pointer_arbitration_t pointer;
+  const auto start = input::pointer_arbitration_t::clock::time_point {};
+  EXPECT_TRUE(pointer.accept(1, start));
+  for (int ms = 1; ms < 250; ++ms) EXPECT_FALSE(pointer.accept(2, start + std::chrono::milliseconds {ms}));
+  EXPECT_TRUE(pointer.accept(2, start + std::chrono::milliseconds {250}));
+  EXPECT_FALSE(pointer.accept(1, start + std::chrono::milliseconds {251}));
+}
+TEST(CollaborationPointer, DragCannotBeStolenAndDisconnectUnblocksImmediately) {
+  input::pointer_arbitration_t pointer;
+  const auto start = input::pointer_arbitration_t::clock::time_point {};
+  ASSERT_TRUE(pointer.accept(1, start));
+  pointer.button(1, 1, true);
+  EXPECT_FALSE(pointer.accept(2, start + std::chrono::hours {1}));
+  EXPECT_TRUE(pointer.dragging_elsewhere(2));
+  pointer.button(2, 1, false);
+  EXPECT_FALSE(pointer.accept(2, start + std::chrono::hours {1}));
+  pointer.release(2);
+  EXPECT_FALSE(pointer.accept(2, start + std::chrono::hours {1}));
+  pointer.release(1);
+  EXPECT_TRUE(pointer.accept(2, start));
+  EXPECT_FALSE(pointer.dragging_elsewhere(1));
+}
+TEST(CollaborationPointer, EveryAcceptedButtonMustBeReleasedBeforeHandoff) {
+  input::pointer_arbitration_t pointer;
+  const auto start = input::pointer_arbitration_t::clock::time_point {};
+  ASSERT_TRUE(pointer.accept(1, start));
+  pointer.button(1, 1, true); pointer.button(1, 5, true);
+  pointer.button(1, 1, false);
+  EXPECT_FALSE(pointer.accept(2, start + std::chrono::seconds {1}));
+  pointer.button(1, 5, false);
+  EXPECT_TRUE(pointer.accept(2, start + std::chrono::seconds {1}));
+  EXPECT_FALSE(pointer.accept(0, start + std::chrono::hours {1}));
 }
