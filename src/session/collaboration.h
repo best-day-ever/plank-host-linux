@@ -60,7 +60,7 @@ namespace plank::collaboration {
     /** @brief Revoke stale desktops, timeouts, and ordinary grants if the consent UI disappears. */
     void refresh(const desktop_t *desktop, bool ui_connected,
                  std::chrono::steady_clock::time_point now);
-    /** @brief Suspend guest interaction while pending consent or the owner management panel is open. */
+    /** @brief Suspend guest interaction before the owner management panel exposes controls. */
     void suspend(bool panel_open);
     /** @brief Revoke consent-based guests when their helper disconnects; support remains desktop-bound. */
     void helper_disconnected();

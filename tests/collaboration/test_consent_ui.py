@@ -100,9 +100,22 @@ class ConsentControls(unittest.TestCase):
     def test_done_hides_controls_before_reenabling_guest_input(self):
         self.snapshot()
         self.snapshot(state="control", panel_open=True)
+        self.assertFalse(self.ui.panel.get_visible())
+        self.assertFalse(self.ui.panel_requested)
         self.ui.close_panel()
         self.assertFalse(self.ui.panel.get_visible())
         self.assertFalse(self.ui.panel_acknowledged)
+        self.assertEqual(self.channel.sent[-1], {"panel_open": False})
+
+    def test_explicit_manage_stays_suspended_until_done(self):
+        self.snapshot(state="control")
+        self.ui.open_panel()
+        self.snapshot(state="control", panel_open=True)
+        self.assertTrue(self.ui.panel.get_visible())
+        self.assertTrue(self.ui.panel_acknowledged)
+        self.assertEqual(self.channel.sent[-1], {"panel_open": True})
+        self.ui.close_panel()
+        self.assertFalse(self.ui.panel.get_visible())
         self.assertEqual(self.channel.sent[-1], {"panel_open": False})
 
     def test_support_is_visible_without_owner_permission_controls(self):
@@ -110,7 +123,9 @@ class ConsentControls(unittest.TestCase):
         self.assertTrue(self.ui.indicator.get_visible())
         self.assertFalse(self.ui.panel_requested)
         self.ui.open_panel()
-        self.snapshot(state="control", panel_open=True, support=True)
+        self.assertEqual(self.channel.sent[-1], {"panel_open": False})
+        self.assertFalse(self.ui.panel_requested)
+        self.snapshot(state="control", support=True)
         participant = self.ui.rows.get_children()[1]
         label, buttons = participant.get_children()
         self.assertIn("support", label.get_text())  # The authenticated participant remains identifiable.

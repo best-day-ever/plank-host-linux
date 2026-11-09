@@ -32,6 +32,8 @@ class Consent:
         self.signature = None
         self.panel_requested = False
         self.panel_acknowledged = False
+        self.has_controls = False
+        self.auto_opened = False
         self.indicator = Gtk.Window(title="Fernweh collaboration")
         self.indicator.set_keep_above(True)
         self.indicator.set_resizable(False)
@@ -39,7 +41,7 @@ class Consent:
         self.indicator_button = Gtk.Button(label="Fernweh collaboration — Manage")
         self.indicator_button.connect("clicked", self.open_panel)
         self.indicator.add(self.indicator_button)
-        self.panel = Gtk.Window(title="Fernweh collaboration permissions")
+        self.panel = Gtk.Window(title="Fernweh session sharing")
         self.panel.set_keep_above(True)
         self.panel.set_default_size(470, 160)
         self.panel.connect("delete-event", self.close_panel)
@@ -59,12 +61,16 @@ class Consent:
 
     def open_panel(self, *_):
         """Ask the host to suspend guests before exposing permission buttons."""
+        if not self.has_controls:
+            self.panel.show_all()
+            return
         self.panel_requested = True
         self.send({"panel_open": True})
 
     def close_panel(self, *_):
         """Hide sensitive controls before allowing guest input again."""
         self.panel.hide()
+        self.auto_opened = False
         self.panel_requested = False
         self.panel_acknowledged = False
         self.send({"panel_open": False})
@@ -90,8 +96,15 @@ class Consent:
             return False
         self.last_message = time.monotonic()
         requests = body.get("requests", [])
-        pending = any(item.get("state") == "pending" for item in requests)
+        self.has_controls = any(item.get("support") is not True for item in requests)
+        pending = any(item.get("state") == "pending" and item.get("support") is not True for item in requests)
+        # A panel opened for one approval closes when that decision is reflected
+        # by the worker. Requiring an extra Done click leaves an approved guest
+        # unnecessarily view-only. Explicit Manage stays open until Done.
+        if self.panel_requested and ((self.auto_opened and not pending) or not self.has_controls):
+            self.close_panel()
         if pending and not self.panel_requested:
+            self.auto_opened = True
             self.open_panel()
         self.panel_acknowledged = body.get("panel_open") is True and self.panel_requested
         signature = json.dumps(requests, sort_keys=True)
@@ -99,7 +112,8 @@ class Consent:
             self.signature = signature
             for child in self.rows.get_children():
                 self.rows.remove(child)
-            title = Gtk.Label(label="Workstation policy authorizes some participants automatically. Other guests need your approval.")
+            title = Gtk.Label(label=("Guests below need your approval." if self.has_controls else
+                                     "These participants have workstation access and can use this desktop. No approval is needed."))
             title.set_line_wrap(True)
             self.rows.pack_start(title, False, False, 0)
             for item in requests:
@@ -126,8 +140,8 @@ class Consent:
             close = Gtk.Button(label="Done")
             close.connect("clicked", self.close_panel)
             self.rows.pack_start(close, False, False, 0)
-            self.indicator_button.set_label(f"Fernweh: {len(requests)} participant request(s) — Manage")
-        self.rows.set_sensitive(self.panel_acknowledged)
+            self.indicator_button.set_label(f"Fernweh: {len(requests)} participant(s) — " + ("Manage" if self.has_controls else "Participants"))
+        self.rows.set_sensitive(self.panel_acknowledged or not self.has_controls)
         if requests:
             self.indicator.show_all()
         else:

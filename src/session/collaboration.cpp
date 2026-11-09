@@ -113,12 +113,9 @@ namespace plank::collaboration {
   }
   void registry_t::suspend(bool panel_open) {
     panel_open_ = panel_open;
-    const bool pending = std::any_of(requests_.begin(), requests_.end(), [](const auto &request) {
-      return request->lease->permission == permission_t::pending;
-    });
     for (const auto &request : requests_) {
       std::lock_guard lock {request->lease->mutex};
-      const bool suspended = panel_open || pending;
+      const bool suspended = panel_open;
       if (suspended && !request->lease->input_suspended && request->lease->permission == permission_t::control && request->lease->release_input) request->lease->release_input();
       request->lease->input_suspended = suspended;
     }
