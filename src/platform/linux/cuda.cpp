@@ -29,6 +29,7 @@ extern "C" {
 #include "cuda.h"
 #include "graphics.h"
 #include "nvfbc_frame_gate.h"
+#include "nvfbc_capture_retry.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/nvenc/nvenc_cuda_factory.h"
@@ -1575,12 +1576,20 @@ namespace cuda {
        * @param capture_params Capture params.
        * @return Capture status reported to the streaming pipeline.
        */
-      int capture(NVFBC_CREATE_CAPTURE_SESSION_PARAMS &capture_params) {
+      platf::capture_e capture(NVFBC_CREATE_CAPTURE_SESSION_PARAMS &capture_params) {
         if (func.nvFBCCreateCaptureSession(handle, &capture_params)) {
-          BOOST_LOG(error) << "Failed to start capture session: "sv << last_error();
-          return -1;
+          const auto *reason = last_error();
+          if (capture_retry.retry(reason ? reason : "", std::chrono::steady_clock::now())) {
+            // Return through the normal timeout callback so cancellation and
+            // desktop handoff remain responsive while X finishes its modeset.
+            BOOST_LOG(debug) << "Waiting for NvFBC capture creation after display modeset"sv;
+            return platf::capture_e::timeout;
+          }
+          BOOST_LOG(error) << "Failed to start capture session: "sv << (reason ? reason : "unknown driver error");
+          return platf::capture_e::error;
         }
 
+        capture_retry.reset();
         handle_flags[SESSION_CAPTURE] = true;
 
         NVFBC_TOCUDA_SETUP_PARAMS setup_params {
@@ -1590,9 +1599,9 @@ namespace cuda {
 
         if (func.nvFBCToCudaSetUp(handle, &setup_params)) {
           BOOST_LOG(error) << "Failed to setup cuda interop with nvFBC: "sv << last_error();
-          return -1;
+          return platf::capture_e::error;
         }
-        return 0;
+        return platf::capture_e::ok;
       }
 
       /**
@@ -1658,6 +1667,7 @@ namespace cuda {
       std::bitset<MAX_FLAGS> handle_flags;  ///< Handle flags.
 
       NVFBC_SESSION_HANDLE handle;  ///< NVIDIA FBC capture session handle.
+      ::nvfbc::capture_start_retry_t capture_retry;  ///< Bound transient capture-creation modesets.
     };
 
     /**
@@ -1850,7 +1860,6 @@ namespace cuda {
           return platf::capture_e::error;
         }
 
-        cursor_visible = cursor;
         if (cursor) {
           capture_params.bPushModel = nv_bool(false);
           capture_params.bWithCursor = nv_bool(true);
@@ -1861,8 +1870,9 @@ namespace cuda {
           capture_params.bAllowDirectCapture = nv_bool(true);
         }
 
-        if (handle.capture(capture_params)) {
-          return platf::capture_e::error;
+        const auto capture_status = handle.capture(capture_params);
+        if (capture_status != platf::capture_e::ok) {
+          return capture_status;
         }
 
         // If trying to capture directly, test if it actually does.
@@ -1904,12 +1914,17 @@ namespace cuda {
             capture_params.bWithCursor = nv_bool(false);
             capture_params.bAllowDirectCapture = nv_bool(false);
 
-            if (handle.stop() || handle.capture(capture_params)) {
+            if (handle.stop()) {
               return platf::capture_e::error;
+            }
+            const auto fallback_status = handle.capture(capture_params);
+            if (fallback_status != platf::capture_e::ok) {
+              return fallback_status;
             }
           }
         }
 
+        cursor_visible = cursor;
         frame_gate.reset();
         inspection_image.reset();
         return platf::capture_e::ok;
