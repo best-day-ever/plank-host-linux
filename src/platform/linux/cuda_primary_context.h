@@ -26,7 +26,8 @@ namespace cuda {
      * @param report Cleanup error reporter; receives the CUDA status and operation.
      */
     primary_context_t(Api &api, std::function<void(int, const char *)> report):
-        api(api), report(std::move(report)) {}
+        api(api),
+        report(std::move(report)) {}
 
     primary_context_t(const primary_context_t &) = delete;
     primary_context_t &operator=(const primary_context_t &) = delete;
