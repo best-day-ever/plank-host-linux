@@ -1061,6 +1061,55 @@ namespace {
     return ambiguous ? std::string {} : greeter;
   }
 
+  /**
+   * @brief Find one inactive GDM greeter that can safely resume on its existing VT.
+   * @return The session ID, or empty on an active desktop, ambiguity or query error.
+   *
+   * Unlike restarting GDM, activating its already-created greeter does not
+   * terminate lingering closing user sessions. Require an empty active seat
+   * and protect every user session that is not both inactive and closing.
+   */
+  std::string inactive_greeter_activation_candidate() {
+    char *active = nullptr;
+    const int active_status = sd_seat_get_active("seat0", &active, nullptr);
+    const bool seat_empty = active_status == -ENODATA ||
+      (active_status >= 0 && (active == nullptr || *active == '\0'));
+    free(active);
+    if (!seat_empty) return {};
+
+    char **sessions = nullptr;
+    const int count = sd_seat_get_sessions("seat0", &sessions, nullptr, nullptr);
+    if (count < 0) return {};
+    std::string greeter;
+    bool blocked = false;
+    for (int index = 0; index < count; ++index) {
+      char *session_class = nullptr;
+      char *state = nullptr;
+      const int class_status = sd_session_get_class(sessions[index], &session_class);
+      const int state_status = sd_session_get_state(sessions[index], &state);
+      const int is_active = sd_session_is_active(sessions[index]);
+      const std::string_view kind = session_class == nullptr ? "" : session_class;
+      const std::string_view phase = state == nullptr ? "" : state;
+      blocked = blocked || plank::session::seat_session_blocks_greeter_activation(
+        class_status, kind, state_status, phase, is_active);
+      if (class_status >= 0 && kind == "greeter" && phase != "closing") {
+        uid_t uid {};
+        unsigned vt {};
+        const bool valid = state_status >= 0 && phase == "online" && is_active == 0 &&
+          sd_session_get_uid(sessions[index], &uid) >= 0 &&
+          sd_session_get_vt(sessions[index], &vt) >= 0 && vt > 0;
+        const auto account = valid ? account_for_uid(uid) : std::nullopt;
+        if (!account || account->name != "gdm" || !greeter.empty()) blocked = true;
+        else greeter = sessions[index];
+      }
+      free(session_class);
+      free(state);
+      free(sessions[index]);
+    }
+    free(sessions);
+    return blocked ? std::string {} : greeter;
+  }
+
   /** An old lease cannot be restored once its logind/X server session is gone. */
   bool lease_session_vanished(std::string_view session_id) {
     char *session_class = nullptr;
@@ -2043,6 +2092,7 @@ int main(int argc, char **argv) {
   std::string pending_session;
   auto next_launch = std::chrono::steady_clock::now();
   plank::session::greeter_recovery_t greeter_recovery;
+  plank::session::greeter_activation_t greeter_activation;
   bool stopping = false;
   bool qualification_live = false;
   while (!stopping) {
@@ -2294,6 +2344,22 @@ int main(int argc, char **argv) {
     const auto selected = plank::session::active_seat0_graphical_session();
     const auto selected_environment = selected ?
       plank::session::discover_environment(*selected) : std::nullopt;
+    const bool no_display_operation = !arrangement_lease && !physical_display_lease &&
+      !qualification_live && !pending_display_request;
+    const auto activation_candidate = !selected && no_display_operation ?
+      inactive_greeter_activation_candidate() : std::string {};
+    if (greeter_activation.observe(activation_candidate, std::chrono::steady_clock::now())) {
+      const bool activated = plank::session::activate_greeter_if_current(
+        activation_candidate, inactive_greeter_activation_candidate,
+        [](std::string_view session) {
+          return run_bounded_command("/usr/bin/loginctl", {"activate", std::string {session}},
+                                     std::chrono::seconds {5});
+        });
+      std::clog << (activated ? "Activated the existing inactive GDM greeter VT\n" :
+                               "Inactive GDM greeter activation refused or failed\n");
+      next_launch = std::chrono::steady_clock::now();
+      continue;
+    }
     const std::string inactive_greeter = selected ? std::string {} : inactive_seat0_greeter();
     const bool stalled_greeter =
       (selected && selected->session_class == "greeter" && !selected_environment) ||
