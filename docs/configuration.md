@@ -210,6 +210,13 @@ unlocking; it never changes the owner or signs out their applications.
 The final support disconnect relocks a desktop unlocked this way. A cancelled
 or failed join has a bounded safety relock; worker exit also relocks it.
 
+### collaboration_join_group
+
+Optional OS/NSS group required to join another account's desktop, whether owner
+approval is enabled or disabled. Empty preserves ordinary collaboration policy.
+Nonmembers cannot request or redeem a sharing grant, even with owner approval;
+their own desktop login is unaffected. Membership is checked again at launch.
+
 ## Display
 
 ### startup_layout

@@ -32,6 +32,10 @@ namespace plank::collaboration {
                                  const std::function<bool(uid_t, const std::string &)> &member) {
     return authenticated_uid && (!require_approval || support_authorized(*authenticated_uid, support_group, member));
   }
+  bool join_authorized(std::optional<uid_t> uid, const std::string &group,
+                       const std::function<bool(uid_t, const std::string &)> &member) {
+    return uid && *uid != 0 && (group.empty() || member(*uid, group));
+  }
   const char *permission_name(permission_t permission) {
     switch (permission) {
       case permission_t::pending: return "pending";
