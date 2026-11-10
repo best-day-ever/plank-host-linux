@@ -27,6 +27,8 @@ extern "C" {
 
 // local includes
 #include "cuda.h"
+#include "cuda_primary_context.h"
+#include "cuda_stream_work.h"
 #include "graphics.h"
 #include "nvfbc_frame_gate.h"
 #include "nvfbc_capture_retry.h"
@@ -794,6 +796,11 @@ namespace cuda {
   class cuda_nvenc_t final: public platf::nvenc_encode_device_t {
   public:
     ~cuda_nvenc_t() override {
+      // Conversion can return after submitting work but before synchronizing it.
+      // Drain that work while the session's context and registered surface live.
+      if (stream && cdf) {
+        CU_CHECK_IGNORE(cdf->cuStreamSynchronize(stream.get()), "Couldn't drain direct NVENC conversion");
+      }
       encoder.reset();
       nvenc = nullptr;
       if (native10_source && cdf) {
@@ -814,15 +821,12 @@ namespace cuda {
       input_height = in_height;
       buffer_format = format;
 
-      CU_CHECK(cdf->cuCtxGetCurrent(&context), "Couldn't get current CUDA context");
-      if (!context) {
-        CU_CHECK(cdf->cuDeviceGet(&cuda_device, 0), "Couldn't get CUDA device");
-        CU_CHECK(cdf->cuDevicePrimaryCtxRetain(&context, cuda_device), "Couldn't retain CUDA primary context");
-        primary_context.device = cuda_device;
-        primary_context.retained = true;
-        CU_CHECK(cdf->cuCtxPushCurrent(context), "Couldn't select CUDA primary context");
-        primary_context.pushed = true;
-      }
+      primary_context = std::make_unique<primary_context_t<CudaFunctions, CUcontext>>(
+        *cdf, [](int status, const char *operation) {
+          check(static_cast<CUresult>(status), operation);
+        });
+      CU_CHECK(static_cast<CUresult>(primary_context->init()), "Couldn't retain and bind encoder CUDA primary context");
+      context = primary_context->get();
 
       return 0;
     }
@@ -916,6 +920,11 @@ namespace cuda {
     }
 
     int convert(platf::img_t &img) override {
+      // The caller may release img as soon as convert() returns, before this
+      // device is destroyed. Drain partial submissions on every error path.
+      stream_work_t conversion(*cdf, stream.get(), [](int status) {
+        check(static_cast<CUresult>(status), "Couldn't drain failed direct NVENC conversion: "sv);
+      });
       auto *base = reinterpret_cast<std::uint8_t *>(static_cast<std::uintptr_t>(surface));
       int status = 0;
       if (native10_input) {
@@ -963,25 +972,13 @@ namespace cuda {
       if (status) {
         return status;
       }
-      CU_CHECK(cdf->cuStreamSynchronize(stream.get()), "Couldn't synchronize direct NVENC conversion");
+      CU_CHECK(static_cast<CUresult>(conversion.synchronize()), "Couldn't synchronize direct NVENC conversion");
       return 0;
     }
 
   private:
-    struct primary_context_t {
-      ~primary_context_t() {
-        if (retained && cdf) {
-          if (pushed) {
-            CUcontext popped = nullptr;
-            CU_CHECK_IGNORE(cdf->cuCtxPopCurrent(&popped), "Couldn't pop CUDA primary context");
-          }
-          CU_CHECK_IGNORE(cdf->cuDevicePrimaryCtxRelease(device), "Couldn't release CUDA primary context");
-        }
-      }
-      CUdevice device = 0;
-      bool retained = false;
-      bool pushed = false;
-    } primary_context;
+    // Declared first so streams, converters and surfaces die before the context.
+    std::unique_ptr<primary_context_t<CudaFunctions, CUcontext>> primary_context;
 
     std::unique_ptr<::nvenc::nvenc_encoder> encoder;
     sws_t sws;
@@ -990,7 +987,6 @@ namespace cuda {
     CUcontext context = nullptr;
     CUdeviceptr surface = 0;
     CUdeviceptr native10_source = 0;
-    CUdevice cuda_device = 0;
     std::uint32_t pitch = 0;
     std::uint32_t native10_source_pitch = 0;
     int input_width = 0;
