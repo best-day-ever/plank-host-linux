@@ -120,6 +120,7 @@ TEST(ConfigConsistencyTest, RuntimeOptionsMatchPlankProductPolicy) {
     "clipboard_entitlement_group",
     "collaboration_require_approval",
     "collaboration_support_group",
+    "collaboration_support_unlock",
     "desktop_handoff",
     "file_state",
     "file_clipboard",

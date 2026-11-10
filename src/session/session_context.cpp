@@ -3,6 +3,7 @@
  * @brief Logind-backed graphical-session selection and desktop reattachment.
  */
 #include "session_context.h"
+#include "support_unlock.h"
 
 #include "../plank_arrangement.h"
 #include "../plank_topology.h"
@@ -1078,6 +1079,13 @@ namespace plank::session {
     }
 
     std::atomic_uint64_t scheduled_lock_generation {};
+    std::atomic_uint64_t support_unlocked_generation {};
+    bool notify_support_unlock_guard(bool enabled) {
+      const auto message = enabled ? support_unlock_guard_command : support_unlock_clear_command;
+      std::lock_guard lock {supervisor_descriptor_mutex};
+      return supervisor_descriptor >= 0 && send(supervisor_descriptor, message.data(), message.size(), MSG_NOSIGNAL) ==
+        static_cast<ssize_t>(message.size());
+    }
   }  // namespace
 
   lock_status lock_attached_user_session() {
@@ -1085,6 +1093,8 @@ namespace plank::session {
     if (!active) return lock_status::not_applicable;
     if (call_logind_session_method("LockSession", active->id) ||
         call_loginctl("lock-session", active->id)) {
+      support_unlocked_generation.store(0, std::memory_order_release);
+      notify_support_unlock_guard(false);
       return lock_status::locked;
     }
     return lock_status::failed;
@@ -1095,6 +1105,8 @@ namespace plank::session {
     if (!active || active->uid != account_uid) return false;
     // Supersede a lock_on_disconnect request that is still in its grace period.
     ++scheduled_lock_generation;
+    support_unlocked_generation.store(0, std::memory_order_release);
+    notify_support_unlock_guard(false);
     return call_logind_session_method("UnlockSession", active->id) ||
            call_loginctl("unlock-session", active->id);
   }
@@ -1104,9 +1116,8 @@ namespace plank::session {
     return active ? std::optional<uid_t> {active->uid} : std::nullopt;
   }
 
-  std::optional<uid_t> unlocked_desktop_owner() {
-    const auto active = attached_active_user_session();
-    if (!active) return std::nullopt;
+  namespace {
+  std::optional<bool> attached_session_locked(const descriptor_t &active) {
     sd_bus *raw_bus = nullptr;
     if (sd_bus_open_system(&raw_bus) < 0 || !raw_bus) return std::nullopt;
     std::unique_ptr<sd_bus, decltype(&sd_bus_flush_close_unref)> bus {raw_bus, &sd_bus_flush_close_unref};
@@ -1114,14 +1125,61 @@ namespace plank::session {
     sd_bus_error error = SD_BUS_ERROR_NULL;
     sd_bus_message *reply = nullptr;
     const int result = sd_bus_call_method(bus.get(), "org.freedesktop.login1", "/org/freedesktop/login1",
-      "org.freedesktop.login1.Manager", "GetSession", &error, &reply, "s", active->id.c_str());
+      "org.freedesktop.login1.Manager", "GetSession", &error, &reply, "s", active.id.c_str());
     const char *path = nullptr;
     int locked = 1;
-    const bool unlocked = result >= 0 && sd_bus_message_read(reply, "o", &path) >= 0 && path &&
+    const bool known = result >= 0 && sd_bus_message_read(reply, "o", &path) >= 0 && path &&
       sd_bus_get_property_trivial(bus.get(), "org.freedesktop.login1", path,
-        "org.freedesktop.login1.Session", "LockedHint", &error, SD_BUS_TYPE_BOOLEAN, &locked) >= 0 && !locked;
+        "org.freedesktop.login1.Session", "LockedHint", &error, SD_BUS_TYPE_BOOLEAN, &locked) >= 0;
     sd_bus_message_unref(reply); sd_bus_error_free(&error);
-    return unlocked ? std::optional<uid_t> {active->uid} : std::nullopt;
+    return known ? std::optional<bool> {locked != 0} : std::nullopt;
+  }
+  }
+
+  std::optional<uid_t> unlocked_desktop_owner() {
+    const auto active = attached_active_user_session();
+    return active && attached_session_locked(*active) == std::optional<bool> {false} ?
+      std::optional<uid_t> {active->uid} : std::nullopt;
+  }
+
+  std::optional<uid_t> locked_desktop_owner() {
+    const auto active = attached_active_user_session();
+    return active && attached_session_locked(*active) == std::optional<bool> {true} ?
+      std::optional<uid_t> {active->uid} : std::nullopt;
+  }
+
+  bool unlock_attached_user_session_for_support(uid_t actor, uid_t owner,
+      std::uint64_t generation, const std::function<bool(uid_t)> &authorized) {
+    const auto active = attached_active_user_session();
+    if (!active || !support_unlock_allowed(actor, owner, active->uid, generation,
+          desktop_generation(), attached_session_locked(*active), authorized(actor))) return false;
+    // NSS/SSSD lookups can block. Revalidate the captured logind session after
+    // that lookup; never substitute another session, even for the same owner.
+    const bool still_authorized = authorized(actor);
+    const auto fresh = attached_active_user_session();
+    if (!fresh || fresh->id != active->id || !support_unlock_allowed(actor, owner,
+          fresh->uid, generation, desktop_generation(), attached_session_locked(*fresh), still_authorized)) return false;
+    const auto last = attached_active_user_session();
+    if (!last || last->id != active->id || last->uid != owner || desktop_generation() != generation) return false;
+    if (!notify_support_unlock_guard(true)) return false;
+    ++scheduled_lock_generation;
+    support_unlocked_generation.store(generation, std::memory_order_release);
+    if (!call_logind_session_method("UnlockSession", active->id) &&
+        !call_loginctl("unlock-session", active->id)) return false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds {3};
+    do {
+      const auto observed = attached_active_user_session();
+      if (!observed || observed->id != active->id || observed->uid != owner ||
+          desktop_generation() != generation) return false;
+      if (attached_session_locked(*observed) == std::optional<bool> {false}) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds {50});
+    } while (std::chrono::steady_clock::now() < deadline);
+    return false;
+  }
+
+  bool support_unlocked_desktop() {
+    const auto generation = desktop_generation();
+    return generation != 0 && support_unlocked_generation.load(std::memory_order_acquire) == generation;
   }
 
   bool request_collaboration_ui() {
@@ -1144,9 +1202,10 @@ namespace plank::session {
     // Detached rather than joined: the caller may hold stream-registry locks
     // that the deadline check needs, so no path ever waits for this thread.
     const auto generation = ++scheduled_lock_generation;
-    std::thread {[generation, delay, still_idle = std::move(still_idle)]() {
+    const auto desktop = desktop_generation();
+    std::thread {[generation, desktop, delay, still_idle = std::move(still_idle)]() {
       std::this_thread::sleep_for(delay);
-      if (scheduled_lock_generation.load(std::memory_order_acquire) != generation ||
+      if (scheduled_lock_generation.load(std::memory_order_acquire) != generation || desktop_generation() != desktop ||
           (still_idle && !still_idle())) {
         return;
       }

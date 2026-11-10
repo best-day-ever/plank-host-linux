@@ -4,6 +4,7 @@
  */
 #include <gtest/gtest.h>
 #include "src/session/collaboration.h"
+#include "src/session/support_unlock.h"
 using namespace plank::collaboration;
 namespace {
   const desktop_t owner {1001, 7};
@@ -13,6 +14,21 @@ namespace {
     state.ui_connected = true;
     return state.add(uid, "support", owner, std::to_string(uid), "grant-" + std::to_string(uid), now);
   }
+}
+
+TEST(CollaborationSupportUnlock, RequiresSupportIdentityAndTheExactKnownLockedDesktop) {
+  using plank::session::support_unlock_allowed;
+  EXPECT_TRUE(support_unlock_allowed(1002, 1001, 1001, 7, 7, true, true));
+  EXPECT_FALSE(support_unlock_allowed(std::nullopt, 1001, 1001, 7, 7, true, true));
+  EXPECT_FALSE(support_unlock_allowed(0, 1001, 1001, 7, 7, true, true));
+  EXPECT_FALSE(support_unlock_allowed(1001, 1001, 1001, 7, 7, true, true));
+  EXPECT_FALSE(support_unlock_allowed(1002, 0, 0, 7, 7, true, true));
+  EXPECT_FALSE(support_unlock_allowed(1002, 1001, 1003, 7, 7, true, true));
+  EXPECT_FALSE(support_unlock_allowed(1002, 1001, 1001, 0, 0, true, true));
+  EXPECT_FALSE(support_unlock_allowed(1002, 1001, 1001, 7, 8, true, true));
+  EXPECT_FALSE(support_unlock_allowed(1002, 1001, 1001, 7, 7, std::nullopt, true));
+  EXPECT_FALSE(support_unlock_allowed(1002, 1001, 1001, 7, 7, false, true));
+  EXPECT_FALSE(support_unlock_allowed(1002, 1001, 1001, 7, 7, true, false));
 }
 TEST(Collaboration, PendingNeverGrantsMediaAndOnlyOwnerCanApprove) {
   registry_t state;
