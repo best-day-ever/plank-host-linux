@@ -28,6 +28,7 @@ extern "C" {
 // local includes
 #include "cuda.h"
 #include "cuda_primary_context.h"
+#include "cuda_stream_work.h"
 #include "graphics.h"
 #include "nvfbc_frame_gate.h"
 #include "nvfbc_capture_retry.h"
@@ -919,6 +920,11 @@ namespace cuda {
     }
 
     int convert(platf::img_t &img) override {
+      // The caller may release img as soon as convert() returns, before this
+      // device is destroyed. Drain partial submissions on every error path.
+      stream_work_t conversion(*cdf, stream.get(), [](int status) {
+        check(static_cast<CUresult>(status), "Couldn't drain failed direct NVENC conversion: "sv);
+      });
       auto *base = reinterpret_cast<std::uint8_t *>(static_cast<std::uintptr_t>(surface));
       int status = 0;
       if (native10_input) {
@@ -966,7 +972,7 @@ namespace cuda {
       if (status) {
         return status;
       }
-      CU_CHECK(cdf->cuStreamSynchronize(stream.get()), "Couldn't synchronize direct NVENC conversion");
+      CU_CHECK(static_cast<CUresult>(conversion.synchronize()), "Couldn't synchronize direct NVENC conversion");
       return 0;
     }
 
