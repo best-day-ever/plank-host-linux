@@ -229,13 +229,26 @@ TEST(DisplayInventoryPublication, EmptyStartupRetriesUntilAPhysicalDisplayAppear
   EXPECT_EQ(cached->physical.size(), 1);
 }
 
-TEST(DisplayInventoryPublication, ReservedVirtualHeadAllowsHeadlessStartup) {
+TEST(DisplayInventoryPublication, ReservedVirtualHeadIsNotRejectedByPublicationGate) {
   display::inventory_t observed;
   observed.virtual_heads = 1;
+  observed.virtual_candidates.resize(1);
   std::optional<display::inventory_t> cached;
   std::string ready;
   EXPECT_TRUE(display::publish_session_inventory(cached, ready, "server",
     [&] { return std::optional {observed}; }, [](const auto &) { return true; },
     display::has_startup_outputs));
   EXPECT_EQ(ready, "server");
+}
+
+TEST(DisplayInventoryPublication, EmptyNewServerCannotReusePreviousReadyInventory) {
+  display::inventory_t previous;
+  previous.physical.resize(1);
+  std::optional<display::inventory_t> cached {previous};
+  std::string ready {"previous-server"};
+  EXPECT_FALSE(display::publish_session_inventory(cached, ready, "new-server",
+    [] { return std::optional {display::inventory_t {}}; },
+    [](const auto &) { ADD_FAILURE(); return true; }, display::has_startup_outputs));
+  EXPECT_FALSE(cached);
+  EXPECT_TRUE(ready.empty());
 }
