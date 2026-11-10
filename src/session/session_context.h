@@ -19,6 +19,8 @@ namespace plank::session {
   // Private supervisor command: announce a confirmed greeter-to-user handoff,
   // then use the worker's normal shutdown path. Never a request from a client.
   inline constexpr std::string_view desktop_handoff_command = "PLANK-DESKTOP-HANDOFF-1";
+  inline constexpr std::string_view support_unlock_guard_command = "PLANK-SUPPORT-UNLOCK-GUARD-1";
+  inline constexpr std::string_view support_unlock_clear_command = "PLANK-SUPPORT-UNLOCK-CLEAR-1";
   struct descriptor_t {
     std::string id;
     uid_t uid {};
@@ -282,6 +284,16 @@ namespace plank::session {
 
   /** @brief Return the attested desktop owner only while logind confirms it is unlocked. */
   std::optional<uid_t> unlocked_desktop_owner();
+
+  /** Owner only when the attested active desktop is positively known to be locked. */
+  std::optional<uid_t> locked_desktop_owner();
+
+  /** Explicit support unlock: recheck authority and the exact session/generation before logind. */
+  bool unlock_attached_user_session_for_support(uid_t actor, uid_t owner,
+    std::uint64_t generation, const std::function<bool(uid_t)> &authorized);
+
+  /** Whether this exact desktop was explicitly unlocked for support. */
+  bool support_unlocked_desktop();
 
   /** @brief Ask the root supervisor to start the fixed consent helper as the active desktop owner. */
   bool request_collaboration_ui();

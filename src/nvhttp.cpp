@@ -561,6 +561,13 @@ namespace nvhttp {
       uid, config::sunshine.collaboration_require_approval, group, account_in_group);
   }
 
+  /** Support unlock never inherits the ordinary automatic-join policy. */
+  bool collaboration_support_unlock_authorized(uid_t uid) {
+    return uid != 0 && config::sunshine.collaboration_support_unlock &&
+      plank::collaboration::support_authorized(uid,
+        config::sunshine.collaboration_support_group, account_in_group);
+  }
+
   void apply_clipboard_entitlements(session_stream::launch_session_t &session, uid_t uid) {
     const bool text = account_in_group(uid, config::sunshine.clipboard_entitlement_group);
     const bool files = text && account_in_group(uid, config::sunshine.file_clipboard_entitlement_group);
@@ -582,7 +589,7 @@ namespace nvhttp {
    * retry with plankSignOutDesktop=1 and plankSignOutOwner=<account>).
    */
   void workstation_in_use(pt::ptree &tree, const char *result_key, const std::string &owner,
-                          std::string_view sign_out) {
+                          std::string_view sign_out, uid_t guest) {
     tree.put(result_key, 0);
     tree.put("root.<xmlattr>.status_code", 409);
     tree.put("root.<xmlattr>.status_message", sign_out == "connected"sv ?
@@ -591,6 +598,13 @@ namespace nvhttp {
     tree.put("root.PlankDesktopOwner", owner);
     tree.put("root.PlankDesktopSignOut", std::string {sign_out});
     tree.put("root.PlankCollaborationAvailable", plank::session::unlocked_desktop_owner() ? 1 : 0);
+    const auto generation = plank::session::desktop_generation();
+    const auto locked = plank::session::locked_desktop_owner();
+    const bool unlock_available = locked && *locked != guest && account_name(*locked) == owner &&
+      collaboration_support_unlock_authorized(guest) && generation != 0 &&
+      generation == plank::session::desktop_generation();
+    tree.put("root.PlankDesktopUnlockAvailable", unlock_available ? 1 : 0);
+    if (unlock_available) tree.put("root.PlankDesktopGeneration", std::to_string(generation));
   }
 
   /**
@@ -640,7 +654,7 @@ namespace nvhttp {
                                session_stream::launch_session_pending();
     if (stream_active && streaming_account_uid && *streaming_account_uid != *uid) {
       BOOST_LOG(warning) << "Refusing PLANK stream: another account is connected to this workstation"sv;
-      workstation_in_use(tree, result_key, account_name(*streaming_account_uid), "connected"sv);
+      workstation_in_use(tree, result_key, account_name(*streaming_account_uid), "connected"sv, *uid);
       return std::nullopt;
     }
     if (plank::session::supervisor_attests_account_for_active_seat0(*uid)) return uid;
@@ -653,14 +667,14 @@ namespace nvhttp {
     }
     const auto owner_account = account_name(*owner);
     if (stream_active) {
-      workstation_in_use(tree, result_key, owner_account, "connected"sv);
+      workstation_in_use(tree, result_key, owner_account, "connected"sv, *uid);
       return std::nullopt;
     }
     if (!config::sunshine.desktop_handoff || get_arg(args, "plankSignOutDesktop", "0") != "1"sv ||
         get_arg(args, "plankSignOutOwner", "") != owner_account) {
       // The token stays valid so the Client can confirm the sign-out without a new login.
       BOOST_LOG(info) << "PLANK workstation is signed in to another account; offering sign-out"sv;
-      workstation_in_use(tree, result_key, owner_account, "available"sv);
+      workstation_in_use(tree, result_key, owner_account, "available"sv, *uid);
       return std::nullopt;
     }
 
@@ -1688,6 +1702,45 @@ namespace nvhttp {
   void collaboration_http(const resp_https_t &response, const req_https_t &request) {
     std::scoped_lock start_lock {session_start_mutex};
     const auto uid = collaboration_account(request);
+    nlohmann::json request_body;
+    if (request->path == "/plank/collaboration/request") {
+      request_body = read_auth_json(request);
+      if (!request_body.is_object()) {
+        write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request, {{"state", "invalid-request"}}); return;
+      }
+      if (request_body.contains("unlock_desktop")) {
+        if (!request_body["unlock_desktop"].is_boolean() || !request_body["unlock_desktop"].get<bool>() ||
+            !request_body.contains("owner") || !request_body["owner"].is_string() ||
+            !request_body.contains("generation") || !request_body["generation"].is_string()) {
+          write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request, {{"state", "invalid-request"}}); return;
+        }
+        if (!uid || !collaboration_support_unlock_authorized(*uid)) {
+          BOOST_LOG(warning) << "PLANK explicit support unlock refused actor_uid="
+                            << (uid ? std::to_string(*uid) : std::string {"unauthenticated"});
+          write_auth_json(response, SimpleWeb::StatusCode::client_error_forbidden, {{"state", "denied"}}); return;
+        }
+        const auto target = plank::session::locked_desktop_owner();
+        const auto generation = plank::session::desktop_generation();
+        if (!target || *target == *uid || generation == 0 ||
+            request_body["owner"] != account_name(*target) || request_body["generation"] != std::to_string(generation)) {
+          write_auth_json(response, SimpleWeb::StatusCode::client_error_conflict, {{"state", "desktop-changed"}}); return;
+        }
+        const bool unlocked = plank::session::unlock_attached_user_session_for_support(
+          *uid, *target, generation, collaboration_support_unlock_authorized);
+        if (plank::session::support_unlocked_desktop()) {
+          // Failed/cancelled joins must not leave the console unlocked. A real
+          // stream inhibits this safety lock; its final disconnect relocks sooner.
+          plank::session::schedule_attached_session_lock(std::chrono::seconds {30}, []() {
+            return session_stream::session_count() == 0 && !session_stream::launch_session_pending();
+          });
+        }
+        BOOST_LOG(warning) << "PLANK explicit support unlock actor_uid=" << *uid << " owner_uid=" << *target
+                          << " desktop_generation=" << generation << " success=" << unlocked;
+        if (!unlocked) {
+          write_auth_json(response, SimpleWeb::StatusCode::client_error_conflict, {{"state", "unlock-failed"}}); return;
+        }
+      }
+    }
     const auto owner = plank::session::unlocked_desktop_owner();
     if (!uid || !owner) {
       write_auth_json(response, SimpleWeb::StatusCode::client_error_forbidden, {{"state", "unavailable"}}); return;
@@ -1696,8 +1749,6 @@ namespace nvhttp {
     auto &state = plank::collaboration::registry();
     std::lock_guard lock {state.mutex};
     if (request->path == "/plank/collaboration/request") {
-      const auto body = read_auth_json(request);
-      if (!body.is_object()) { write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request, {{"state", "invalid-request"}}); return; }
       state.refresh(&desktop, state.ui_connected, std::chrono::steady_clock::now());
       const auto item = state.add(*uid, account_name(*uid), desktop,
         plank::auth::secure_random_hex(32), plank::auth::secure_random_hex(32), std::chrono::steady_clock::now(),

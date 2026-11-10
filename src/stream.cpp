@@ -1517,6 +1517,11 @@ namespace stream {
           input::reset(session.input, session.input_connection_id);
         }
         input::forget(session.input_session_id);
+        if (plank::session::support_unlocked_desktop()) {
+          plank::session::schedule_attached_session_lock(lock_on_disconnect_grace, []() {
+            return session_stream::session_count() == 0 && !session_stream::launch_session_pending();
+          });
+        }
       } else {
         input::reset(session.input, session.input_connection_id);
         --owner_sessions;

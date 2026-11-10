@@ -200,6 +200,16 @@ even when `collaboration_require_approval` is `true`. Defaults to empty (disable
 Group lookup failures and nonmembership never grant this exception. When approval
 is disabled for all authorized workstation users, no group lookup is required.
 
+### collaboration_support_unlock
+
+Defaults to `false`. When explicitly enabled, an authenticated member of
+`collaboration_support_group` may choose **Unlock and join** for the current
+locked desktop. Ordinary automatic joining does not grant this capability.
+The Host rechecks group membership and the exact desktop generation before
+unlocking; it never changes the owner or signs out their applications.
+The final support disconnect relocks a desktop unlocked this way. A cancelled
+or failed join has a bounded safety relock; worker exit also relocks it.
+
 ## Display
 
 ### startup_layout

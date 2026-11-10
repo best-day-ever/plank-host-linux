@@ -80,6 +80,7 @@ namespace {
     std::uint64_t generation {};
     int pam_descriptor {-1};  ///< Private descriptor-only broker delegation endpoint.
     bool greeter {false};
+    bool support_unlocked {false};  ///< Relock this exact desktop if its media worker dies.
   };
 
   using plank::display::physical_snapshot_t;
@@ -306,6 +307,7 @@ namespace {
         std::string_view {reply.data(), static_cast<std::size_t>(reply_size)} != expected) {
       return false;
     }
+    if (worker.session_id != session.id) worker.support_unlocked = false;
     worker.session_id = session.id;
     worker.generation = update.generation;
     worker.greeter = session.session_class == "greeter";
@@ -353,10 +355,13 @@ namespace {
     return result;
   }
 
+  void relock_support_desktop(worker_t &worker);
+
   void stop_worker(worker_t &worker, bool opening_desktop = false) {
     if (worker.pid <= 0) {
       return;
     }
+    relock_support_desktop(worker);
     const auto command = plank::session::desktop_handoff_command;
     const bool notified = opening_desktop && worker.greeter &&
       send(worker.control_descriptor, command.data(), command.size(),
@@ -413,6 +418,26 @@ namespace {
     kill(child, SIGKILL);
     waitpid(child, nullptr, 0);
     return false;
+  }
+
+  void relock_support_desktop(worker_t &worker) {
+    // A worker can exit before the next poll drains its guard notification.
+    // Preserve fixed guard/clear records queued on this private descriptor.
+    std::array<char, 8193> pending {};
+    for (unsigned i = 0; worker.control_descriptor >= 0 && i < 64; ++i) {
+      const auto size = recv(worker.control_descriptor, pending.data(), pending.size(), MSG_DONTWAIT);
+      if (size <= 0) break;
+      const std::string_view command {pending.data(), static_cast<std::size_t>(size)};
+      if (command == plank::session::support_unlock_guard_command) worker.support_unlocked = true;
+      if (command == plank::session::support_unlock_clear_command) worker.support_unlocked = false;
+    }
+    if (!worker.support_unlocked) return;
+    const auto active = plank::session::active_seat0_graphical_session();
+    if (active && active->id == worker.session_id && active->session_class == "user" && active->uid != 0) {
+      const bool locked = run_bounded_command("/usr/bin/loginctl", {"lock-session", active->id}, std::chrono::seconds {5});
+      std::clog << "PLANK support desktop relock after worker exit success=" << locked << '\n';
+    }
+    worker.support_unlocked = false;
   }
 
   std::optional<std::string> run_bounded_command_capture(
@@ -2629,7 +2654,14 @@ int main(int argc, char **argv) {
           std::string_view {message.data(), static_cast<std::size_t>(size)}
         ) : std::nullopt;
         const auto active = plank::session::active_seat0_graphical_session();
-        if (std::string_view {message.data(), static_cast<std::size_t>(size)} == "PLANK-COLLABORATION-UI-1") {
+        const std::string_view control {message.data(), static_cast<std::size_t>(size)};
+        if (control == plank::session::support_unlock_guard_command || control == plank::session::support_unlock_clear_command) {
+          // The private worker channel can request only protection of its own
+          // attested desktop. This command never unlocks or selects a session.
+          if (active && active->id == worker.session_id && active->session_class == "user" && active->uid != 0) {
+            worker.support_unlocked = control == plank::session::support_unlock_guard_command;
+          }
+        } else if (control == "PLANK-COLLABORATION-UI-1") {
           // The worker requests only this fixed program. PID 1 supplies the
           // desktop UID; the unprivileged media worker gains no setuid caps.
           if (active && active->id == worker.session_id && active->session_class == "user" && active->uid != 0) {
@@ -2718,6 +2750,7 @@ int main(int argc, char **argv) {
           const pid_t result = waitpid(worker.pid, nullptr, WNOHANG);
           if (result == worker.pid) {
             std::clog << "PLANK worker exited; scheduling restart\n";
+            relock_support_desktop(worker);
             if (physical_display_lease && physical_display_lease->active &&
                 physical_display_lease->session_id == worker.session_id) {
               physical_display_lease->active = false;
