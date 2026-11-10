@@ -2390,7 +2390,8 @@ int main(int argc, char **argv) {
           const bool published = plank::display::publish_session_inventory(
             inventory, inventory_session_id, selected->id,
             [&] { return capture_inventory(*account, *environment, startup_policy); },
-            [&](const auto &observed) { return write_inventory(observed); });
+            [&](const auto &observed) { return write_inventory(observed); },
+            plank::display::has_startup_outputs);
           if (published) {
             std::clog << "PLANK display inventory: " << inventory->physical.size()
                       << " physical output(s), " << inventory->virtual_heads << " of "
