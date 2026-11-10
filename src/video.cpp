@@ -1055,7 +1055,9 @@ namespace video {
     {{}, {}, {}, {}, {}, {}, "av1_nvenc"s},
     {{}, {}, {}, {}, {}, {}, "hevc_nvenc"s},
     {{}, {}, {}, {}, {}, {}, "h264_nvenc"s},
-    PARALLEL_ENCODING | REF_FRAMES_INVALIDATION | YUV444_SUPPORT | ASYNC_TEARDOWN
+    // CUDA current-context stacks are thread-local. Teardown must finish on
+    // the encode thread before a replacement session acquires its context.
+    PARALLEL_ENCODING | REF_FRAMES_INVALIDATION | YUV444_SUPPORT
   };
 #endif
 
