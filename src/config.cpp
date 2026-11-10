@@ -869,6 +869,7 @@ namespace config {
     true,  // require owner consent unless workstation policy explicitly allows automatic joining
     "",  // no collaboration support override unless configured
     false,  // no remote support unlock unless explicitly configured
+    "",  // no additional shared-desktop membership restriction by default
     false,  // PLANK greeter sign-in, owner unlock and idle-owner sign-out
   };
 
@@ -1608,6 +1609,7 @@ namespace config {
     bool_f(vars, "collaboration_require_approval", sunshine.collaboration_require_approval);
     string_f(vars, "collaboration_support_group", sunshine.collaboration_support_group);
     bool_f(vars, "collaboration_support_unlock", sunshine.collaboration_support_unlock);
+    string_f(vars, "collaboration_join_group", sunshine.collaboration_join_group);
 
     int port = sunshine.port;
     int_between_f(vars, "port"s, port, {1024 - nvhttp::PORT_HTTPS, 65535});

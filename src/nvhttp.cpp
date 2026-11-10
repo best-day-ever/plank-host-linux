@@ -555,15 +555,20 @@ namespace nvhttp {
   }
 
   /** @brief Resolve the approval exemption after authenticated workstation access. */
+  bool collaboration_join_authorized(uid_t uid) {
+    return plank::collaboration::join_authorized(uid,
+      config::sunshine.collaboration_join_group, account_in_group);
+  }
+
   bool collaboration_automatic_join_authorized(uid_t uid) {
     const auto &group = config::sunshine.collaboration_support_group;
-    return plank::collaboration::automatic_join_authorized(
+    return collaboration_join_authorized(uid) && plank::collaboration::automatic_join_authorized(
       uid, config::sunshine.collaboration_require_approval, group, account_in_group);
   }
 
   /** Support unlock never inherits the ordinary automatic-join policy. */
   bool collaboration_support_unlock_authorized(uid_t uid) {
-    return uid != 0 && config::sunshine.collaboration_support_unlock &&
+    return collaboration_join_authorized(uid) && config::sunshine.collaboration_support_unlock &&
       plank::collaboration::support_authorized(uid,
         config::sunshine.collaboration_support_group, account_in_group);
   }
@@ -597,7 +602,7 @@ namespace nvhttp {
       owner + " is signed in on this workstation");
     tree.put("root.PlankDesktopOwner", owner);
     tree.put("root.PlankDesktopSignOut", std::string {sign_out});
-    tree.put("root.PlankCollaborationAvailable", plank::session::unlocked_desktop_owner() ? 1 : 0);
+    tree.put("root.PlankCollaborationAvailable", collaboration_join_authorized(guest) && plank::session::unlocked_desktop_owner() ? 1 : 0);
     const auto generation = plank::session::desktop_generation();
     const auto locked = plank::session::locked_desktop_owner();
     const bool unlock_available = locked && *locked != guest && account_name(*locked) == owner &&
@@ -637,6 +642,7 @@ namespace nvhttp {
 
     const auto collaboration_grant = get_arg(args, "plankCollaboration", "");
     if (!collaboration_grant.empty()) {
+      if (!collaboration_join_authorized(*uid)) return refuse();
       const auto owner = plank::session::unlocked_desktop_owner();
       if (!owner || *owner == *uid) return refuse();
       auto &state = plank::collaboration::registry();
@@ -1702,6 +1708,10 @@ namespace nvhttp {
   void collaboration_http(const resp_https_t &response, const req_https_t &request) {
     std::scoped_lock start_lock {session_start_mutex};
     const auto uid = collaboration_account(request);
+    const auto attached_owner = plank::session::attached_desktop_owner();
+    if (uid && (!attached_owner || *attached_owner != *uid) && !collaboration_join_authorized(*uid)) {
+      write_auth_json(response, SimpleWeb::StatusCode::client_error_forbidden, {{"state", "denied"}}); return;
+    }
     nlohmann::json request_body;
     if (request->path == "/plank/collaboration/request") {
       request_body = read_auth_json(request);
@@ -1806,6 +1816,10 @@ namespace nvhttp {
   void launch_collaborator(const req_https_t &request, const args_t &args, uid_t uid, pt::ptree &tree) {
     using namespace plank::collaboration;
     tree.put("root.gamesession", 0);
+    if (!collaboration_join_authorized(uid)) {
+      tree.put("root.<xmlattr>.status_code", 403);
+      tree.put("root.<xmlattr>.status_message", "This account is not permitted to join another desktop"); return;
+    }
     const auto owner = plank::session::unlocked_desktop_owner();
     if (!owner || session_stream::launch_session_pending()) {
       tree.put("root.<xmlattr>.status_code", 409); tree.put("root.<xmlattr>.status_message", "The workstation is changing sessions; retry collaboration"); return;

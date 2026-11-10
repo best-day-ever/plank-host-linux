@@ -79,6 +79,9 @@ namespace plank::collaboration {
   /** @brief Require explicit configuration and an affirmative authenticated-account group lookup. */
   bool support_authorized(uid_t uid, const std::string &group,
                           const std::function<bool(uid_t, const std::string &)> &member);
+  /** @brief Additional sharing entitlement; never substitutes for workstation authentication. */
+  bool join_authorized(std::optional<uid_t> uid, const std::string &group,
+                       const std::function<bool(uid_t, const std::string &)> &member);
   /** @brief Determine owner-approval exemption only after PAM/HBAC workstation authentication. */
   bool automatic_join_authorized(std::optional<uid_t> authenticated_uid, bool require_approval,
                                  const std::string &support_group,

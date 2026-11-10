@@ -119,6 +119,7 @@ TEST(ConfigConsistencyTest, RuntimeOptionsMatchPlankProductPolicy) {
     "cert",
     "clipboard_entitlement_group",
     "collaboration_require_approval",
+    "collaboration_join_group",
     "collaboration_support_group",
     "collaboration_support_unlock",
     "desktop_handoff",

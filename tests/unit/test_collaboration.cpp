@@ -238,6 +238,18 @@ TEST(CollaborationPolicy, WorkstationAccessSufficesWhenOwnerApprovalIsDisabled) 
   EXPECT_FALSE(consulted_group);
   EXPECT_FALSE(automatic_join_authorized(std::nullopt, false, "support-admins", member));
 }
+TEST(CollaborationPolicy, SharingGroupExcludesTemporaryArtistsWithoutBlockingDefaultPolicy) {
+  bool current_member = true;
+  const auto member = [&](uid_t uid, const std::string &group) { return current_member && uid == 1002 && group == "studio"; };
+  EXPECT_TRUE(join_authorized(1002, "studio", member));
+  EXPECT_FALSE(join_authorized(1003, "studio", member));
+  EXPECT_FALSE(join_authorized(std::nullopt, "studio", member));
+  EXPECT_FALSE(join_authorized(0, "studio", member));
+  EXPECT_FALSE(join_authorized(1002, "missing", member));
+  EXPECT_TRUE(join_authorized(1003, "", member));
+  current_member = false;
+  EXPECT_FALSE(join_authorized(1002, "studio", member));
+}
 TEST(CollaborationPolicy, ConsentModeStillRequiresExplicitSupportMembership) {
   const auto member = [](uid_t uid, const std::string &group) { return uid == 1002 && group == "support-admins"; };
   EXPECT_FALSE(automatic_join_authorized(1003, true, "support-admins", member));
