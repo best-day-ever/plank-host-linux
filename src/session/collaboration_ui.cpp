@@ -64,7 +64,7 @@ namespace plank::collaboration {
       auto heartbeat = std::chrono::steady_clock::now();
       auto requested = heartbeat - std::chrono::seconds {15};
       while (!stop.stop_requested()) {
-        const auto current = desktop();
+        auto current = desktop();
         const auto now = std::chrono::steady_clock::now();
         pollfd descriptors[] {{listener, POLLIN, 0}, {peer, POLLIN, 0}};
         poll(descriptors, 2, 50);
@@ -100,6 +100,10 @@ namespace plank::collaboration {
         nlohmann::json snapshot {{"requests", nlohmann::json::array()}, {"panel_open", panel_open}};
         {
           auto &state = registry(); std::lock_guard lock {state.mutex};
+          // HTTPS may have unlocked the desktop and added a grant while poll
+          // waited. Observe under the grant mutex so an earlier locked snapshot
+          // cannot revoke that newly authorized join.
+          current = desktop();
           state.refresh(current ? &*current : nullptr, peer >= 0, now);
           state.suspend(panel_open);
           for (const auto &request : state.requests()) {
