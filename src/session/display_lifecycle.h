@@ -85,14 +85,15 @@ namespace plank::display {
    * @param session Current X session.
    * @param capture Returns an optional newly observed inventory.
    * @param publish Atomically publishes the observed inventory.
-   * @return True only when both capture and publication succeeded for this session.
+   * @param usable Whether the observed inventory can start a capture worker.
+   * @return True only when usable inventory was captured and published for this session.
    */
-  template<class Inventory, class Capture, class Publish>
+  template<class Inventory, class Capture, class Publish, class Usable>
   bool publish_session_inventory(std::optional<Inventory> &cached, std::string &ready_session,
-                                 const std::string &session, Capture capture, Publish publish) {
+                                 const std::string &session, Capture capture, Publish publish, Usable usable) {
     if (cached && ready_session == session) return true;
     auto observed = capture();
-    if (!observed || !publish(*observed)) {
+    if (!observed || !usable(*observed) || !publish(*observed)) {
       cached.reset();
       ready_session.clear();
       return false;

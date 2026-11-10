@@ -108,6 +108,15 @@ namespace plank::display {
   };
 
   /**
+   * @brief Require a connected physical output or a reserved virtual head before worker startup.
+   * @param inventory Newly observed X server inventory.
+   * @return False while all outputs are absent; free virtual candidates are not reserved heads.
+   */
+  inline bool has_startup_outputs(const inventory_t &inventory) {
+    return !inventory.physical.empty() || inventory.virtual_heads > 0;
+  }
+
+  /**
    * @brief What the PLANK hybrid Xorg overlay reserved at boot.
    */
   struct overlay_facts_t {

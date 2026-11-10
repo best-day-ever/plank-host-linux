@@ -3,6 +3,7 @@
  * @brief Display snapshots remain owned until exact recovery and inventory publication succeeds.
  */
 #include "src/session/display_lifecycle.h"
+#include "src/session/display_inventory.h"
 
 #include <gtest/gtest.h>
 #include <vector>
@@ -153,11 +154,12 @@ TEST(DisplayInventoryPublication, FailedCaptureRetriesInTheSameSession) {
     return ++captures == 1 ? std::nullopt : std::optional<int> {42};
   };
   const auto publish = [&](int inventory) { ++writes; return inventory == 42; };
-  EXPECT_FALSE(display::publish_session_inventory(cached, ready, "server", capture, publish));
+  const auto usable = [](int) { return true; };
+  EXPECT_FALSE(display::publish_session_inventory(cached, ready, "server", capture, publish, usable));
   EXPECT_FALSE(cached);
   EXPECT_TRUE(ready.empty());
   EXPECT_EQ(writes, 0);
-  EXPECT_TRUE(display::publish_session_inventory(cached, ready, "server", capture, publish));
+  EXPECT_TRUE(display::publish_session_inventory(cached, ready, "server", capture, publish, usable));
   EXPECT_EQ(captures, 2);
   EXPECT_EQ(writes, 1);
   EXPECT_EQ(cached, 42);
@@ -170,10 +172,11 @@ TEST(DisplayInventoryPublication, FailedPublicationDoesNotMakeTheSessionReady) {
   int writes = 0;
   const auto capture = [] { return std::optional<int> {42}; };
   const auto publish = [&](int) { return ++writes > 1; };
-  EXPECT_FALSE(display::publish_session_inventory(cached, ready, "server", capture, publish));
+  const auto usable = [](int) { return true; };
+  EXPECT_FALSE(display::publish_session_inventory(cached, ready, "server", capture, publish, usable));
   EXPECT_FALSE(cached);
   EXPECT_TRUE(ready.empty());
-  EXPECT_TRUE(display::publish_session_inventory(cached, ready, "server", capture, publish));
+  EXPECT_TRUE(display::publish_session_inventory(cached, ready, "server", capture, publish, usable));
   EXPECT_EQ(ready, "server");
   EXPECT_EQ(writes, 2);
 }
@@ -182,11 +185,11 @@ TEST(DisplayInventoryPublication, FailedNewSessionCaptureCannotReuseAnOldInvento
   std::optional<int> cached {1};
   std::string ready {"old-server"};
   EXPECT_FALSE(display::publish_session_inventory(cached, ready, "new-server",
-    [] { return std::optional<int> {}; }, [](int) { ADD_FAILURE(); return true; }));
+    [] { return std::optional<int> {}; }, [](int) { ADD_FAILURE(); return true; }, [](int) { return true; }));
   EXPECT_FALSE(cached);
   EXPECT_TRUE(ready.empty());
   EXPECT_TRUE(display::publish_session_inventory(cached, ready, "new-server",
-    [] { return std::optional<int> {2}; }, [](int value) { return value == 2; }));
+    [] { return std::optional<int> {2}; }, [](int value) { return value == 2; }, [](int) { return true; }));
   EXPECT_EQ(cached, 2);
   EXPECT_EQ(ready, "new-server");
 }
@@ -196,7 +199,56 @@ TEST(DisplayInventoryPublication, PublishedSameSessionInventoryIsNotRecaptured) 
   std::string ready {"server"};
   EXPECT_TRUE(display::publish_session_inventory(cached, ready, "server",
     [] { ADD_FAILURE(); return std::optional<int> {}; },
-    [](int) { ADD_FAILURE(); return false; }));
+    [](int) { ADD_FAILURE(); return false; }, [](int) { ADD_FAILURE(); return false; }));
   EXPECT_EQ(cached, 42);
   EXPECT_EQ(ready, "server");
+}
+
+TEST(DisplayInventoryPublication, EmptyStartupRetriesUntilAPhysicalDisplayAppears) {
+  std::optional<display::inventory_t> cached;
+  std::string ready;
+  display::inventory_t observed;
+  observed.virtual_candidates.resize(3);
+  int captures = 0, writes = 0;
+  const auto capture = [&] { ++captures; return std::optional {observed}; };
+  const auto publish = [&](const auto &) { ++writes; return true; };
+  for (int retry = 0; retry < 3; ++retry) {
+    EXPECT_FALSE(display::publish_session_inventory(cached, ready, "server", capture, publish,
+                                                    display::has_startup_outputs));
+    EXPECT_FALSE(cached);
+    EXPECT_TRUE(ready.empty());
+    EXPECT_EQ(writes, 0);
+  }
+  observed.physical.resize(1);
+  EXPECT_TRUE(display::publish_session_inventory(cached, ready, "server", capture, publish,
+                                                 display::has_startup_outputs));
+  EXPECT_EQ(captures, 4);
+  EXPECT_EQ(writes, 1);
+  EXPECT_EQ(ready, "server");
+  ASSERT_TRUE(cached);
+  EXPECT_EQ(cached->physical.size(), 1);
+}
+
+TEST(DisplayInventoryPublication, ReservedVirtualHeadIsNotRejectedByPublicationGate) {
+  display::inventory_t observed;
+  observed.virtual_heads = 1;
+  observed.virtual_candidates.resize(1);
+  std::optional<display::inventory_t> cached;
+  std::string ready;
+  EXPECT_TRUE(display::publish_session_inventory(cached, ready, "server",
+    [&] { return std::optional {observed}; }, [](const auto &) { return true; },
+    display::has_startup_outputs));
+  EXPECT_EQ(ready, "server");
+}
+
+TEST(DisplayInventoryPublication, EmptyNewServerCannotReusePreviousReadyInventory) {
+  display::inventory_t previous;
+  previous.physical.resize(1);
+  std::optional<display::inventory_t> cached {previous};
+  std::string ready {"previous-server"};
+  EXPECT_FALSE(display::publish_session_inventory(cached, ready, "new-server",
+    [] { return std::optional {display::inventory_t {}}; },
+    [](const auto &) { ADD_FAILURE(); return true; }, display::has_startup_outputs));
+  EXPECT_FALSE(cached);
+  EXPECT_TRUE(ready.empty());
 }
