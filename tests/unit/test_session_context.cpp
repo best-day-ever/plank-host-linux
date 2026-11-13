@@ -45,6 +45,25 @@ TEST(SessionContext, AcceptsActiveLocalSeat0UserAndGreeter) {
   EXPECT_TRUE(session::eligible_graphical_session(descriptor));
 }
 
+TEST(SessionContext, ManualDesktopLoginNeverRequestsAutomaticSignInOrUnlock) {
+  for (bool handoff : {false, true}) {
+    for (const auto stage : {"greeter", "user", "unknown", "closing", ""}) {
+      EXPECT_EQ(session::desktop_login_action(handoff, false, stage),
+                session::desktop_login_action_t::none);
+    }
+  }
+}
+
+TEST(SessionContext, AutomaticDesktopLoginRequiresBothPoliciesAndConfirmedStage) {
+  for (const auto stage : {"greeter", "user", "unknown"}) {
+    EXPECT_EQ(session::desktop_login_action(false, true, stage),
+              session::desktop_login_action_t::none);
+  }
+  EXPECT_EQ(session::desktop_login_action(true, true, "greeter"), session::desktop_login_action_t::sign_in);
+  EXPECT_EQ(session::desktop_login_action(true, true, "user"), session::desktop_login_action_t::unlock);
+  EXPECT_EQ(session::desktop_login_action(true, true, "unknown"), session::desktop_login_action_t::none);
+}
+
 TEST(SessionContext, RejectsInactiveRemoteOrNonSeat0Sessions) {
   auto descriptor = valid_session();
   descriptor.active = false;

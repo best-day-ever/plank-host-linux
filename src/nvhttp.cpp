@@ -705,15 +705,16 @@ namespace nvhttp {
   /**
    * @brief After a stream is admitted, finish the login on the workstation.
    *
-   * At the greeter, sign the account into GDM; on its own locked desktop,
-   * unlock it. The account just passed PLANK authentication (on the broker
-   * path including the OTP or passkey factor), so neither asks again.
+   * Automatic desktop login is separately opt-in. Otherwise the admitted
+   * stream displays the normal Linux login or lock screen for manual entry.
+   * Explicit idle-owner sign-out remains controlled by desktop_handoff.
    */
   void complete_desktop_login(uid_t uid) {
     streaming_account_uid = uid;
-    if (!config::sunshine.desktop_handoff) return;
-    const auto stage = plank::session::confirmed_desktop_stage();
-    if (stage == "greeter"sv) {
+    const auto action = plank::session::desktop_login_action(
+      config::sunshine.desktop_handoff, config::sunshine.desktop_auto_login,
+      plank::session::confirmed_desktop_stage());
+    if (action == plank::session::desktop_login_action_t::sign_in) {
       const auto account = account_name(uid);
       if (!plank::session::sign_into_greeter(uid, account, []() {
             return session_stream::session_count() > 0;
@@ -722,7 +723,7 @@ namespace nvhttp {
       } else {
         BOOST_LOG(info) << "PLANK signing the authenticated account into GDM"sv;
       }
-    } else if (stage == "user"sv) {
+    } else if (action == plank::session::desktop_login_action_t::unlock) {
       if (plank::session::unlock_attached_user_session(uid)) {
         BOOST_LOG(info) << "PLANK unlocked the owner's desktop after a fresh login"sv;
       }

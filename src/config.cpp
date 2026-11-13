@@ -870,7 +870,8 @@ namespace config {
     "",  // no collaboration support override unless configured
     false,  // no remote support unlock unless explicitly configured
     "",  // no additional shared-desktop membership restriction by default
-    false,  // PLANK greeter sign-in, owner unlock and idle-owner sign-out
+    false,  // PLANK explicit idle-owner sign-out and desktop handoff policy
+    false,  // PLANK automatic desktop sign-in/unlock is separately opt-in
   };
 
   /**
@@ -1574,6 +1575,7 @@ namespace config {
     string_f(vars, "gssapi_pam_service", broker_gssapi_pam_service);
     bool_f(vars, "lock_on_disconnect", sunshine.lock_on_disconnect);
     bool_f(vars, "desktop_handoff", sunshine.desktop_handoff);
+    bool_f(vars, "desktop_auto_login", sunshine.desktop_auto_login);
 
     string_f(vars, "audio_sink", audio.sink);
 

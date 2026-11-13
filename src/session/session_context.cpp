@@ -301,6 +301,13 @@ namespace plank::session {
       std::string {desktop_stage(current_update->session, *active)} : "unknown";
   }
 
+  desktop_login_action_t desktop_login_action(bool handoff, bool automatic, std::string_view stage) {
+    if (!handoff || !automatic) return desktop_login_action_t::none;
+    if (stage == "greeter") return desktop_login_action_t::sign_in;
+    if (stage == "user") return desktop_login_action_t::unlock;
+    return desktop_login_action_t::none;
+  }
+
   std::optional<std::string> publishable_account_name(std::string_view name) {
     if (name.size() > 256 || name.find('\0') != std::string_view::npos) return std::nullopt;
     name = name.substr(0, name.find('@'));

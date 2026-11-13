@@ -1,14 +1,14 @@
 # Desktop handoff: one login, one person per workstation
 
-`security.desktop_handoff = true` finishes a PLANK login on the workstation
-itself, so the person who just authenticated (password on the LAN, or the
-broker's Kerberos ticket with the OTP/passkey indicator) never types a second
-password, and a workstation serves one person at a time.
+`security.desktop_handoff = true` permits explicit sign-out of an idle desktop
+owner. Linux sign-in and unlocking remain manual unless the administrator also
+enables `security.desktop_auto_login = true`. Both default to false. A
+workstation continues to enforce its authenticated desktop ownership policy.
 
 | Workstation state when the stream is admitted | What the host does |
 | --- | --- |
-| GDM greeter | Signs the account into GDM (below). |
-| The account's own desktop, locked | Unlocks it through logind `UnlockSession`. |
+| GDM greeter | Shows the normal Linux login screen; automatic sign-in requires `desktop_auto_login`. |
+| The account's own desktop, locked | Shows the lock screen; automatic unlock requires `desktop_auto_login`. |
 | The account's own desktop, unlocked | Nothing extra. |
 | Another account's desktop, no PLANK stream | Refuses with `409`, names the owner, offers sign-out. |
 | Another account is streaming (desktop or greeter) | Refuses with `409`, names that account, no sign-out. |
@@ -19,6 +19,10 @@ refused, including at the greeter. Session takeover (`plankTakeover=1`) only
 moves a stream between clients of the same account.
 
 ## Greeter sign-in
+
+The following optional path runs only with `desktop_auto_login = true`.
+With it disabled, neither the handoff pass nor simulated greeter input is
+requested. Linux sign-out leaves the greeter open even if a Client reconnects.
 
 1. The stream is admitted on the greeter worker. The worker writes a one-shot
    pass `/run/plank/handoff/<uid>` (root, `0600`, directory `0700`) naming the
