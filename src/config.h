@@ -295,7 +295,8 @@ namespace config {
     std::string collaboration_support_group;  ///< OS group allowed to join without owner consent; empty disables it.
     bool collaboration_support_unlock;  ///< Explicit support-group unlock of an existing desktop; disabled by default.
     std::string collaboration_join_group;  ///< Optional OS group required to join another account's desktop, even with consent.
-    bool desktop_handoff;  ///< Sign PLANK logins into GDM, unlock the owner's desktop, offer sign-out of an idle owner.
+    bool desktop_handoff;  ///< Offer explicit sign-out of an idle owner; permits separately enabled automatic desktop login.
+    bool desktop_auto_login;  ///< Sign into GDM or unlock the owner's desktop after PLANK authentication; disabled by default.
   };
 
   extern video_t video;

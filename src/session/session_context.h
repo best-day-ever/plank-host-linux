@@ -151,6 +151,18 @@ namespace plank::session {
   /** Query the confirmed worker stage; never grants desktop or authentication access. */
   std::string confirmed_desktop_stage();
 
+  /** @brief Automatic desktop actions, independent of explicit idle-owner sign-out. */
+  enum class desktop_login_action_t { none, sign_in, unlock };
+
+  /**
+   * @brief Select an automatic desktop action only when both policies permit it.
+   * @param handoff Enables desktop handoff and explicit idle-owner sign-out.
+   * @param automatic Enables automatic sign-in and owner unlock.
+   * @param stage Authenticated local worker stage; unknown stages grant no action.
+   * @return The allowed automatic action, or none for manual Linux login.
+   */
+  desktop_login_action_t desktop_login_action(bool handoff, bool automatic, std::string_view stage);
+
   /** @brief Normalize a bounded advisory login name, stripping its directory realm. */
   std::optional<std::string> publishable_account_name(std::string_view name);
 

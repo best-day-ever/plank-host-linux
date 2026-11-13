@@ -123,6 +123,7 @@ TEST(ConfigConsistencyTest, RuntimeOptionsMatchPlankProductPolicy) {
     "collaboration_support_group",
     "collaboration_support_unlock",
     "desktop_handoff",
+    "desktop_auto_login",
     "file_state",
     "file_clipboard",
     "file_clipboard_entitlement_group",
