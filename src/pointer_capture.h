@@ -54,7 +54,7 @@ namespace input {
     bool active() const { return active_; }
 
     /**
-     * @brief Start a new epoch after the backend and absolute anchor succeeded.
+     * @brief Start a new epoch after the backend probe, preserving the current desktop pointer.
      * @param packet Validated BEGIN packet.
      * @param geometry Current desktop coordinate transform.
      * @return True if this is a fresh epoch with its first sequence number.

@@ -1434,8 +1434,8 @@ namespace input {
     }
 
     // Consume any new touch port before comparing the immutable epoch geometry.
-    const auto anchor = client_to_touchport(input, {packet.x, packet.y}, {float(packet.width), float(packet.height)});
-    if (!anchor) return false;
+    const auto coordinate_context = client_to_touchport(input, {packet.x, packet.y}, {float(packet.width), float(packet.height)});
+    if (!coordinate_context) return false;
     const auto geometry = capture_geometry(input->touch_port);
     if (packet.operation == PLANK_POINTER_BEGIN) {
       if (!capture.can_begin(packet, geometry) ||
@@ -1445,15 +1445,13 @@ namespace input {
     if (!pointer_driver.accept(connection, pointer_arbitration_t::clock::now())) return false;
     auto &backend = platf::virtualhid::get_input_context(platf_input);
     if (packet.operation == PLANK_POINTER_BEGIN) {
-      // Probe the precise owned-slave implementation before an absolute anchor
-      // or state transition. No accelerated/core-pointer fallback is permitted.
+      // Preserve the application's current pointer when immersive input starts.
+      // BEGIN coordinates are advisory, not an absolute anchor: a game or DCC
+      // may already have warped its pointer before capture was requested.
+      // Probe the owned-slave implementation with zero displacement only; no
+      // accelerated/core-pointer fallback or synthetic entry movement is allowed.
       if (!platf::virtualhid::move_mouse_pixels(backend, 0, 0) ||
           !capture.begin(packet, geometry)) return false;
-      const auto &port = input->touch_port;
-      const platf::touch_port_t viewport {port.offset_x, port.offset_y,
-        port.env_logical_width ? port.env_logical_width : port.env_width,
-        port.env_logical_height ? port.env_logical_height : port.env_height};
-      platf::abs_mouse(platf_input, viewport, anchor->first, anchor->second);
       return true;
     }
     if (packet.operation == PLANK_POINTER_MOVE) {

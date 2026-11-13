@@ -692,9 +692,12 @@ TEST_F(InputRetainedSessionTest, NativePointerCaptureUsesPixelDeltasAndBlocksAbs
   std::uint8_t wire[PLANK_POINTER_PACKET_SIZE];
   plank_pointer_encode(wire, &capture);
   ASSERT_TRUE(input::native(session, PLANK_TRANSPORT_INPUT_POINTER_CAPTURE, wire, sizeof(wire)));
-  ASSERT_EQ(mouse->last_submitted_event().kind, lvh::MouseEventKind::absolute_motion);
-  EXPECT_EQ(mouse->last_submitted_event().x, 200);
-  EXPECT_EQ(mouse->last_submitted_event().y, 300);
+  // Even nonzero advisory BEGIN coordinates must not replace an application's
+  // current (possibly already warped) pointer. Only the zero-displacement
+  // capability probe is submitted before explicit MOVE packets arrive.
+  ASSERT_EQ(mouse->last_submitted_event().kind, lvh::MouseEventKind::relative_pixel_motion);
+  EXPECT_EQ(mouse->last_submitted_event().x, 0);
+  EXPECT_EQ(mouse->last_submitted_event().y, 0);
   // Administrative HID attachment is not pointer activity. A real report is
   // preceded by the negotiated client's ordered capture-cancellation barrier.
   const auto raw_device = make_raw_hid_device_frame(17);
