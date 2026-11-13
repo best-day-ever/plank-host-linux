@@ -115,6 +115,15 @@ namespace platf::virtualhid {
   void move_mouse(input_context_t &context, int delta_x, int delta_y);
 
   /**
+   * @brief Move the owned X11 pointer by exact pixels without pointer acceleration.
+   * @param context Input context.
+   * @param delta_x Horizontal desktop-pixel displacement.
+   * @param delta_y Vertical desktop-pixel displacement.
+   * @return True only when the owned backend supports and accepted the movement.
+   */
+  bool move_mouse_pixels(input_context_t &context, int delta_x, int delta_y);
+
+  /**
    * @brief Move the virtual mouse absolutely inside a target touch port.
    *
    * @param context Input context.

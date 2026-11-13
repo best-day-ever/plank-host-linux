@@ -18,14 +18,20 @@ namespace topology = plank::topology;
 TEST(PlankTopology, PublishesVersionThirteenFeatureContract) {
   EXPECT_EQ(topology::protocol_version, 13U);
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
-  EXPECT_EQ(topology::feature_flags, 0x16C7FFFFU);
+  EXPECT_EQ(topology::feature_flags, 0x36C7FFFFU | topology::feature_platform_pointer_capture);
   EXPECT_NE(topology::feature_flags & topology::feature_clipboard_sync, 0U);
   EXPECT_EQ(topology::feature_platform_file_clipboard,
             topology::feature_file_clipboard);
 #else
-  EXPECT_EQ(topology::feature_flags, 0x1647FFFFU);
+  EXPECT_EQ(topology::feature_flags, 0x3647FFFFU);
   EXPECT_EQ(topology::feature_flags & topology::feature_clipboard_sync, 0U);
   EXPECT_EQ(topology::feature_platform_file_clipboard, 0U);
+#endif
+  EXPECT_EQ(topology::feature_pointer_capture, 0x40000000U);
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11) && defined(PLANK_TRANSPORT)
+  EXPECT_NE(topology::feature_flags & topology::feature_pointer_capture, 0U);
+#else
+  EXPECT_EQ(topology::feature_flags & topology::feature_pointer_capture, 0U);
 #endif
   EXPECT_EQ(topology::feature_flags & topology::feature_file_clipboard, 0U);
   EXPECT_NE(topology::feature_flags & topology::feature_nvfbc_nvenc_420, 0U);

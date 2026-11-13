@@ -45,6 +45,7 @@ extern "C" {
 
 #ifdef PLANK_TRANSPORT
   #include <plank_transport_input.h>
+  #include "pointer_capture.h"
 #endif
 
 // Win32 WHEEL_DELTA constant
@@ -237,6 +238,9 @@ namespace input {
     std::mutex input_queue_lock;  ///< Input queue lock.
 
     input::touch_port_t touch_port;  ///< Touch coordinate bounds for the current stream.
+#ifdef PLANK_TRANSPORT
+    pointer_capture_t pointer_capture;  ///< Ordered capture epoch, scoped to this live input connection.
+#endif
 
     int32_t accumulated_vscroll_delta;  ///< Accumulated vscroll delta.
     int32_t accumulated_hscroll_delta;  ///< Accumulated hscroll delta.
@@ -344,6 +348,9 @@ namespace input {
    * @param mail Mailbox for the resumed stream connection.
    */
   void rebind_input(const std::shared_ptr<input_t> &input, const safe::mail_t &mail) {
+#ifdef PLANK_TRANSPORT
+    input->pointer_capture = {};
+#endif
     input->touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
     input->raw_hid_tablet->rebind(mail->queue<std::vector<std::uint8_t>>(mail::raw_hid_feedback));
   }
@@ -1363,15 +1370,115 @@ namespace input {
   }
 
 #ifdef PLANK_TRANSPORT
+  /** @brief Snapshot every field that changes the pointer's coordinate transform. */
+  pointer_capture_geometry_t capture_geometry(const input::touch_port_t &port) {
+    return {port.offset_x, port.offset_y, port.width, port.height, port.logical_width, port.logical_height,
+            port.env_width, port.env_height, port.env_logical_width, port.env_logical_height,
+            port.client_offsetX, port.client_offsetY, port.scalar_inv, port.scalar_tpcoords};
+  }
+
+  /** @brief Release this participant's mouse holds when capture is cancelled. */
+  void cancel_pointer_capture(const std::shared_ptr<input_t> &input) {
+    input->pointer_capture.finish();
+    const auto connection = reinterpret_cast<std::uintptr_t>(input.get());
+    for (std::size_t button = 0; button < input->held_mouse.size(); ++button) {
+      if (!input->held_mouse[button]) continue;
+      input->held_mouse[button] = false;
+      pointer_driver.button(connection, unsigned(button), false);
+      if (mouse_press[button] > 0 && --mouse_press[button] == 0) platf::button_mouse(platf_input, int(button), true);
+    }
+  }
+
+  /**
+   * @brief Finish one ordered epoch with an authoritative root-pointer reply.
+   * @param input Connection input state.
+   * @param packet Ordered END or CANCEL being acknowledged.
+   * @param reply Destination for the reliable encoded acknowledgement.
+   * @return True when the desktop position could be queried and encoded.
+   */
+  bool acknowledge_pointer_capture(const std::shared_ptr<input_t> &input, PlankPointerPacket packet,
+                                    std::vector<std::uint8_t> *reply) {
+    if (!reply) return false;
+    const auto position = platf::get_mouse_loc(platf_input);
+    if (!position) return false;
+    const auto frame = input->pointer_capture.frame_position(position->x, position->y);
+    input->pointer_capture.complete(packet);
+    packet.operation = PLANK_POINTER_END_ACK;
+    packet.x = frame.first; packet.y = frame.second;
+    reply->resize(PLANK_POINTER_PACKET_SIZE);
+    plank_pointer_encode(reply->data(), &packet);
+    return true;
+  }
+
+  /**
+   * @brief Process capture on the same serialized owner as buttons and keys.
+   * @param input Connection input state.
+   * @param payload Complete validated-size native payload.
+   * @param payload_size Native payload byte count.
+   * @param reply Receives the reliable completion acknowledgement.
+   * @return True only when the operation was accepted without a backend fallback.
+   */
+  bool capture_pointer(const std::shared_ptr<input_t> &input, const std::uint8_t *payload,
+                       std::size_t payload_size, std::vector<std::uint8_t> *reply) {
+    PlankPointerPacket packet {};
+    if (plank_pointer_decode(payload, payload_size, &packet) || packet.operation == PLANK_POINTER_END_ACK ||
+        !config::input.mouse || !input->client_context) return false;
+
+    auto &capture = input->pointer_capture;
+    if (packet.operation == PLANK_POINTER_CANCEL) {
+      // Cancellation cannot depend on a new layout becoming usable. It only
+      // releases this connection's holds and acknowledges the frozen frame.
+      if (!reply || !capture.can_cancel(packet)) return false;
+      cancel_pointer_capture(input);
+      return acknowledge_pointer_capture(input, packet, reply);
+    }
+
+    // Consume any new touch port before comparing the immutable epoch geometry.
+    const auto anchor = client_to_touchport(input, {packet.x, packet.y}, {float(packet.width), float(packet.height)});
+    if (!anchor) return false;
+    const auto geometry = capture_geometry(input->touch_port);
+    if (packet.operation == PLANK_POINTER_BEGIN) {
+      if (!capture.can_begin(packet, geometry) ||
+          std::any_of(input->held_mouse.begin(), input->held_mouse.end(), [](bool held) { return held; })) return false;
+    } else if (!capture.accepts(packet, geometry)) return false;
+    const auto connection = reinterpret_cast<std::uintptr_t>(input.get());
+    if (!pointer_driver.accept(connection, pointer_arbitration_t::clock::now())) return false;
+    auto &backend = platf::virtualhid::get_input_context(platf_input);
+    if (packet.operation == PLANK_POINTER_BEGIN) {
+      // Probe the precise owned-slave implementation before an absolute anchor
+      // or state transition. No accelerated/core-pointer fallback is permitted.
+      if (!platf::virtualhid::move_mouse_pixels(backend, 0, 0) ||
+          !capture.begin(packet, geometry)) return false;
+      const auto &port = input->touch_port;
+      const platf::touch_port_t viewport {port.offset_x, port.offset_y,
+        port.env_logical_width ? port.env_logical_width : port.env_width,
+        port.env_logical_height ? port.env_logical_height : port.env_height};
+      platf::abs_mouse(platf_input, viewport, anchor->first, anchor->second);
+      return true;
+    }
+    if (packet.operation == PLANK_POINTER_MOVE) {
+      const auto movement = capture.movement(packet, geometry);
+      return movement && platf::virtualhid::move_mouse_pixels(backend, movement->first, movement->second);
+    }
+    if (packet.operation == PLANK_POINTER_END &&
+        std::any_of(input->held_mouse.begin(), input->held_mouse.end(), [](bool held) { return held; })) return false;
+    return acknowledge_pointer_capture(input, packet, reply);
+  }
+
   bool native(std::shared_ptr<input_t> &input, std::uint8_t type,
-              const std::uint8_t *payload, std::size_t payload_size) {
+              const std::uint8_t *payload, std::size_t payload_size,
+              std::vector<std::uint8_t> *pointer_reply) {
     std::lock_guard lock {input_state_mutex};
+    if (pointer_reply) pointer_reply->clear();
     if (!input || !payload || payload_size == 0) {
       return false;
     }
 
     switch (type) {
+      case PLANK_TRANSPORT_INPUT_POINTER_CAPTURE:
+        return capture_pointer(input, payload, payload_size, pointer_reply);
       case PLANK_TRANSPORT_INPUT_ABSOLUTE_MOUSE: {
+        if (input->pointer_capture.active()) return false;
         if (payload_size != PLANK_TRANSPORT_INPUT_ABSOLUTE_MOUSE_SIZE) {
           return false;
         }
@@ -1471,6 +1578,7 @@ namespace input {
         return true;
       }
       case PLANK_TRANSPORT_INPUT_PEN: {
+        if (input->pointer_capture.active()) return false;
         if (payload_size != PLANK_TRANSPORT_INPUT_PEN_SIZE ||
             payload[6] != 0 || payload[7] != 0 ||
             plank_transport_input_read_u32(payload + 28) != 0) {
@@ -1494,6 +1602,9 @@ namespace input {
         return true;
       }
       case PLANK_TRANSPORT_INPUT_RAW_HID_WACOM: {
+        // Raw-HID includes battery/admin traffic that cannot be classified as
+        // pointer activity here. A negotiated client places CANCEL before an
+        // actual pointer report on this same ordered input stream.
         if (payload_size < sizeof(PLANK_RAW_HID_WIRE_HEADER) ||
             payload_size > sizeof(PLANK_RAW_HID_WIRE_HEADER) + PLANK_RAW_HID_MAX_PAYLOAD_SIZE) {
           return false;
@@ -1541,6 +1652,9 @@ namespace input {
       BOOST_LOG(debug) << "Skipping stale input reset for connection "sv << connection_id;
       return;
     }
+#ifdef PLANK_TRANSPORT
+    input->pointer_capture.finish();
+#endif
 
     pointer_driver.release(reinterpret_cast<std::uintptr_t>(input.get()));
     if (key_repeat_owner == input.get()) {
@@ -1698,6 +1812,12 @@ namespace input {
 
 #ifdef SUNSHINE_TESTS
   namespace testing {
+#ifdef PLANK_TRANSPORT
+    void set_touch_port(const std::shared_ptr<input_t> &input, const touch_port_t &port) {
+      std::lock_guard lock {input_state_mutex};
+      input->touch_port = port;
+    }
+#endif
     void set_platform_input(platf::input_t input) {
       clear_desktop_input();
       platf_input = std::move(input);

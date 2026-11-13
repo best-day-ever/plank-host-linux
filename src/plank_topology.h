@@ -47,12 +47,18 @@ namespace plank::topology {
   constexpr std::uint32_t feature_display_arrangement = 0x8000000;
   constexpr std::uint32_t feature_virtual_primary_connector = 0x10000000;
   constexpr std::uint32_t feature_collaboration = 0x20000000;  ///< Owner-approved shared desktop streams.
+  constexpr std::uint32_t feature_pointer_capture = 0x40000000;  ///< Ordered pixel mouse gestures with authoritative completion.
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
   constexpr std::uint32_t feature_platform_clipboard_sync = feature_clipboard_sync;
   constexpr std::uint32_t feature_platform_file_clipboard = feature_file_clipboard;
 #else
   constexpr std::uint32_t feature_platform_clipboard_sync = 0;
   constexpr std::uint32_t feature_platform_file_clipboard = 0;
+#endif
+#if defined(__linux__) && defined(SUNSHINE_BUILD_X11) && defined(PLANK_TRANSPORT)
+  constexpr std::uint32_t feature_platform_pointer_capture = feature_pointer_capture;
+#else
+  constexpr std::uint32_t feature_platform_pointer_capture = 0;
 #endif
   constexpr std::uint32_t feature_flags =
     feature_output_topology |
@@ -79,7 +85,8 @@ namespace plank::topology {
     feature_nvfbc_nvenc_420 |
     feature_notch_safe_laptop_modes |
     feature_virtual_primary_connector |
-    feature_collaboration;
+    feature_collaboration |
+    feature_platform_pointer_capture;
 
   // The optional connector index applies only to negotiated virtual-startup
   // sessions; existing and physical layouts keep their established ordering.
