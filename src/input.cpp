@@ -542,12 +542,12 @@ namespace input {
 
   /**
    * @brief Converts client coordinates on the specified surface into screen coordinates.
-   * @param input The input context.
+   * @param input The input context; coordinate conversion never replaces its shared ownership.
    * @param val The cartesian coordinate pair to convert.
    * @param size The size of the client's surface containing the value.
    * @return The host-relative coordinate pair if a touchport is available.
    */
-  std::optional<std::pair<float, float>> client_to_touchport(std::shared_ptr<input_t> &input, const std::pair<float, float> &val, const std::pair<float, float> &size) {
+  std::optional<std::pair<float, float>> client_to_touchport(const std::shared_ptr<input_t> &input, const std::pair<float, float> &val, const std::pair<float, float> &size) {
     auto &touch_port_event = input->touch_port_event;
     auto &touch_port = input->touch_port;
     if (touch_port_event->peek()) {
