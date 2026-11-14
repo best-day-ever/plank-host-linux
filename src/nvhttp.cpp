@@ -1850,7 +1850,7 @@ namespace nvhttp {
     const auto guest_encoding = guest->encoding_mode; const auto guest_source = guest->capture_source; const auto guest_backend = guest->encoder_backend;
     const auto id = guest->id; const auto appid = guest->appid; const auto mtu = guest->quic_udp_payload_mtu; const auto flags = guest->plank_feature_flags; const auto protocol = guest->plank_protocol_version;
     *guest = *capture;
-    guest->id = id; guest->appid = appid; guest->quic_udp_payload_mtu = mtu; guest->plank_feature_flags = flags & ~(plank::topology::feature_clipboard_sync | plank::topology::feature_file_clipboard);
+    guest->id = id; guest->appid = appid; guest->quic_udp_payload_mtu = mtu; guest->plank_feature_flags = flags & ~(plank::topology::feature_clipboard_sync | plank::topology::feature_file_clipboard | plank::topology::feature_pointer_capture);
     guest->plank_protocol_version = protocol; guest->encoding_mode = guest_encoding;
     if (!active) { guest->capture_source = guest_source; guest->encoder_backend = guest_backend; }
     guest->file_clipboard_mode = "off"; guest->plank_display_lease = false; guest->collaboration = consent->lease;

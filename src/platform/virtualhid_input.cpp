@@ -180,6 +180,13 @@ namespace platf::virtualhid {
     }
   }
 
+  bool move_mouse_pixels(input_context_t &context, int delta_x, int delta_y) {
+    if (!context.mouse) return false;
+    const auto status = context.mouse->move_relative_pixels(delta_x, delta_y);
+    log_failure("submit libvirtualhid pixel mouse movement"sv, status);
+    return status.ok();
+  }
+
   void abs_mouse(input_context_t &context, const touch_port_t &touch_port, float x, float y) {
     if (context.mouse) {
       log_failure(

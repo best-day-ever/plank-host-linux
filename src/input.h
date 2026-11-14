@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 // local includes
 #include "platform/common.h"
@@ -22,6 +23,7 @@ namespace raw_hid {
 
 namespace input {
   struct input_t;
+  struct touch_port_t;
 
   /**
    * @brief Write a debug log representation of the input packet.
@@ -49,10 +51,12 @@ namespace input {
   /**
    * @brief Validate and inject one native KyProto input message.
    *
+   * @param pointer_reply Optional output for an ordered pointer completion acknowledgement.
    * @return true when the typed PLANK message was accepted.
    */
   bool native(std::shared_ptr<input_t> &input, std::uint8_t type,
-              const std::uint8_t *payload, std::size_t payload_size);
+              const std::uint8_t *payload, std::size_t payload_size,
+              std::vector<std::uint8_t> *pointer_reply = nullptr);
 #endif
 
   /**
@@ -132,6 +136,10 @@ namespace input {
 
     /** @brief Access the fake per-client backend while no input thread is running. */
     platf::client_input_t *client_context(const std::shared_ptr<input_t> &input);
+#ifdef PLANK_TRANSPORT
+    /** @brief Set a deterministic coordinate transform before native input tests. */
+    void set_touch_port(const std::shared_ptr<input_t> &input, const touch_port_t &port);
+#endif
   }  // namespace testing
 #endif
 

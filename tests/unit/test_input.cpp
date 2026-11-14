@@ -16,6 +16,7 @@ extern "C" {
 #include <moonlight-common-c/src/plank.h>
 #ifdef PLANK_TRANSPORT
   #include <plank_transport_input.h>
+  #include <plank_transport_pointer.h>
 #endif
 }
 
@@ -682,6 +683,67 @@ TEST_F(InputRetainedSessionTest, GuestExtraMouseButtonReleaseCannotReleaseOwners
 }
 
 #ifdef PLANK_TRANSPORT
+TEST_F(InputRetainedSessionTest, NativePointerCaptureUsesPixelDeltasAndBlocksAbsoluteAndTabletUntilReset) {
+  std::uint64_t lease;
+  auto session = allocate("pointer-capture-owner", lease);
+  drain_tasks();
+  input::testing::set_touch_port(session, {{0, 0, 1920, 1080, 1920, 1080}, 1920, 1080, 0, 0, 1, 1, 1920, 1080});
+  PlankPointerPacket capture {PLANK_POINTER_BEGIN, 1, 1, 1920, 1080, 200, 300};
+  std::uint8_t wire[PLANK_POINTER_PACKET_SIZE];
+  plank_pointer_encode(wire, &capture);
+  ASSERT_TRUE(input::native(session, PLANK_TRANSPORT_INPUT_POINTER_CAPTURE, wire, sizeof(wire)));
+  // Even nonzero advisory BEGIN coordinates must not replace an application's
+  // current (possibly already warped) pointer. Only the zero-displacement
+  // capability probe is submitted before explicit MOVE packets arrive.
+  ASSERT_EQ(mouse->last_submitted_event().kind, lvh::MouseEventKind::relative_pixel_motion);
+  EXPECT_EQ(mouse->last_submitted_event().x, 0);
+  EXPECT_EQ(mouse->last_submitted_event().y, 0);
+  // Administrative HID attachment is not pointer activity. A real report is
+  // preceded by the negotiated client's ordered capture-cancellation barrier.
+  const auto raw_device = make_raw_hid_device_frame(17);
+  EXPECT_TRUE(input::native(session, PLANK_TRANSPORT_INPUT_RAW_HID_WACOM, raw_device.data(), raw_device.size()));
+  capture.operation = PLANK_POINTER_MOVE; capture.sequence = 2; capture.x = 12.5f; capture.y = -6.5f;
+  plank_pointer_encode(wire, &capture);
+  ASSERT_TRUE(input::native(session, PLANK_TRANSPORT_INPUT_POINTER_CAPTURE, wire, sizeof(wire)));
+  EXPECT_EQ(mouse->last_submitted_event().kind, lvh::MouseEventKind::relative_pixel_motion);
+  EXPECT_EQ(mouse->last_submitted_event().x, 13);
+  EXPECT_EQ(mouse->last_submitted_event().y, -7);
+  const auto submitted = mouse->submit_count();
+  std::uint8_t absolute[PLANK_TRANSPORT_INPUT_ABSOLUTE_MOUSE_SIZE];
+  plank_transport_input_encode_absolute_mouse(absolute, 400, 500, 1920, 1080);
+  EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_ABSOLUTE_MOUSE, absolute, sizeof(absolute)));
+  std::uint8_t pen[PLANK_TRANSPORT_INPUT_PEN_SIZE] {};
+  EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_PEN, pen, sizeof(pen)));
+  EXPECT_EQ(mouse->submit_count(), submitted);
+  input::reset(session, lease);
+  ASSERT_TRUE(input::native(session, PLANK_TRANSPORT_INPUT_ABSOLUTE_MOUSE, absolute, sizeof(absolute)));
+  EXPECT_EQ(mouse->last_submitted_event().x, 400);
+}
+
+TEST_F(InputRetainedSessionTest, NativePointerCaptureRejectsStalePacketsAndGuestWithoutInjecting) {
+  std::uint64_t lease;
+  auto session = allocate("pointer-capture-stale", lease);
+  drain_tasks();
+  input::testing::set_touch_port(session, {{0, 0, 1920, 1080, 1920, 1080}, 1920, 1080, 0, 0, 1, 1, 1920, 1080});
+  PlankPointerPacket capture {PLANK_POINTER_BEGIN, 1, 1, 1920, 1080, 200, 300};
+  std::uint8_t wire[PLANK_POINTER_PACKET_SIZE];
+  plank_pointer_encode(wire, &capture);
+  ASSERT_TRUE(input::native(session, PLANK_TRANSPORT_INPUT_POINTER_CAPTURE, wire, sizeof(wire)));
+  const auto submitted = mouse->submit_count();
+  EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_POINTER_CAPTURE, wire, sizeof(wire)));
+  capture.operation = PLANK_POINTER_MOVE; capture.sequence = 3; capture.x = 1; capture.y = 1;
+  plank_pointer_encode(wire, &capture);
+  EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_POINTER_CAPTURE, wire, sizeof(wire)));
+  EXPECT_EQ(mouse->submit_count(), submitted);
+  std::uint64_t guest_lease;
+  auto guest = input::alloc(std::make_shared<safe::mail_raw_t>(), "pointer-capture-guest", guest_lease, false);
+  sessions.emplace_back(guest, guest_lease);
+  capture.operation = PLANK_POINTER_BEGIN; capture.sequence = 1;
+  plank_pointer_encode(wire, &capture);
+  EXPECT_FALSE(input::native(guest, PLANK_TRANSPORT_INPUT_POINTER_CAPTURE, wire, sizeof(wire)));
+  EXPECT_EQ(mouse->submit_count(), submitted);
+}
+
 TEST_F(InputRetainedSessionTest, NativeGuestCannotStealDragWithEqualPerParticipantLeaseNumbers) {
   std::uint64_t owner_lease, guest_lease;
   auto owner = allocate("native-pointer-owner", owner_lease);

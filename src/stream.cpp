@@ -45,6 +45,7 @@ extern "C" {
   #include <plank_transport_control.h>
   #include <plank_transport_event.h>
   #include <plank_transport_input.h>
+  #include <plank_transport_pointer.h>
 #endif
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
@@ -56,6 +57,7 @@ extern "C" {
 
 #ifdef PLANK_TRANSPORT
 constexpr int PLANK_TRANSPORT_CONTROL_DRAIN_LIMIT = 16;
+static_assert(PLANK_POINTER_CAPTURE_FEATURE == plank::topology::feature_pointer_capture);
 #endif
 
 using namespace std::literals;
@@ -139,6 +141,9 @@ namespace stream {
       std::optional<std::vector<std::uint8_t>> raw_hid_pending;  ///< Unsent reliable tablet request, retained across transport backpressure.
       safe::mail_raw_t::queue_t<std::vector<std::vector<std::uint8_t>>> cursor_shape_queue;
       safe::mail_raw_t::event_t<PLANK_CURSOR_POSITION_WIRE_MESSAGE> cursor_position_event;
+      std::shared_ptr<safe::queue_t<std::vector<std::uint8_t>>> pointer_capture_queue =
+        std::make_shared<safe::queue_t<std::vector<std::uint8_t>>>(32);  ///< Completion replies cannot supersede one another.
+      std::optional<std::vector<std::uint8_t>> pointer_capture_pending;  ///< Exact unsent reply retained on backpressure.
       safe::mail_raw_t::event_t<std::vector<std::vector<std::uint8_t>>> clipboard_offer_queue; ///< Latest local offer only.
       std::vector<std::vector<std::uint8_t>> clipboard_pending; ///< Control-thread-owned in-flight offer.
       std::size_t clipboard_next = 0; ///< First chunk not yet accepted by transport.
@@ -1032,6 +1037,24 @@ namespace stream {
             }
           }
 
+          auto &pointer_control = session->control;
+          for (unsigned count = 0; count < 4; ++count) {
+            if (!pointer_control.pointer_capture_pending && pointer_control.pointer_capture_queue->peek()) {
+              pointer_control.pointer_capture_pending = *pointer_control.pointer_capture_queue->pop();
+            }
+            if (!pointer_control.pointer_capture_pending) break;
+            const auto &reply = *pointer_control.pointer_capture_pending;
+            const auto result = send_plank_transport_event(session, PLANK_TRANSPORT_EVENT_POINTER_CAPTURE,
+                                                           reply.data(), reply.size());
+            if (result == PLANK_TRANSPORT_TIMEOUT) break;
+            if (result != PLANK_TRANSPORT_OK) {
+              BOOST_LOG(warning) << "Unable to retain a reliable pointer completion acknowledgement"sv;
+              session::stop(*session);
+              break;
+            }
+            pointer_control.pointer_capture_pending.reset();
+          }
+
           auto &control = session->control;
           if (auto frames = control.clipboard_offer_queue->try_pop()) {
             control.clipboard_pending = std::move(*frames);
@@ -1387,9 +1410,22 @@ namespace stream {
         }
         continue;
       }
-      if (!input::native(session->input, type, payload.data(), payload_size)) {
+      if (type == PLANK_TRANSPORT_INPUT_POINTER_CAPTURE &&
+          (session->collaboration || !(session->plank_feature_flags & plank::topology::feature_pointer_capture))) {
+        BOOST_LOG(error) << "Rejected unnegotiated pointer capture input"sv;
+        session::stop(*session);
+        return;
+      }
+      std::vector<std::uint8_t> pointer_reply;
+      if (!input::native(session->input, type, payload.data(), payload_size, &pointer_reply)) {
         BOOST_LOG(error) << "Rejected malformed KyProto native input message: type="sv
                          << static_cast<unsigned>(type) << ", size="sv << payload_size;
+        session::stop(*session);
+        return;
+      }
+      if (!pointer_reply.empty() &&
+          !session->control.pointer_capture_queue->raise_reliable(std::move(pointer_reply), 0ms)) {
+        BOOST_LOG(error) << "Pointer completion queue is full; releasing input instead of losing its acknowledgement"sv;
         session::stop(*session);
         return;
       }
